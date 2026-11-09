@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "caliche-core"
+version = "0.1.0"
+description = "Core Python API for Caliche"
+requires-python = ">=3.9"
+classifiers = [
+  "Typing :: Typed",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+]
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Nicholas Papachriston", email = "nicholas@papachriston.com" }]
+dependencies = [
+  "caliche-contracts==0.1.0",
+  "caliche-runtime==0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/caliche_core"]
+
+[project.urls]
+Repository = "https://github.com/nicholas-papachriston/caliche"
+Homepage = "https://github.com/nicholas-papachriston/caliche"

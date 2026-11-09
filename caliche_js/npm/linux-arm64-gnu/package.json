@@ -1,0 +1,30 @@
+{
+  "name": "@caliche/runtime-node-linux-arm64-gnu",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Native Caliche runtime binary for linux-arm64-gnu",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "index.linux-arm64-gnu.node",
+  "files": [
+    "index.linux-arm64-gnu.node"
+  ],
+  "author": "Nicholas Papachriston <nicholas@papachriston.com>",
+  "homepage": "https://github.com/nicholas-papachriston/caliche",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "bun": ">=1.4.2",
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholas-papachriston/caliche"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -1,0 +1,437 @@
+openapi: 3.0.3
+info:
+  title: Caliche HTTP sessions API
+  version: 0.1.0
+  description: |
+    A hand-written description of the HTTP session routes. It is not
+    generated from every handler. It was checked against caliche_server
+    src/handlers/sessions.rs and src/router/mod.rs.
+
+    Authentication is off by default, and the list route returns every live
+    session in the process. See SECURITY.md. Cancel removes the session.
+
+    Omitted on purpose: context, memory, share, mode, plan, chat, gateway.
+servers:
+  - url: http://127.0.0.1:3000
+    description: The default listen address. The CLI sets it with --bind and --port. API_HOST does not set it.
+security: []
+components:
+  securitySchemes:
+    bearerJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Optional and off by default. The operator supplies the token,
+        JWT_AUDIENCE, and JWT_ISSUER. Caliche does not issue tokens.
+        A bearer does not filter GET /api/agent/sessions.
+  parameters:
+    sessionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateSessionRequest:
+      type: object
+      additionalProperties: true
+      description: |
+        Unknown fields are ignored. provider and model are not read.
+        Omitted max_turns leaves the harness default (50).
+      properties:
+        workspace:
+          type: string
+          nullable: true
+        context_files:
+          type: array
+          items:
+            type: string
+        max_turns:
+          type: integer
+          minimum: 0
+          nullable: true
+        system_prompt:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: |
+            Optional short human title. Omitted, null, and blank store no title.
+            Longer than 80 characters is HTTP 400 plain text. Old clients omit it.
+    CreateSessionResponse:
+      type: object
+      required: [session_id, created_at]
+      properties:
+        session_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    SessionInfo:
+      type: object
+      required: [session_id, created_at, last_activity, turn_count]
+      properties:
+        session_id:
+          type: string
+        name_slug:
+          type: string
+        title:
+          type: string
+          maxLength: 80
+          description: Present only when create stored a title.
+        created_at:
+          type: string
+          format: date-time
+        last_activity:
+          type: string
+          format: date-time
+        turn_count:
+          type: integer
+          minimum: 0
+        total_tokens:
+          type: integer
+          nullable: true
+    ExecuteTurnRequest:
+      type: object
+      required: [input]
+      properties:
+        input:
+          type: string
+      description: |
+        message is not a field. A body without input is HTTP 422
+        (plain text, missing field `input`) before the handler runs.
+    UsageInfo:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          nullable: true
+        completion_tokens:
+          type: integer
+          nullable: true
+        total_tokens:
+          type: integer
+          nullable: true
+    Discipline:
+      type: object
+      description: HarnessDisciplineMetricsDto. Optional metrics are omitted when absent.
+      properties:
+        tokens_per_turn:
+          type: number
+        tool_calls:
+          type: integer
+        tool_calls_per_turn:
+          type: number
+        compactions:
+          type: integer
+        readonly_filter_hits:
+          type: integer
+        estimated_cost_usd:
+          type: number
+        summary:
+          type: string
+    TurnResponse:
+      type: object
+      required: [response, turn_number, tools_used, duration_ms, usage, discipline]
+      properties:
+        response:
+          type: string
+        turn_number:
+          type: integer
+          minimum: 0
+        tools_used:
+          type: boolean
+        duration_ms:
+          type: integer
+          minimum: 0
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
+        discipline:
+          $ref: "#/components/schemas/Discipline"
+    ExecuteTaskRequest:
+      type: object
+      required: [task]
+      properties:
+        task:
+          type: string
+    TaskResponse:
+      type: object
+      required: [response, turns, duration_ms, files_modified, total_usage, discipline]
+      properties:
+        response:
+          type: string
+        turns:
+          type: integer
+          minimum: 0
+        duration_ms:
+          type: integer
+          minimum: 0
+        files_modified:
+          type: array
+          items:
+            type: string
+        checkpoint_id:
+          type: string
+          nullable: true
+        total_usage:
+          $ref: "#/components/schemas/UsageInfo"
+        discipline:
+          $ref: "#/components/schemas/Discipline"
+    CancelSessionResponse:
+      type: object
+      required: [session_id, cancelled]
+      properties:
+        session_id:
+          type: string
+        cancelled:
+          type: boolean
+          enum: [true]
+    PlainError:
+      type: string
+      description: Handler errors are plain text, not a JSON envelope.
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Liveness. 200 means the API is up.
+      responses:
+        "200":
+          description: API process is serving.
+  /api/agent/sessions:
+    get:
+      operationId: listSessions
+      summary: Every live session in this process.
+      description: |
+        200 and [] when the in-memory cache is empty. Not filtered by JWT
+        sub or roles. Auth off, any caller who can reach the socket sees
+        every id.
+      responses:
+        "200":
+          description: Process-wide live sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionInfo"
+    post:
+      operationId: createSession
+      summary: Create a session in this process.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+            example:
+              max_turns: 1
+      responses:
+        "200":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSessionResponse"
+        "400":
+          description: Title longer than 80 characters. Plain text.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+              example: session title is longer than 80 characters
+        "500":
+          description: Adapter failed to create the session.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    get:
+      operationId: getSession
+      summary: One live session, if the id is still in this process.
+      responses:
+        "200":
+          description: Session row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+    delete:
+      operationId: deleteSession
+      summary: Remove a live session. 204. Later turn is 404.
+      description: |
+        Cleanup when no turn needs aborting. After cancel, this is 404.
+      responses:
+        "204":
+          description: Removed.
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}/turn:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    post:
+      operationId: executeTurn
+      summary: Blocking turn. Body field is input.
+      description: Calls the model configured on the server process.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteTurnRequest"
+            example:
+              input: Reply with the single word pong.
+      responses:
+        "200":
+          description: Turn finished.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TurnResponse"
+        "404":
+          description: Session not found (including after cancel or delete).
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+        "409":
+          description: In-flight turn was cancelled.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+              example: "Session turn cancelled: <id>"
+        "422":
+          description: JSON body missing input. message is not accepted.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+        "500":
+          description: Provider or harness error.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}/task:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    post:
+      operationId: executeTask
+      summary: Blocking task. Body field is task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteTaskRequest"
+      responses:
+        "200":
+          description: Task finished.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+        "409":
+          description: Task was cancelled.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+        "422":
+          description: JSON body missing task.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    get:
+      operationId: sessionEvents
+      summary: SSE stream of harness events for one session.
+      description: |
+        Open this before POST turn. event: names and JSON type differ
+        (turn.start vs turn_start). Keep-alive comment about every 15s.
+        See docs/sessions/sessions.md.
+      responses:
+        "200":
+          description: text/event-stream until the client disconnects or the session is removed.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: turn.start
+                data: {"version":"1","type":"turn_start","payload":{"type":"turn_start","turn_id":1,"input":"...","timestamp":"..."}}
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    post:
+      operationId: cancelSession
+      summary: Cancel an in-flight turn and remove the session.
+      description: |
+        Same handler as /stop. Empty body. Process-wide operator power
+        when auth is off. Next turn on the id is 404. Idle time-to-idle
+        (3600s from the last cache insert or get, same timer for an empty
+        session and a session with turns) is not this teardown. Listing
+        resets that timer. See docs/sessions/sessions.md.
+      responses:
+        "200":
+          description: Session removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelSessionResponse"
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"
+  /api/agent/sessions/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/sessionId"
+    post:
+      operationId: stopSession
+      summary: Alias of cancel.
+      responses:
+        "200":
+          description: Session removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelSessionResponse"
+        "404":
+          description: Session not found.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainError"

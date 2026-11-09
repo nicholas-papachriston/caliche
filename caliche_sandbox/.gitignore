@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.env
+.caliche/
+*.pem
+.DS_Store
+cargo-flamegraph.trace
+flamegraph.svg
+api-profile-*.svg
+*.trace
+github/

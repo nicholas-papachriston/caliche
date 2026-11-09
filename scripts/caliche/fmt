@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+cmd="${1:-}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  cat <<'EOF'
+Usage: ./caliche fmt [--check|check]
+
+  (default)  Format Rust code
+  --check    Check Rust and Python formatting
+EOF
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  "" )
+    caliche_run rust fmt
+    ;;
+  --check | check)
+    caliche_run rust fmt-check
+    caliche_run py format-check
+    ;;
+  *)
+    die "unknown fmt option: ${cmd} (try: ./caliche fmt help)"
+    ;;
+esac

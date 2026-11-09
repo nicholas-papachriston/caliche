@@ -1,0 +1,34 @@
+# Project Clippy policy (companion to `[workspace.lints]` in Cargo.toml).
+# Docs: https://doc.rust-lang.org/clippy/configuration.html
+
+# Keep tests ergonomic; production paths still get unwrap/expect/panic/print lints.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+allow-panic-in-tests = true
+
+# Prefer intentional `#[expect(..., reason = "...")]` for production exceptions.
+# Disallowed lists catch semantic footguns that plain groups miss.
+
+disallowed-methods = [
+  { path = "std::env::set_var", reason = "process-global env mutation races across tests/tasks; prefer scoped config injection" },
+  { path = "std::env::remove_var", reason = "process-global env mutation races across tests/tasks; prefer scoped config injection" },
+  { path = "std::thread::sleep", reason = "blocks the OS thread; prefer tokio::time::sleep in async code" },
+  { path = "futures::executor::block_on", reason = "nested runtimes / blocking in async contexts; prefer .await or spawn_blocking" },
+]
+
+# Prefer `parking_lot` / `tokio::sync` via review; do not blanket-ban `std::sync::*`
+# (the tree still uses both intentionally). Add paths here when a rename is finished.
+
+disallowed-types = []
+
+disallowed-macros = []
+
+# Names that usually indicate unfinished or opaque API surface.
+disallowed-names = ["foo", "bar", "baz", "quux", "fixme", "tbd"]
+
+# Clippy `cognitive_complexity` is nursery. It is not the merge gate.
+# This value applies only when that lint is enabled (for example clippy-strict).
+# Function-level audits use `./caliche rust complexity` (lizard McCabe CCN 20).
+cognitive-complexity-threshold = 25

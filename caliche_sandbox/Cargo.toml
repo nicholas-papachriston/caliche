@@ -1,0 +1,79 @@
+[package]
+name = "caliche_sandbox"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Trait-based sandbox isolation for agent tool execution"
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+default = []
+all = ["sandbox-linux", "sandbox-macos", "sandbox-windows", "sandbox-wasm"]
+agentfs = ["dep:agentfs-sdk"]
+docker = ["dep:bollard", "dep:bytes", "dep:tar"]
+sandbox-linux = ["dep:landlock"]
+# Deny TCP bind and connect on Landlock ABI 4+ (kernel 6.7+). No port allow rules.
+# HostOnly is still refused on Linux when this feature is off.
+landlock-net = ["sandbox-linux"]
+sandbox-macos = []
+sandbox-windows = []
+sandbox-wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+code-mode = ["sandbox-wasm", "dep:reqwest"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# In-repo: the shared `.git` name and patch rules.
+caliche_policy = { path = "../crates/caliche_policy" }
+# Workspace
+anyhow.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
+
+# Optional
+agentfs-sdk = { version = "0.6", optional = true }
+bollard = { version = "0.20", optional = true }
+bytes = { workspace = true, optional = true }
+tar = { version = "0.4", optional = true }
+wasmtime = { version = "43", optional = true }
+wasmtime-wasi = { version = "43", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+landlock = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Kernel",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+libc = "0.2"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche test [all|rust|py|js|quick|full]
+
+  all     Rust + Python + JS tests (default)
+  rust    Root, CLI, server, sandbox, embedded web smoke, and dripstone
+  py      Python tests via uv/pytest
+  js      JavaScript tests via bun
+  quick   Root crate only (cargo test --lib --features full, needs ONNX), plus Python and JavaScript
+  full    Root crate tests with --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle (macOS; no CUDA; no ONNX runtime download), plus Python and JavaScript
+
+Python and JS tests load the native bindings, so each runs its
+build-dev step first.
+EOF
+}
+
+# Run SDK tests against freshly built dev bindings.
+sdk_test() {
+  local sdk="$1"
+  shift
+  caliche_run "$sdk" build-dev
+  caliche_run "$sdk" test "$@"
+}
+
+cmd="${1:-all}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  all)
+    caliche_run rust test
+    sdk_test py
+    sdk_test js
+    ;;
+  rust)
+    caliche_run rust test "$@"
+    ;;
+  py | js)
+    sdk_test "$cmd" "$@"
+    ;;
+  quick)
+    caliche_run rust test-lib
+    sdk_test js
+    sdk_test py
+    ;;
+  full)
+    caliche_run rust test-features
+    sdk_test js
+    sdk_test py
+    ;;
+  *)
+    die "unknown test subcommand: ${cmd} (try: ./caliche test help)"
+    ;;
+esac

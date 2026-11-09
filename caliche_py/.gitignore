@@ -1,0 +1,33 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+dist/
+build/
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.dylib
+
+# Rust
+/target/
+Cargo.lock
+
+# uv
+.venv/
+.python-version.bak
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Environment
+.env
+.env.*

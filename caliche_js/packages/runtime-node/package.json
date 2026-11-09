@@ -1,0 +1,46 @@
+{
+  "name": "@caliche/runtime-node",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Native runtime loader for Caliche Node bindings",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholas-papachriston/caliche"
+  },
+  "homepage": "https://github.com/nicholas-papachriston/caliche",
+  "author": "Nicholas Papachriston <nicholas@papachriston.com>",
+  "files": [
+    "index.js",
+    "index.cjs",
+    "index.d.ts",
+    "native-loader.cjs",
+    "native-loader.d.ts"
+  ],
+  "type": "module",
+  "sideEffects": true,
+  "main": "./index.cjs",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.cjs",
+      "default": "./index.js"
+    }
+  },
+  "optionalDependencies": {
+    "@caliche/runtime-node-darwin-arm64": "workspace:*",
+    "@caliche/runtime-node-darwin-x64": "workspace:*",
+    "@caliche/runtime-node-linux-arm64-gnu": "workspace:*",
+    "@caliche/runtime-node-linux-arm64-musl": "workspace:*",
+    "@caliche/runtime-node-linux-x64-gnu": "workspace:*",
+    "@caliche/runtime-node-linux-x64-musl": "workspace:*",
+    "@caliche/runtime-node-win32-arm64-msvc": "workspace:*",
+    "@caliche/runtime-node-win32-x64-msvc": "workspace:*"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

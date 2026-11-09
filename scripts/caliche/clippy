@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+cmd="${1:-}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  cat <<'EOF'
+Usage: ./caliche clippy [--strict|strict]
+
+  (default)  Clippy with -D warnings on root, CLI, and API
+  --strict   Opt-in all/pedantic/nursery/cargo
+EOF
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  "")
+    caliche_run rust clippy
+    ;;
+  --strict | strict)
+    caliche_run rust clippy-strict
+    ;;
+  *)
+    die "unknown clippy option: ${cmd} (try: ./caliche clippy help)"
+    ;;
+esac

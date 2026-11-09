@@ -1,0 +1,576 @@
+//! Path resolution and sandbox root enforcement for native backends.
+
+use crate::config::SandboxConfig;
+use anyhow::{Context, Result};
+use std::ffi::OsString;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+mod windows;
+
+/// Resolve a tool-relative or absolute path against the sandbox workspace.
+///
+/// # Errors
+///
+/// Returns an error when `path` contains an interior NUL.
+pub fn resolve_sandbox_path(workspace: &Path, path: &str) -> Result<PathBuf> {
+    reject_nul(path)?;
+    let raw = PathBuf::from(path);
+    let resolved = if raw.is_absolute() {
+        raw
+    } else {
+        workspace.join(raw)
+    };
+    Ok(resolved)
+}
+
+fn reject_nul(path: &str) -> Result<()> {
+    if path.contains('\0') {
+        anyhow::bail!("path contains interior NUL");
+    }
+    Ok(())
+}
+
+/// Collapse `.` / `..` without touching the filesystem so traversal checks work
+/// for paths that do not exist yet or when intermediate parents are missing.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if matches!(out.components().next(), Some(std::path::Component::RootDir)) {
+                    // Absolute path: pop the last normal segment when possible.
+                    if out.components().count() > 1 {
+                        out.pop();
+                    }
+                } else if !out.as_os_str().is_empty() {
+                    out.pop();
+                }
+            }
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::Normal(_) => out.push(component.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Canonicalize the longest existing prefix, then append remaining components.
+///
+/// `Path::canonicalize` only succeeds when every component exists. A write to
+/// `link/newfile` where `link` is a symlink would otherwise fall back to the
+/// lexical path and follow the symlink at `open(2)` time.
+fn resolve_for_confinement(path: &Path) -> PathBuf {
+    let lexical = lexical_normalize(path);
+    if lexical.as_os_str().is_empty() {
+        return lexical;
+    }
+    if let Ok(canonical) = lexical.canonicalize() {
+        return canonical;
+    }
+
+    let mut rest: Vec<OsString> = Vec::new();
+    let mut cursor = lexical.clone();
+    while let Some(name) = cursor.file_name() {
+        rest.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        cursor = parent.to_path_buf();
+        if let Ok(canonical) = cursor.canonicalize() {
+            let mut out = canonical;
+            for component in rest.into_iter().rev() {
+                out.push(component);
+            }
+            return lexical_normalize(&out);
+        }
+    }
+    lexical
+}
+
+fn normalize_for_compare(path: &Path) -> PathBuf {
+    resolve_for_confinement(path)
+}
+
+/// Returns true when `candidate` is the same as or nested under `root`.
+#[must_use]
+pub fn path_within_root(candidate: &Path, root: &Path) -> bool {
+    let candidate = normalize_for_compare(candidate);
+    let root = normalize_for_compare(root);
+    candidate == root || candidate.starts_with(&root)
+}
+
+fn read_allowed_roots(workspace: &Path, config: &SandboxConfig) -> Vec<PathBuf> {
+    let mut roots = vec![workspace.to_path_buf()];
+    for root in &config.writable_roots {
+        if !roots.iter().any(|existing| existing == root) {
+            roots.push(root.clone());
+        }
+    }
+    roots
+}
+
+fn write_allowed_roots(config: &SandboxConfig) -> Vec<PathBuf> {
+    let mut roots = config.writable_roots.clone();
+    if config.tmp_write {
+        for root in crate::config::tmp_writable_roots() {
+            if !roots.iter().any(|existing| existing == &root) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+}
+
+fn path_within_any(candidate: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path_within_root(candidate, root))
+}
+
+/// Validate a read path against workspace and configured roots.
+///
+/// # Errors
+///
+/// Returns an error when `path` is outside the workspace and configured roots.
+pub fn validate_read_path(workspace: &Path, config: &SandboxConfig, path: &str) -> Result<PathBuf> {
+    let resolved = resolve_for_confinement(&resolve_sandbox_path(workspace, path)?);
+    let allowed = read_allowed_roots(workspace, config);
+    if path_within_any(&resolved, &allowed) {
+        Ok(resolved)
+    } else {
+        anyhow::bail!("read path '{path}' is outside sandbox-allowed directories")
+    }
+}
+
+/// Validate a write path against configured writable roots.
+///
+/// # Errors
+///
+/// Returns an error when writes are disabled or `path` is outside the
+/// configured writable roots.
+pub fn validate_write_path(
+    workspace: &Path,
+    config: &SandboxConfig,
+    path: &str,
+) -> Result<PathBuf> {
+    let resolved = resolve_for_confinement(&resolve_sandbox_path(workspace, path)?);
+    let allowed = write_allowed_roots(config);
+    if allowed.is_empty() {
+        anyhow::bail!("sandbox policy does not allow file writes to '{path}'");
+    }
+    if !path_within_any(&resolved, &allowed) {
+        anyhow::bail!("write path '{path}' is outside sandbox writable directories");
+    }
+    if in_workspace_git_dir(workspace, &resolved) {
+        anyhow::bail!("write path '{path}' is in the repository's .git directory");
+    }
+    Ok(resolved)
+}
+
+pub use caliche_policy::{
+    COMMONDIR_FILE, CONFIG_FILE, GIT_DIR_NAME, GITFILE_PREFIX, GITLINK_MODE, HEAD_FILE, INDEX_FILE,
+    MODULES_DIR, OBJECTS_DIR, REFS_DIR, SHA256_OBJECT_FORMAT, SPLIT_INDEX_EXTENSION, is_git_dir,
+    is_git_dir_name,
+};
+
+/// How a Linux instance keeps workspace git metadata read-only. The label
+/// is recorded in the trace and named by tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitGuardMode {
+    /// No git metadata to guard, or no writable root covers it.
+    Off,
+    /// The root `.git` is the only metadata; a read-only clone of it is
+    /// mounted over it in a new mount namespace.
+    MountNamespace,
+    /// The workspace root and each directory leading to git metadata stay
+    /// read-only; every other entry is granted.
+    TopLevelGrants,
+}
+
+impl GitGuardMode {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::MountNamespace => "mount_namespace",
+            Self::TopLevelGrants => "top_level_grants",
+        }
+    }
+}
+
+/// Errors a backend returns when it cannot keep workspace git metadata
+/// read-only and so refuses to run.
+pub mod git_refusal {
+    use std::path::Path;
+
+    /// A writable root contains the workspace from outside it, so no grant
+    /// can leave the workspace's git metadata out.
+    pub const WRITABLE_ROOT_CONTAINS_WORKSPACE: &str = "a writable root contains the workspace and git metadata cannot be kept read-only in it; refusing to run";
+
+    /// The index is split, and the shared part is not read.
+    pub const SPLIT_INDEX: &str =
+        "split index is not supported; run `git update-index --no-split-index` in the workspace";
+
+    /// The Docker backend binds the root `.git` read-only, which needs one.
+    pub const DOCKER_NO_ROOT_GIT: &str = "the Docker backend cannot stop a .git from being created in a workspace without one; refusing to run";
+
+    #[must_use]
+    pub fn overlapping_root(root: &Path, target: &Path) -> String {
+        format!(
+            "writable root {} overlaps git metadata at {}; refusing to run",
+            root.display(),
+            target.display()
+        )
+    }
+
+    #[must_use]
+    pub fn docker_nested(nested: &str) -> String {
+        format!(
+            "the Docker backend cannot keep nested git metadata read-only ({nested}); refusing to run"
+        )
+    }
+
+    /// A git dir or common dir inside the workspace but outside its git
+    /// metadata, where the sandbox can write it.
+    #[must_use]
+    pub fn git_dir_in_workspace(dir: &Path) -> String {
+        format!(
+            "git dir {} is inside the workspace outside its .git, so the sandbox could write it; refusing to run",
+            dir.display()
+        )
+    }
+
+    #[must_use]
+    pub fn git_dir_under_writable_root(dir: &Path, root: &Path) -> String {
+        format!(
+            "git dir {} is under writable root {}; refusing to run",
+            dir.display(),
+            root.display()
+        )
+    }
+
+    /// A Docker mount the container can write holds the workspace, so the
+    /// container could move the workspace `.git` aside through it.
+    #[must_use]
+    pub fn docker_mount_contains_workspace(mount: &Path) -> String {
+        format!(
+            "writable mount {} contains the workspace, so its git metadata cannot be kept read-only; refusing to run",
+            mount.display()
+        )
+    }
+
+    /// A directory on the path to git metadata is a symlink, which the
+    /// sandbox could retarget.
+    #[must_use]
+    pub fn symlink_leads_to_git(path: &Path) -> String {
+        format!(
+            "{} is a symlink on the path to git metadata; refusing to run",
+            path.display()
+        )
+    }
+
+    /// An index records a submodule path with a component that is not a
+    /// plain name (`..`, `.`, or a root).
+    #[must_use]
+    pub fn path_not_plain(path: &Path) -> String {
+        format!(
+            "git metadata path {} is not plain; refusing to run",
+            path.display()
+        )
+    }
+
+    /// A `.git` on the way up from the workspace that is neither a gitfile
+    /// naming a git dir nor a git dir. Git would skip it or fail on it.
+    #[must_use]
+    pub fn invalid_git_entry(path: &Path) -> String {
+        format!(
+            "{} is not a valid gitfile or git dir; refusing to run",
+            path.display()
+        )
+    }
+
+    /// A `HEAD` symlink to a missing `refs/…` path. Git accepts that for an
+    /// unborn branch. The check cannot resolve the link.
+    #[must_use]
+    pub fn dangling_head(path: &Path) -> String {
+        format!(
+            "{} is a dangling HEAD symlink to an unborn branch; refusing to run",
+            path.display()
+        )
+    }
+
+    /// A `HEAD` in the workspace or one of its parents, in a directory that
+    /// is not a git dir. A command could add the rest of a repository there.
+    #[must_use]
+    pub fn stray_head(path: &Path) -> String {
+        format!(
+            "{} is outside any git dir and could be completed into a repository; refusing to run",
+            path.display()
+        )
+    }
+
+    /// A Linux workspace below the root of the repository that holds it.
+    /// The guard reads only the workspace's own index, so it would miss
+    /// the enclosing repository's submodules inside the workspace.
+    #[must_use]
+    pub fn enclosing_repository(workspace: &Path, repo: &Path) -> String {
+        format!(
+            "{} is inside the git repository at {}; on Linux a writable workspace must be the repository root, so open {} instead",
+            workspace.display(),
+            repo.display(),
+            repo.display()
+        )
+    }
+
+    /// A directory under a writable root that the nested git scan cannot
+    /// list, so a `.git` inside it could not be guarded.
+    #[must_use]
+    pub fn unlistable_dir(path: &Path) -> String {
+        format!(
+            "{} cannot be listed, so git metadata inside it cannot be kept read-only; refusing to run",
+            path.display()
+        )
+    }
+
+    #[must_use]
+    pub fn scan_too_deep(path: &Path, limit: usize) -> String {
+        format!(
+            "{} is more than {limit} directories below its writable root, past the nested git scan limit; refusing to run",
+            path.display()
+        )
+    }
+
+    #[must_use]
+    pub fn scan_too_many_entries(root: &Path, limit: usize) -> String {
+        format!(
+            "writable root {} has more than {limit} entries in all, past the nested git scan limit; refusing to run",
+            root.display()
+        )
+    }
+
+    #[must_use]
+    pub fn scan_too_slow(root: &Path, limit: std::time::Duration) -> String {
+        format!(
+            "the nested git scan of writable root {} took more than {}s, past its time limit; refusing to run",
+            root.display(),
+            limit.as_secs()
+        )
+    }
+
+    #[must_use]
+    pub fn submodules_too_deep(path: &Path) -> String {
+        format!(
+            "submodules nest too deep below {}; refusing to run",
+            path.display()
+        )
+    }
+}
+
+/// Whether `resolved` is inside `workspace` and has a `.git` component (any
+/// case, any depth) below it. Host-side `git` runs commands named in
+/// repository config and hooks, so the sandbox never writes there.
+#[must_use]
+pub fn in_workspace_git_dir(workspace: &Path, resolved: &Path) -> bool {
+    let workspace = normalize_for_compare(workspace);
+    let resolved = normalize_for_compare(resolved);
+    resolved.strip_prefix(&workspace).is_ok_and(|below| {
+        below
+            .components()
+            .any(|part| part.as_os_str().to_str().is_some_and(is_git_dir_name))
+    })
+}
+
+/// Read file bytes after path validation.
+///
+/// The final open uses `O_NOFOLLOW` on Unix so a last-component symlink
+/// created after validation cannot redirect the read. On Windows every
+/// component below the allowed root is opened without following reparse
+/// points and stays open until the file is open, so a symlink, junction, or
+/// other reparse point anywhere below the root is refused.
+///
+/// # Errors
+///
+/// Returns an error when path validation fails, the path is a symlink, or the
+/// file cannot be read.
+pub fn read_validated_file(
+    workspace: &Path,
+    config: &SandboxConfig,
+    path: &str,
+) -> Result<Vec<u8>> {
+    let resolved = validate_read_path(workspace, config, path)?;
+    let mut file = open_validated_read(&resolved, &read_allowed_roots(workspace, config))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read '{}'", resolved.display()))?;
+    Ok(bytes)
+}
+
+/// Write file bytes after path validation.
+///
+/// Parent directories are created without following symlinks. The final open
+/// uses `O_NOFOLLOW` on Unix so a last-component swap cannot escape. On
+/// Windows every component below the writable root is opened or created
+/// without following reparse points, as for [`read_validated_file`].
+///
+/// # Errors
+///
+/// Returns an error when path validation, parent directory creation, or the
+/// file write fails.
+pub fn write_validated_file(
+    workspace: &Path,
+    config: &SandboxConfig,
+    path: &str,
+    content: &[u8],
+) -> Result<()> {
+    let resolved = validate_write_path(workspace, config, path)?;
+    let mut file = open_validated_write(&resolved, &write_allowed_roots(config))?;
+    file.write_all(content)
+        .with_context(|| format!("write '{}'", resolved.display()))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_validated_read(resolved: &Path, _roots: &[PathBuf]) -> Result<File> {
+    reject_existing_symlink(resolved)?;
+    open_nofollow_read(resolved).with_context(|| format!("read '{}'", resolved.display()))
+}
+
+#[cfg(not(windows))]
+fn open_validated_write(resolved: &Path, _roots: &[PathBuf]) -> Result<File> {
+    if let Some(parent) = resolved.parent() {
+        create_dir_all_nofollow(parent)
+            .with_context(|| format!("create parent dirs for '{}'", resolved.display()))?;
+    }
+    reject_existing_symlink(resolved)?;
+    open_nofollow_write(resolved).with_context(|| format!("write '{}'", resolved.display()))
+}
+
+#[cfg(windows)]
+fn open_validated_read(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
+    let root = containing_root(resolved, roots)?;
+    windows::open_beneath(&root, resolved, windows::Access::Read)
+        .with_context(|| format!("read '{}'", resolved.display()))
+}
+
+#[cfg(windows)]
+fn open_validated_write(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
+    let root = containing_root(resolved, roots)?;
+    windows::open_beneath(&root, resolved, windows::Access::Write)
+        .with_context(|| format!("write '{}'", resolved.display()))
+}
+
+/// The canonical form of the first allowed root that contains `resolved`.
+#[cfg(windows)]
+fn containing_root(resolved: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
+    roots
+        .iter()
+        .map(|root| normalize_for_compare(root))
+        .find(|root| resolved.starts_with(root))
+        .with_context(|| {
+            format!(
+                "'{}' is outside sandbox-allowed directories",
+                resolved.display()
+            )
+        })
+}
+
+#[cfg(not(windows))]
+fn reject_existing_symlink(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            anyhow::bail!("refusing to follow symlink at '{}'", path.display());
+        }
+        Ok(_) | Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(windows))]
+fn create_dir_all_nofollow(dir: &Path) -> Result<()> {
+    if dir.as_os_str().is_empty() || existing_dir_is_usable(dir)? {
+        return Ok(());
+    }
+    if let Some(parent) = dir.parent()
+        && parent != dir
+        && !parent.as_os_str().is_empty()
+    {
+        create_dir_all_nofollow(parent)?;
+    }
+    create_one_dir(dir)
+}
+
+#[cfg(not(windows))]
+fn existing_dir_is_usable(dir: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            anyhow::bail!("refusing to follow symlink directory '{}'", dir.display());
+        }
+        Ok(meta) if meta.is_dir() => Ok(true),
+        Ok(_) => anyhow::bail!("parent path '{}' is not a directory", dir.display()),
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("stat '{}'", dir.display()))
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(not(windows))]
+fn create_one_dir(dir: &Path) -> Result<()> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => accept_created_dir(dir),
+        Err(err) => Err(err).with_context(|| format!("mkdir '{}'", dir.display())),
+    }
+}
+
+#[cfg(not(windows))]
+fn accept_created_dir(dir: &Path) -> Result<()> {
+    let meta =
+        std::fs::symlink_metadata(dir).with_context(|| format!("stat '{}'", dir.display()))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("refusing to follow symlink directory '{}'", dir.display());
+    }
+    if meta.is_dir() {
+        Ok(())
+    } else {
+        anyhow::bail!("parent path '{}' is not a directory", dir.display())
+    }
+}
+
+#[cfg(unix)]
+fn open_nofollow_read(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    File::options()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn open_nofollow_write(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_nofollow_read(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_nofollow_write(path: &Path) -> std::io::Result<File> {
+    File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "baseUrl": ".",
+    // Effect 4 ships types through package.json exports, which Node resolution cannot see.
+    "paths": {
+      "effect": ["node_modules/effect/dist/index.d.ts"],
+      "effect/*": ["node_modules/effect/dist/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "target", "examples", "tests"]
+}

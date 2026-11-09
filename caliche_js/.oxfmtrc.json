@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "useTabs": false,
+  "tabWidth": 2,
+  "printWidth": 100,
+  "singleQuote": false,
+  "jsxSingleQuote": false,
+  "quoteProps": "as-needed",
+  "trailingComma": "es5",
+  "semi": true,
+  "arrowParens": "always",
+  "bracketSameLine": false,
+  "bracketSpacing": true,
+  "singleAttributePerLine": false,
+  "ignorePatterns": [
+    "**/node_modules",
+    "**/dist",
+    "index.js",
+    "index.d.ts",
+    "packages/runtime-node/native-loader.js",
+    "packages/runtime-node/native-loader.cjs",
+    "packages/runtime-node/native-loader.d.ts",
+    "**/*.node"
+  ]
+}

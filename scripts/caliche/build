@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche build [release|dev|preflight]
+
+  release     Release artifacts (LTO + wasm + wheels). Default.
+  dev         Fast local debug/agent build
+  preflight   Check tools and wasm32 before a long build
+EOF
+}
+
+preflight() {
+  step "Running build preflight checks"
+  need_cmd cargo
+  need_cmd bun
+  need_cmd uv
+  if ! command -v dx >/dev/null 2>&1; then
+    die "missing command: dx (dioxus-cli)"
+  fi
+  caliche_require_wasm_opt
+  if [[ ! -f "${ROOT}/Cargo.toml" ]]; then
+    die "Missing Cargo.toml at workspace root"
+  fi
+  if [[ ! -f "${PY_DIR}/pyproject.toml" ]]; then
+    die "Missing Python pyproject.toml in ${PY_DIR}"
+  fi
+  if [[ ! -f "${JS_DIR}/package.json" ]]; then
+    die "Missing JavaScript package.json in ${JS_DIR}"
+  fi
+  if command -v rustup >/dev/null 2>&1; then
+    rustup target add wasm32-unknown-unknown >/dev/null
+  fi
+  sysroot="$(rustc --print sysroot)"
+  if [[ ! -d "${sysroot}/lib/rustlib/wasm32-unknown-unknown" ]]; then
+    printf '%swasm32-unknown-unknown missing from rustc sysroot: %s%s\n' \
+      "${C_RED}" "$sysroot" "${C_RESET}" >&2
+    printf '%swhich rustc: %s%s\n' "${C_YELLOW}" "$(command -v rustc)" "${C_RESET}" >&2
+    printf '%sInstall: rustup target add wasm32-unknown-unknown%s\n' \
+      "${C_YELLOW}" "${C_RESET}" >&2
+    printf '%sIf inside nix develop, prefer rustup: export PATH="$HOME/.cargo/bin:$PATH"%s\n' \
+      "${C_YELLOW}" "${C_RESET}" >&2
+    exit 1
+  fi
+  dx_ver="$(dx --version 2>/dev/null | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*.*/\1/p' | sed -n '1p')"
+  dioxus_ver="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | sed -n 's/.*"name":"dioxus","version":"\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*".*/\1/p' | sed -n '1p')"
+  if [[ -z "$dioxus_ver" ]]; then
+    dioxus_ver="$(grep -E '^\s*dioxus\s*=' "${UI_DIR}/Cargo.toml" | sed -n 's/.*version[[:space:]]*=[[:space:]]*"\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*".*/\1/p' | sed -n '1p')"
+  fi
+  if [[ -n "$dx_ver" && -n "$dioxus_ver" && "$dx_ver" != "$dioxus_ver" ]]; then
+    printf '%sdx %s.x is incompatible with dioxus %s.x%s\n' \
+      "${C_RED}" "$dx_ver" "$dioxus_ver" "${C_RESET}" >&2
+    printf '%sInstall matching CLI: cargo install dioxus-cli --version %s --locked --force%s\n' \
+      "${C_YELLOW}" "$dioxus_ver" "${C_RESET}" >&2
+    exit 1
+  fi
+  ok "Build preflight passed"
+}
+
+cmd="${1:-release}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  release | "")
+    preflight
+    caliche_run rust build
+    caliche_run rust build-composable
+    caliche_run py build
+    caliche_run py build-composable
+    caliche_run js build
+    caliche_run js build-release-check
+    ;;
+  dev)
+    caliche_run rust build-dev
+    caliche_run py build-dev
+    caliche_run js build-dev
+    ;;
+  preflight)
+    preflight
+    ;;
+  *)
+    die "unknown build subcommand: ${cmd} (try: ./caliche build help)"
+    ;;
+esac

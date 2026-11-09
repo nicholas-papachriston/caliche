@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if caliche_want_help "${1:-}"; then
+  cat <<'EOF'
+Usage: ./caliche lint
+
+  Format and fix Rust, Python, and JavaScript
+EOF
+  exit 0
+fi
+
+step "Running unified lint and format fix for all projects"
+step "Formatting and fixing Rust code (root)"
+cargo fmt && cargo fix --lib --allow-dirty --features full && cargo clippy --fix --lib --allow-dirty --features full
+step "Formatting and fixing Rust code (${CLI_DIR})"
+(
+  cd "$CLI_DIR"
+  cargo fmt && cargo fix --lib --allow-dirty && cargo clippy --fix --lib --allow-dirty
+)
+step "Formatting and fixing Rust code (${API_DIR})"
+(
+  cd "$API_DIR"
+  cargo fmt && cargo fix --lib --allow-dirty && cargo clippy --fix --lib --allow-dirty
+)
+step "Formatting and fixing Rust code (${JS_DIR})"
+(
+  cd "$JS_DIR"
+  cargo fmt && cargo fix --lib --allow-dirty && cargo clippy --fix --lib --allow-dirty
+)
+step "Formatting and fixing Rust code (${PY_DIR})"
+(
+  cd "$PY_DIR"
+  cargo fmt && cargo fix --lib --allow-dirty && cargo clippy --fix --lib --allow-dirty
+)
+step "Formatting and fixing Rust code (${DRIPSTONE_DIR})"
+(
+  cd "$DRIPSTONE_DIR"
+  cargo fmt && cargo fix --lib --allow-dirty --features full && cargo clippy --fix --lib --allow-dirty --features full
+)
+step "Formatting and fixing Python code"
+(
+  cd "$PY_DIR"
+  uv run ruff format python/ packages/*/python tests/ && uv run ruff check --fix python/ packages/*/python tests/
+)
+step "Formatting and fixing TypeScript/JavaScript code (${JS_DIR})"
+(
+  cd "$JS_DIR"
+  bun run lint:fix
+)
+ok "Linting and formatting complete"

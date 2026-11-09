@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+printf '%sCaliche version information%s\n' "${C_BLUE}" "${C_RESET}"
+printf 'Rust:       %s\n' "$(toml_version "${ROOT}/Cargo.toml")"
+printf 'Python:     %s\n' "$(toml_version "${PY_DIR}/pyproject.toml")"
+printf 'JavaScript: %s\n' "$(npm_version "${JS_DIR}/package.json")"

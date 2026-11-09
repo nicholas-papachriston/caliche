@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+cmd="${1:-smoke}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  cat <<'EOF'
+Usage: ./caliche repl [smoke]
+
+  smoke    Run the deterministic CLI REPL smoke test
+EOF
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  smoke)
+    step "Running REPL smoke test"
+    ./caliche_cli/repl_smoke.py --binary ./target/debug/caliche --transcript-out /tmp/caliche_repl_smoke.txt
+    ok "REPL smoke test passed"
+    step "Transcript: /tmp/caliche_repl_smoke.txt"
+    ;;
+  *)
+    die "unknown repl subcommand: ${cmd} (try: ./caliche repl help)"
+    ;;
+esac

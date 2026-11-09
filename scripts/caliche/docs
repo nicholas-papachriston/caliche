@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if caliche_want_help "${1:-}"; then
+  cat <<'EOF'
+Usage: ./caliche docs
+
+  Build Rust documentation
+EOF
+  exit 0
+fi
+
+caliche_run rust doc

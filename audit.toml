@@ -1,0 +1,17 @@
+[advisories]
+ignore = [] # No advisories are ignored by default
+severity_threshold = "low" # Show all advisories
+
+[output]
+format = "terminal" # Show full advisory details in terminal format
+quiet = false # Show progress
+show_tree = true # Show dependency trees
+
+[database]
+path = "~/.cargo/advisory-db" # Path to the advisory database
+fetch = true # Fetch updates to the advisory database
+stale = false # Error on stale database
+
+[yanked]
+enabled = true # Check for yanked crates
+update_index = true # Update the crates.io index when checking for yanked crates

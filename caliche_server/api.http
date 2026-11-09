@@ -1,0 +1,924 @@
+### Caliche API Examples
+### Base URL - Update this if running on a different host/port
+@baseUrl = http://localhost:3000
+@provider = anthropic
+@model = openai/gpt-oss-120b 
+
+###############################################################################
+# BASIC ENDPOINTS
+###############################################################################
+
+### Health Check
+GET {{baseUrl}}/health
+
+### List Available Tools
+GET {{baseUrl}}/api/tools
+
+### List Available Models for "{{provider}}"
+GET {{baseUrl}}/api/models?provider={{provider}}
+
+###############################################################################
+# CHAT ENDPOINTS
+###############################################################################
+
+### Basic Chat
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "What is 2 + 2?",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Chat with Specific Tools
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Calculate 123 * 456",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["calculator"]
+}
+
+### Chat with Multiple Tools
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Read the README.md file and echo it back",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["fs"]
+}
+
+### Chat with File Reading
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "What's in the README.md file?",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Chat with Directory Listing
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "List the files in the current directory",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Chat with URL Fetching
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Fetch the content from https://example.com and summarize it",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Advanced Calculator Operations
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Calculate 2 to the power of 10, and then find the square root of 144",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["calculator"]
+}
+
+### Complex Multi-Step Query
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Read the README file, then fetch https://example.com, and tell me what both contain",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+###############################################################################
+# STREAMING CHAT
+###############################################################################
+
+### Streaming Chat (Server-Sent Events)
+POST {{baseUrl}}/api/chat/stream
+Content-Type: application/json
+
+{
+  "message": "Explain quantum computing in simple terms",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Streaming Chat with Tools
+POST {{baseUrl}}/api/chat/stream
+Content-Type: application/json
+
+{
+  "message": "Calculate 123 * 456 and read the README file",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["calculator", "fs"]
+}
+
+### Streaming with Code Execution
+POST {{baseUrl}}/api/chat/stream
+Content-Type: application/json
+
+{
+  "message": "Use Python to calculate the sum of all numbers from 1 to 1000, then explain the formula",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+###############################################################################
+# PROCESS DOCUMENT TOOL
+###############################################################################
+
+### Extract Text from Image
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Extract all the text from receipt.png",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document"]
+}
+
+### Extract Text from PDF
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Read the contents of report.pdf and summarize it",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document"]
+}
+
+### Get Image Metadata
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "What are the dimensions and file size of logo.jpg?",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document"]
+}
+
+### Analyze Receipt
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Extract the prices from receipt.png and calculate the total with 8% tax",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document", "calculator"]
+}
+
+###############################################################################
+# S3 SUPPORT
+###############################################################################
+
+### Read File from S3
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Read the contents of s3://my-bucket/documents/report.txt",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["fs"]
+}
+
+### Process Image from S3
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Extract all text from s3://my-bucket/receipts/receipt-2024.png",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document"]
+}
+
+### Analyze PDF from S3
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Summarize the contents of s3://my-bucket/contracts/agreement.pdf",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["process_document"]
+}
+
+###############################################################################
+# RAG (RETRIEVAL AUGMENTED GENERATION)
+###############################################################################
+#
+# The RAG tool provides advanced embedding and retrieval capabilities.
+# Note: Requires OPENAI_API_KEY or BEDROCK_EMBEDDINGS_ENABLED for embeddings.
+#
+# OPERATIONS:
+# - 'index'          - Index a single document with doc_id
+# - 'bulk_index'     - Efficiently index multiple documents at once
+# - 'query'          - Basic semantic search
+# - 'advanced_query' - Search with diversity reranking and filtering
+# - 'stats'          - View indexed document statistics
+# - 'clear'          - Remove all indexed documents
+#
+###############################################################################
+
+### Index a Document
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool to index this document with doc_id 'rust_intro': Rust is a systems programming language that focuses on safety, speed, and concurrency. It achieves memory safety without using garbage collection.",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+### Query Indexed Documents
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool to query: 'What language is best for memory safety?'. Then summarize the findings.",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+### Bulk Index Multiple Documents
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool with operation 'bulk_index' to index these documents: [{'doc_id': 'rust_guide', 'content': 'Rust provides memory safety without garbage collection through its ownership system.'}, {'doc_id': 'python_guide', 'content': 'Python is dynamically typed and uses garbage collection for memory management.'}]",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+### Advanced Query with Diversity Reranking
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool with operation 'advanced_query' to query 'memory management' with use_diversity=true and top_k=5. This will avoid returning too many similar chunks.",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+### Get RAG Statistics
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool to show statistics about the indexed documents",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+### Clear RAG Cache
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the rag tool to clear all indexed documents",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["semantic_search"]
+}
+
+###############################################################################
+# HTTP REQUEST TOOL
+###############################################################################
+
+### Simple GET Request
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the http tool to make a GET request to https://api.github.com/users/octocat",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["http"]
+}
+
+### GET with Query Parameters
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the http tool to GET https://api.github.com/search/repositories with query params: q=rust&sort=stars&order=desc",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["http"]
+}
+
+### POST with JSON Body
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the http tool to POST to https://jsonplaceholder.typicode.com/posts with JSON body: {\"title\": \"Test Post\", \"body\": \"This is a test\", \"userId\": 1}",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["http"]
+}
+
+### PUT Request
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the http tool to PUT to https://jsonplaceholder.typicode.com/posts/1 with JSON body: {\"id\": 1, \"title\": \"Updated Post\", \"body\": \"Updated content\", \"userId\": 1}",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["http"]
+}
+
+### DELETE Request
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the http tool to DELETE https://jsonplaceholder.typicode.com/posts/1",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["http"]
+}
+
+###############################################################################
+# DATA MANIPULATION TOOL
+###############################################################################
+
+### Parse JSON String
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to parse this JSON string: '{\"name\": \"John\", \"age\": 30, \"city\": \"New York\"}'",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+### Parse CSV to JSON
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to parse this CSV: 'Name,Age,City\\nJohn,30,New York\\nJane,25,Los Angeles\\nBob,35,Chicago'",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+### Convert JSON to CSV
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to convert this JSON array to CSV: [{\"name\": \"John\", \"age\": 30}, {\"name\": \"Jane\", \"age\": 25}]",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+### Parse XML to JSON
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to parse this XML: '<root><user><name>John</name><age>30</age></user></root>'",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+### Extract JSON Path
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to extract the value at path '$.users[0].name' from this JSON: {\"users\": [{\"name\": \"John\", \"age\": 30}, {\"name\": \"Jane\", \"age\": 25}]}",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+### Merge JSON Objects
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use the data_manipulation tool to merge these JSON objects: {\"a\": 1, \"b\": 2} and {\"b\": 3, \"c\": 4}",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["data_manipulation"]
+}
+
+###############################################################################
+# CODE EXECUTION TOOL
+###############################################################################
+#
+# The execute_python tool runs Python code in a sandboxed environment:
+#
+# FEATURES:
+# - Python 3 standard library only (no pip packages)
+# - 30-second execution timeout
+# - 1MB output size limit
+# - Isolated subprocess execution
+#
+###############################################################################
+
+### Simple Calculation
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use Python to calculate the factorial of 10",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### Mathematical Operations
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use Python to calculate: 1) The square root of 144, 2) 2 to the power of 10, 3) The sine of pi/2",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### Process List of Numbers
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "I have these test scores: 85, 92, 78, 95, 88, 91. Use Python to calculate the average, median, and find the highest and lowest scores.",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### String Manipulation
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use Python to reverse the string 'Hello World' and count how many vowels it contains",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### Generate Fibonacci Sequence
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use Python to generate the first 20 numbers in the Fibonacci sequence",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### Statistical Analysis
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Use Python to analyze this dataset: [12, 15, 18, 20, 22, 25, 28, 30, 35, 40]. Calculate the mean, median, standard deviation, and variance.",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python"]
+}
+
+### Combined Tools - Calculate and Format
+POST {{baseUrl}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "First use Python to calculate the first 10 prime numbers, then use data_manipulation to convert the result to CSV format",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["execute_python", "data_manipulation"]
+}
+
+###############################################################################
+# REASONING PATTERNS (requires feature: reasoning-patterns)
+###############################################################################
+
+### List Available Reasoning Patterns
+GET {{baseUrl}}/api/reasoning/patterns
+
+### ReAct Pattern - Reasoning and Acting
+POST {{baseUrl}}/api/reasoning/react
+Content-Type: application/json
+
+{
+  "question": "What is the current temperature in San Francisco and how does it compare to New York?",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "max_iterations": 5,
+  "tools": ["perplexity_search", "calculator"]
+}
+
+### Plan-Execute Pattern
+POST {{baseUrl}}/api/reasoning/plan-execute
+Content-Type: application/json
+
+{
+  "goal": "Research the top 3 programming languages in 2024 and compare their popularity",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "tools": ["perplexity_search"]
+}
+
+### Self-Ask Pattern
+POST {{baseUrl}}/api/reasoning/self-ask
+Content-Type: application/json
+
+{
+  "question": "Who is the CEO of the company that makes iPhone?",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "max_depth": 3,
+  "tools": ["perplexity_search"]
+}
+
+### Reflexion Pattern - Self-Reflection
+POST {{baseUrl}}/api/reasoning/reflexion
+Content-Type: application/json
+
+{
+  "task": "Write a function to calculate fibonacci numbers and optimize it",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "max_iterations": 3
+}
+
+### Tree of Thoughts Pattern
+POST {{baseUrl}}/api/reasoning/tree-of-thoughts
+Content-Type: application/json
+
+{
+  "problem": "Design a scalable microservices architecture for an e-commerce platform",
+  "provider": "{{provider}}",
+  "model": "{{model}}",
+  "num_thoughts": 3,
+  "depth": 2
+}
+
+###############################################################################
+# CHAIN WORKFLOWS (requires feature: chains)
+###############################################################################
+
+### LLM Chain - Single Step
+POST {{baseUrl}}/api/chains/llm
+Content-Type: application/json
+
+{
+  "prompt_template": "Summarize this text in one sentence: {text}",
+  "input": {
+    "text": "Artificial Intelligence is transforming industries by automating complex tasks, improving decision-making through data analysis, and enabling new capabilities like natural language understanding and computer vision."
+  },
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Sequential Chain - Multiple Steps
+POST {{baseUrl}}/api/chains/sequential
+Content-Type: application/json
+
+{
+  "chains": [
+    {
+      "name": "summarize",
+      "prompt_template": "Summarize this text: {input}",
+      "output_key": "summary"
+    },
+    {
+      "name": "translate",
+      "prompt_template": "Translate to Spanish: {summary}",
+      "output_key": "translation"
+    }
+  ],
+  "input": {
+    "input": "Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed."
+  },
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Map-Reduce Chain - Process Multiple Items
+POST {{baseUrl}}/api/chains/map-reduce
+Content-Type: application/json
+
+{
+  "map_template": "Summarize this review: {review}",
+  "reduce_template": "Combine these summaries into one overall sentiment: {summaries}",
+  "input": {
+    "reviews": [
+      "This product is amazing! Best purchase ever.",
+      "Not worth the money. Very disappointed.",
+      "Good quality but shipping was slow."
+    ]
+  },
+  "provider": "{{provider}}"
+}
+
+###############################################################################
+# RETRIEVAL CHAINS (requires feature: retrieval-chains)
+###############################################################################
+#
+# Note: Requires OPENAI_API_KEY or BEDROCK_EMBEDDINGS_ENABLED for embeddings.
+#
+###############################################################################
+
+### Retrieval Chain - RAG-based QA
+POST {{baseUrl}}/api/chains/retrieval
+Content-Type: application/json
+
+{
+  "query": "What is Rust's ownership model?",
+  "documents": [
+    "Rust's ownership system ensures memory safety without garbage collection. Each value has a single owner.",
+    "Python uses reference counting and garbage collection for memory management.",
+    "Go provides automatic memory management through garbage collection."
+  ],
+  "top_k": 2,
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Hybrid Search Chain - Combine Vector and Keyword Search
+POST {{baseUrl}}/api/chains/hybrid-search
+Content-Type: application/json
+
+{
+  "query": "memory safety features",
+  "search_mode": "hybrid",
+  "fusion_mode": "weighted",
+  "dense_weight": 0.6,
+  "sparse_weight": 0.4,
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Hybrid Search Chain - Dense + Full-Text with RRF
+POST {{baseUrl}}/api/chains/hybrid-search
+Content-Type: application/json
+
+{
+  "query": "memory safety features",
+  "search_mode": "hybrid_full_text",
+  "fusion_mode": "rrf",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Document Map-Reduce Chain - Process Large Documents
+POST {{baseUrl}}/api/chains/document-map-reduce
+Content-Type: application/json
+
+{
+  "document": "This is a very long document about machine learning. Machine learning is a method of data analysis that automates analytical model building. It is a branch of artificial intelligence based on the idea that systems can learn from data, identify patterns and make decisions with minimal human intervention. Deep learning is a subset of machine learning.",
+  "task": "Summarize the main points about machine learning",
+  "chunk_size": 100,
+  "chunk_overlap": 20,
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+###############################################################################
+# DOCUMENT PROCESSING (requires features: document-loaders, tools-rag)
+###############################################################################
+
+### Split Documents into Chunks
+POST {{baseUrl}}/api/documents/split
+Content-Type: application/json
+
+{
+  "documents": [
+    {
+      "content": "This is a long document that needs to be split into smaller chunks for processing. Each chunk should be manageable for the LLM.",
+      "metadata": {
+        "source": "test.txt"
+      }
+    }
+  ],
+  "chunk_size": 50,
+  "chunk_overlap": 10
+}
+
+### Load Documents from Files
+POST {{baseUrl}}/api/documents/load
+Content-Type: application/json
+
+{
+  "paths": [
+    "README.md",
+    "Cargo.toml"
+  ],
+  "loader_type": "text"
+}
+
+### Index Documents for Semantic Search
+POST {{baseUrl}}/api/documents/index
+Content-Type: application/json
+
+{
+  "collection_name": "tech_docs",
+  "documents": [
+    {
+      "content": "Rust is a systems programming language focused on safety and performance.",
+      "metadata": {
+        "source": "rust_intro.txt",
+        "topic": "programming"
+      }
+    },
+    {
+      "content": "Python is a high-level programming language known for simplicity.",
+      "metadata": {
+        "source": "python_intro.txt",
+        "topic": "programming"
+      }
+    }
+  ]
+}
+
+### List Document Collections
+GET {{baseUrl}}/api/documents/collections
+
+### Search Documents by Semantic Similarity
+POST {{baseUrl}}/api/documents/search
+Content-Type: application/json
+
+{
+  "collection_name": "tech_docs",
+  "query": "memory safety in programming languages",
+  "top_k": 5,
+  "search_mode": "dense",
+  "min_similarity": 0.7
+}
+
+### Search Documents by Full-Text Retrieval
+POST {{baseUrl}}/api/documents/search
+Content-Type: application/json
+
+{
+  "collection_name": "tech_docs",
+  "query": "ownership borrowing compile time",
+  "top_k": 5,
+  "search_mode": "full_text"
+}
+
+### Search Documents with Dense + Full-Text Hybrid Retrieval
+POST {{baseUrl}}/api/documents/search
+Content-Type: application/json
+
+{
+  "collection_name": "tech_docs",
+  "query": "memory safety in programming languages",
+  "top_k": 5,
+  "search_mode": "hybrid_full_text",
+  "fusion_mode": "rrf"
+}
+
+### Delete Document Collection
+DELETE {{baseUrl}}/api/documents/collections/tech_docs
+
+###############################################################################
+# ORCHESTRATION & WORKFLOWS
+###############################################################################
+
+### Execute Workflow - Sequential Steps
+POST {{baseUrl}}/api/orchestration/workflow
+Content-Type: application/json
+
+{
+  "workflow_type": "sequential",
+  "steps": [
+    {
+      "id": "step1",
+      "task": "Read the README.md file",
+      "tools": ["fs"]
+    },
+    {
+      "id": "step2",
+      "task": "Summarize the content from step1 in 2 sentences",
+      "dependencies": ["step1"]
+    }
+  ],
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Execute Workflow - Parallel Steps
+POST {{baseUrl}}/api/orchestration/workflow
+Content-Type: application/json
+
+{
+  "workflow_type": "parallel",
+  "steps": [
+    {
+      "id": "calc1",
+      "task": "Calculate 123 * 456",
+      "tools": ["calculator"]
+    },
+    {
+      "id": "calc2",
+      "task": "Calculate 789 + 321",
+      "tools": ["calculator"]
+    },
+    {
+      "id": "summary",
+      "task": "Combine the results from calc1 and calc2",
+      "dependencies": ["calc1", "calc2"]
+    }
+  ],
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Get Workflow Status
+GET {{baseUrl}}/api/orchestration/workflow/workflow-123
+
+### Pause Workflow Execution
+POST {{baseUrl}}/api/orchestration/workflow/workflow-123/pause
+
+### Resume Workflow Execution
+POST {{baseUrl}}/api/orchestration/workflow/workflow-123/resume
+
+### Multi-Agent Orchestration
+POST {{baseUrl}}/api/orchestration/multi-agent
+Content-Type: application/json
+
+{
+  "agents": [
+    {
+      "id": "researcher",
+      "role": "Research information about Rust programming language",
+      "tools": ["perplexity_search"]
+    },
+    {
+      "id": "analyst",
+      "role": "Analyze the research findings and identify key points",
+      "depends_on": ["researcher"]
+    },
+    {
+      "id": "writer",
+      "role": "Write a summary report based on the analysis",
+      "depends_on": ["analyst"]
+    }
+  ],
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}
+
+### Agent Coordinator - Supervised Workflow
+POST {{baseUrl}}/api/orchestration/coordinator
+Content-Type: application/json
+
+{
+  "coordinator_role": "Project manager coordinating a research task",
+  "worker_agents": [
+    {
+      "id": "data_collector",
+      "specialization": "Collecting data from various sources",
+      "tools": ["perplexity_search", "http"]
+    },
+    {
+      "id": "data_analyzer",
+      "specialization": "Analyzing collected data and finding patterns",
+      "tools": ["execute_python", "calculator"]
+    }
+  ],
+  "task": "Research the top 5 programming languages in 2024 and analyze their growth trends",
+  "provider": "{{provider}}",
+  "model": "{{model}}"
+}

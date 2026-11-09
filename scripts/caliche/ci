@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+cmd="${1:-}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  cat <<'EOF'
+Usage: ./caliche ci [--full|full]
+
+  (default)  wasm-opt check, fmt-check, clippy, complexity --gate, rust test (root, CLI, server, sandbox, embedded web smoke, and dripstone), js typecheck, js test, py test
+  --full     Same steps, but rust test-features instead of rust test. test-features: Root crate tests with --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle (macOS; no CUDA; no ONNX runtime download).
+EOF
+  exit 0
+fi
+shift || true
+
+bash "${ROOT}/scripts/check_wasm_opt.sh"
+caliche_run rust fmt-check
+caliche_run rust clippy
+caliche_run rust complexity --gate
+case "$cmd" in
+  "")
+    caliche_run rust test
+    ;;
+  --full | full)
+    caliche_run rust test-features
+    ;;
+  *)
+    die "unknown ci option: ${cmd} (try: ./caliche ci help)"
+    ;;
+esac
+caliche_run js typecheck
+caliche_run test js
+caliche_run test py

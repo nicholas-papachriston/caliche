@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche release <check|build>
+
+  check    Run all checks before release
+  build    Clean, then build release artifacts
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  if [[ -z "$cmd" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+shift
+
+case "$cmd" in
+  check)
+    caliche_run rust fmt-check
+    caliche_run rust clippy
+    caliche_run rust test-features
+    caliche_run js typecheck
+    caliche_run js test
+    caliche_run py test
+    ;;
+  build)
+    caliche_run clean
+    caliche_run rust build
+    caliche_run js build
+    caliche_run py build
+    ;;
+  *)
+    die "unknown release subcommand: ${cmd} (try: ./caliche release help)"
+    ;;
+esac

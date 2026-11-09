@@ -1,0 +1,6 @@
+# Prometheus UI basic auth for the local compose stack. Override the compose
+# STACK_PROMETHEUS_* variables before using this outside development.
+# Dev password is caliche_dev_prom (STACK_PROMETHEUS_PASSWORD).
+# Regenerate: htpasswd -nbBC 10 stack caliche_dev_prom
+basic_auth_users:
+  stack: $2y$10$gamDEkDUjzc8B/J1Hd8sE.kKz2frNrroEYVKa3B8vJLL3WAo1E2EO

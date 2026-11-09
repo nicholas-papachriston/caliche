@@ -1,0 +1,276 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "caliche"
+version = "0.1.0"
+description = "Python SDK for Caliche - Agentic AI Framework"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+dependencies = [
+    "caliche-runtime==0.1.0",
+    "pydantic>=2.10,<3",
+]
+authors = [
+    { name = "Nicholas Papachriston", email = "nicholas@papachriston.com" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Typing :: Typed",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+hooks = [
+    "caliche-hooks==0.1.0",
+]
+mcp = [
+    "caliche-mcp==0.1.0",
+]
+langchain = [
+    "caliche-integrations-langchain==0.1.0; python_version >= '3.10'",
+    "langchain>=1.0; python_version >= '3.10'",
+    "langchain-core>=1.5; python_version >= '3.10'",
+    "langchain-openai>=1.4; python_version >= '3.10'",
+    "langchain-anthropic>=1.5; python_version >= '3.10'",
+]
+full = [
+    "caliche-hooks==0.1.0",
+    "caliche-mcp==0.1.0",
+    "caliche-integrations-langchain==0.1.0; python_version >= '3.10'",
+    "langchain>=1.0; python_version >= '3.10'",
+    "langchain-core>=1.5; python_version >= '3.10'",
+    "langchain-openai>=1.4; python_version >= '3.10'",
+    "langchain-anthropic>=1.5; python_version >= '3.10'",
+]
+
+# Pure Python. The native extension ships in `caliche-runtime` (packages/runtime).
+[tool.hatch.build.targets.wheel]
+packages = ["python/caliche"]
+
+[tool.hatch.build.targets.sdist]
+include = ["python/caliche", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-v --strict-markers"
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+mypy_path = [
+    "python",
+    "packages/contracts/python",
+    "packages/runtime/python",
+    "packages/core/python",
+    "packages/mcp/python",
+    "packages/hooks/python",
+    "packages/integrations-langchain/python",
+]
+packages = [
+    "caliche",
+    "caliche_contracts",
+    "caliche_runtime",
+    "caliche_core",
+    "caliche_mcp",
+    "caliche_hooks",
+    "caliche_integrations_langchain",
+]
+
+[[tool.mypy.overrides]]
+module = ["aiofiles", "aiofiles.*", "caliche.web_scraper"]
+ignore_missing_imports = true
+
+[tool.ty.environment]
+python-version = "3.13"
+root = ["./python"]
+
+[tool.ty.src]
+include = [
+    "python",
+    "tests",
+    "packages/contracts/python",
+    "packages/runtime/python",
+    "packages/core/python",
+    "packages/mcp/python",
+    "packages/hooks/python",
+    "packages/integrations-langchain/python",
+]
+
+[tool.ty.rules]
+all = "error"
+possibly-unresolved-reference = "warn"
+possibly-missing-attribute = "warn"
+possibly-missing-import = "warn"
+deprecated = "warn"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+    "caliche._caliche_py.**",
+    "caliche_runtime._caliche_py.**",
+    "caliche.web_scraper.**",
+    "pydantic.**",
+    "langchain.**",
+    "langchain_core.**",
+    "langchain_openai.**",
+    "langchain_anthropic.**",
+    "mcp.**",
+    "aiofiles.**",
+]
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[[tool.ty.overrides]]
+include = ["python/caliche/integrations/**"]
+[tool.ty.overrides.rules]
+all = "error"
+
+[[tool.ty.overrides]]
+include = ["examples/**"]
+[tool.ty.overrides.rules]
+all = "warn"
+
+[[tool.ty.overrides]]
+include = ["tests/**"]
+[tool.ty.overrides.rules]
+all = "warn"
+possibly-missing-attribute = "ignore"
+call-non-callable = "ignore"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = [
+    "python",
+    "packages/contracts/python",
+    "packages/runtime/python",
+    "packages/core/python",
+    "packages/mcp/python",
+    "packages/hooks/python",
+    "packages/integrations-langchain/python",
+    "tests",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "C90", # mccabe cyclomatic complexity
+    "UP",  # pyupgrade
+    "ANN", # flake8-annotations
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+    "ANN401",  # allow Any in some cases
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "caliche",
+    "caliche_contracts",
+    "caliche_runtime",
+    "caliche_core",
+    "caliche_mcp",
+    "caliche_hooks",
+    "caliche_integrations_langchain",
+]
+
+[tool.coverage.run]
+source = [
+    "caliche",
+    "caliche_contracts",
+    "caliche_runtime",
+    "caliche_core",
+    "caliche_mcp",
+    "caliche_hooks",
+    "caliche_integrations_langchain",
+]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.11,<2.0",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "ty>=0.0.15",
+    # Workspace packages needed for compatibility imports (hooks/mcp/session).
+    "caliche-contracts",
+    "caliche-runtime",
+    "caliche-core",
+    "caliche-hooks",
+    "caliche-mcp",
+    "caliche-integrations-langchain",
+    "langchain>=1.0; python_version >= '3.10'",
+    "langchain-core>=1.5; python_version >= '3.10'",
+    "langchain-openai>=1.4; python_version >= '3.10'",
+    "langchain-anthropic>=1.5; python_version >= '3.10'",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/contracts",
+    "packages/runtime",
+    "packages/core",
+    "packages/mcp",
+    "packages/hooks",
+    "packages/integrations-langchain",
+]
+
+[tool.uv.sources]
+caliche-contracts = { workspace = true }
+caliche-runtime = { workspace = true }
+caliche-core = { workspace = true }
+caliche-mcp = { workspace = true }
+caliche-hooks = { workspace = true }
+caliche-integrations-langchain = { workspace = true }
+
+[project.urls]
+Repository = "https://github.com/nicholas-papachriston/caliche"
+Homepage = "https://github.com/nicholas-papachriston/caliche"

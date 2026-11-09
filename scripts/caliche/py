@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche py <subcommand>
+
+  install            Sync Python dependencies with uv
+  build              maturin develop for the runtime package (release-bindings profile)
+  build-dev          Debug maturin develop, with the test-only panic-probe feature
+  build-composable   Lockstep checks + composable wheels
+  test / test-coverage
+  lint / lint-fix
+  format / format-check
+  typecheck
+  clean / sync
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  if [[ -z "$cmd" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+shift
+
+case "$cmd" in
+  install | sync)
+    step "Installing Python dependencies with uv"
+    (
+      cd "$PY_DIR"
+      uv sync --group dev --all-packages
+    )
+    ok "Python dependencies installed"
+    ;;
+  build)
+    step "Building Python SDK with maturin"
+    (
+      cd "$PY_DIR"
+      uv sync --group dev --all-packages
+    )
+    (
+      cd "${PY_DIR}/packages/runtime"
+      run_py_cargo uvx --from maturin maturin develop --profile release-bindings
+    )
+    step "Checking that the native module loads"
+    "${PY_DIR}/.venv/bin/python" "${PY_DIR}/scripts/check_native_load.py"
+    rm -f "${PY_DIR}/python/caliche/_caliche_py"*.so
+    step "Fixing ONNX Runtime library paths"
+    (
+      cd "$PY_DIR"
+      ./scripts/fix_onnx_runtime.sh
+    )
+    ok "Python build complete"
+    ;;
+  build-composable)
+    step "Validating Python composable lockstep/version sync"
+    uv run python "${PY_DIR}/scripts/check_lockstep_versions.py"
+    uv run python "${PY_DIR}/scripts/check_runtime_version_sync.py"
+    step "Building Python composable runtime wheel (release)"
+    (
+      cd "${PY_DIR}/packages/runtime"
+      uvx --from maturin maturin build --profile release-bindings --out dist
+      step "Checking that the runtime wheel's native module loads"
+      "${PY_DIR}/.venv/bin/python" "${PY_DIR}/scripts/check_native_load.py" dist/caliche_runtime-*.whl
+    )
+    step "Building Python composable wheels"
+    (
+      cd "${PY_DIR}/packages/contracts"
+      uvx --from build python -m build
+    )
+    (
+      cd "${PY_DIR}/packages/core"
+      uvx --from build python -m build
+    )
+    (
+      cd "${PY_DIR}/packages/mcp"
+      uvx --from build python -m build
+    )
+    (
+      cd "${PY_DIR}/packages/hooks"
+      uvx --from build python -m build
+    )
+    (
+      cd "${PY_DIR}/packages/integrations-langchain"
+      uvx --from build python -m build
+    )
+    step "Building the caliche wheel (pure Python; native code ships in caliche-runtime)"
+    (
+      cd "$PY_DIR"
+      uvx --from build python -m build
+    )
+    ok "Python composable release build complete"
+    ;;
+  build-dev)
+    step "Building Python SDK (dev mode, debug maturin)"
+    (
+      cd "$PY_DIR"
+      uv sync --group dev --all-packages
+    )
+    (
+      cd "${PY_DIR}/packages/runtime"
+      run_py_cargo uvx --from maturin maturin develop --profile dev --features panic-probe
+    )
+    rm -f "${PY_DIR}/python/caliche/_caliche_py"*.so
+    step "Fixing ONNX Runtime library paths"
+    (
+      cd "$PY_DIR"
+      ./scripts/fix_onnx_runtime.sh
+    )
+    ok "Python dev build complete"
+    ;;
+  test)
+    step "Running Python tests"
+    (
+      cd "$PY_DIR"
+      uv run pytest tests/ -v
+    )
+    ok "Python tests complete"
+    ;;
+  test-coverage)
+    step "Running Python tests with coverage"
+    (
+      cd "$PY_DIR"
+      uv run pytest tests/ --cov=caliche --cov-report=html --cov-report=term
+    )
+    ok "Python tests with coverage complete"
+    ;;
+  lint)
+    step "Linting Python code with ruff"
+    (
+      cd "$PY_DIR"
+      uv run ruff check python/ packages/*/python tests/
+    )
+    ok "Python linting complete"
+    ;;
+  lint-fix)
+    step "Fixing Python linting issues"
+    (
+      cd "$PY_DIR"
+      uv run ruff check --fix python/ packages/*/python tests/
+    )
+    ok "Python linting fixes applied"
+    ;;
+  format)
+    step "Formatting Python code"
+    (
+      cd "$PY_DIR"
+      uv run ruff format python/ packages/*/python tests/
+    )
+    ok "Python formatting complete"
+    ;;
+  format-check)
+    step "Checking Python code formatting"
+    (
+      cd "$PY_DIR"
+      uv run ruff format --check python/ packages/*/python tests/
+    )
+    ok "Python format check complete"
+    ;;
+  typecheck)
+    step "Type checking Python code"
+    (
+      cd "$PY_DIR"
+      uv run mypy python/ \
+        packages/runtime/python \
+        packages/core/python \
+        packages/mcp/python \
+        packages/hooks/python \
+        packages/integrations-langchain/python
+    )
+    ok "Python type checking complete"
+    ;;
+  clean)
+    step "Cleaning Python build artifacts"
+    (
+      cd "$PY_DIR"
+      rm -rf build/ dist/ *.egg-info/ __pycache__/ .pytest_cache/ .mypy_cache/ htmlcov/ .coverage .ruff_cache/ target/
+    )
+    # Collect paths first so deleting a directory does not make find fail.
+    while IFS= read -r -d '' dir; do
+      rm -rf "$dir"
+    done < <(find "$PY_DIR" -type d -name __pycache__ -print0)
+    while IFS= read -r -d '' file; do
+      rm -f "$file"
+    done < <(find "$PY_DIR" -type f \( -name '*.pyc' -o -name '*.so' \) -print0)
+    ok "Python clean complete"
+    ;;
+  *)
+    die "unknown py subcommand: ${cmd} (try: ./caliche py help)"
+    ;;
+esac

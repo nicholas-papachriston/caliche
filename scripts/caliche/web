@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche web <subcommand>
+
+  wasm    Build Dioxus UI to caliche_web/dist and run wasm-opt -Oz
+          Requires wasm-opt from binaryen 117 or newer. Optimization
+          failure stops the command; the unoptimized module is not kept
+          as a successful result.
+EOF
+}
+
+cmd="${1:-wasm}"
+if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  exit 0
+fi
+shift || true
+
+case "$cmd" in
+  wasm)
+    step "Building Dioxus UI for web"
+    sysroot="$(rustc --print sysroot)"
+    if [[ ! -d "${sysroot}/lib/rustlib/wasm32-unknown-unknown" ]]; then
+      printf '%srustc sysroot missing wasm32-unknown-unknown: %s%s\n' \
+        "${C_RED}" "$sysroot" "${C_RESET}" >&2
+      printf '%sActive rustc: %s (%s)%s\n' \
+        "${C_YELLOW}" "$(command -v rustc)" "$(rustc --version)" "${C_RESET}" >&2
+      printf '%sInstall via rustup: rustup target add wasm32-unknown-unknown%s\n' \
+        "${C_YELLOW}" "${C_RESET}" >&2
+      printf '%sOr ensure ~/.cargo/bin precedes Nix rustc on PATH%s\n' \
+        "${C_YELLOW}" "${C_RESET}" >&2
+      exit 1
+    fi
+    (
+      cd "$UI_DIR"
+      dx build --release --platform web
+    )
+    step "Copying build output to ${UI_DIR}/dist"
+    rm -rf "${UI_DIR}/dist"
+    mkdir -p "${UI_DIR}/dist"
+    cp -R "${ROOT}/target/dx/caliche_web/release/web/public/"* "${UI_DIR}/dist/"
+    step "Optimizing WASM with wasm-opt -Oz"
+    wasm="$(find "${UI_DIR}/dist" -name '*.wasm' -type f -print -quit 2>/dev/null || true)"
+    if [[ -z "$wasm" ]]; then
+      die "No .wasm file found in ${UI_DIR}/dist"
+    fi
+    caliche_optimize_wasm "$wasm"
+    ok "WASM build complete ($(caliche_wasm_opt_version_number wasm-opt | tr -d '\n'))"
+    ls -lh "$wasm" 2>/dev/null || true
+    ;;
+  *)
+    die "unknown web subcommand: ${cmd} (try: ./caliche web help)"
+    ;;
+esac

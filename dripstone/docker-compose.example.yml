@@ -1,0 +1,166 @@
+# Local backends for examples and integration tests.
+#
+# Development credentials only. They match the defaults in tests/common/mod.rs,
+# tests/minio_coldforge_wal_tests.rs, and examples/graph_age_neo4j_example.rs.
+# Do not reuse these values outside this machine.
+#
+#   docker compose -f docker-compose.example.yml up -d
+#   docker compose -f docker-compose.example.yml --profile graph up -d
+#   docker compose -f docker-compose.example.yml --profile search up -d
+#   docker compose -f docker-compose.example.yml --profile milvus up -d
+#
+# Host ports are bound to 127.0.0.1 only.
+# Default: Redis 127.0.0.1:6379, PostgreSQL/pgvector 127.0.0.1:5433,
+#          MinIO 127.0.0.1:9000, Qdrant 127.0.0.1:6333 and :6334.
+# graph:   Apache AGE 127.0.0.1:5455, Neo4j Bolt 127.0.0.1:7687.
+# search:  Valkey 127.0.0.1:6380, Chroma 127.0.0.1:8000, Weaviate 127.0.0.1:8081
+#          (container port stays 8080; the host port avoids a local k3d-dev cluster on :8080).
+# milvus:  gRPC and REST v2 127.0.0.1:19530, metrics GET /healthz 127.0.0.1:9091.
+#          GET /healthz on :19530 is 404. REST liveness is
+#          POST /v2/vectordb/collections/list. The HTTP client still speaks
+#          legacy /api/v1 for CRUD (own etcd and an internal MinIO; host port
+#          9000 stays the default MinIO).
+
+name: dripstone
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--requirepass", "dripstone_dev_redis"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "dripstone_dev_redis", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dripstone_dev_pg
+      POSTGRES_DB: embeddings
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d embeddings"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Community minio/minio is no longer anonymously pullable. This is the
+  # same server API (path-style S3 on :9000, minioadmin credentials).
+  # The public Chainguard registry only publishes `latest` / `latest-dev`
+  # (version tags are not anonymously pullable). Pin the multi-arch index
+  # digest of `latest` resolved 2026-09-30 (image created 2026-09-30T00:01:35Z).
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:4692462f35d97d7e82c30371d82f057703c5d9489bcae726010594c812f2d285
+    command: ["server", "/tmp/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    environment:
+      QDRANT__SERVICE__API_KEY: dripstone_dev_qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+
+  valkey:
+    profiles: ["search"]
+    image: valkey/valkey:8.1-alpine
+    command: ["valkey-server", "--requirepass", "dripstone_dev_redis"]
+    ports:
+      - "127.0.0.1:6380:6379"
+
+  chroma:
+    profiles: ["search"]
+    image: chromadb/chroma:1.0.15
+    environment:
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  weaviate:
+    profiles: ["search"]
+    image: semitechnologies/weaviate:1.30.0
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      CLUSTER_HOSTNAME: node1
+      DEFAULT_VECTORIZER_MODULE: none
+    ports:
+      - "127.0.0.1:8081:8080"
+
+  age:
+    profiles: ["graph"]
+    image: apache/age:release_PG16_1.5.0
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: age
+    ports:
+      - "127.0.0.1:5455:5432"
+
+  neo4j:
+    profiles: ["graph"]
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+
+  milvus-etcd:
+    profiles: ["milvus"]
+    image: quay.io/coreos/etcd:v3.5.18
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - --advertise-client-urls=http://milvus-etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - milvus-etcd:/etcd
+
+  milvus-minio:
+    profiles: ["milvus"]
+    image: cgr.dev/chainguard/minio@sha256:4692462f35d97d7e82c30371d82f057703c5d9489bcae726010594c812f2d285
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: ["server", "/tmp/data"]
+
+  milvus:
+    profiles: ["milvus"]
+    image: milvusdb/milvus:v2.5.10
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    ports:
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    depends_on:
+      - milvus-etcd
+      - milvus-minio
+    volumes:
+      - milvus-data:/var/lib/milvus
+
+volumes:
+  milvus-etcd:
+  milvus-data:

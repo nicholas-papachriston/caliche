@@ -1,0 +1,4 @@
+[submodule "shotput"]
+	path = shotput
+	url = https://github.com/nicholas-papachriston/shotput.git
+	branch = main

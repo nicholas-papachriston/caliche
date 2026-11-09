@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if caliche_want_help "${1:-}"; then
+  cat <<'EOF'
+Usage: ./caliche clean
+
+  Remove Rust, Python, and JavaScript build artifacts
+EOF
+  exit 0
+fi
+
+caliche_run rust clean
+caliche_run py clean
+caliche_run js clean

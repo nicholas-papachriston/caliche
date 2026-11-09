@@ -1,0 +1,22 @@
+[package]
+name = "caliche_orchestration"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Caliche orchestration primitives: ACL, privilege, quarantine, and harness dispatch"
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+caliche_contracts = { path = "../caliche_contracts" }
+anyhow.workspace = true
+async-trait.workspace = true
+beef.workspace = true
+serde.workspace = true
+tokio.workspace = true

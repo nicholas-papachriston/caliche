@@ -1,0 +1,25 @@
+[package]
+name = "caliche_contracts"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Shared serde wire contracts for Caliche clients and servers"
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# ACP wire types (`caliche_contracts::acp`). Only the ACP server and client need them.
+acp = ["dep:agent-client-protocol-schema"]
+
+[dependencies]
+# Pinned schema 1.10.2. Do not enable `unstable_protocol_v2` (that is draft v2).
+# default-features off: this crate only needs serde, not schemars.
+agent-client-protocol-schema = { version = "=1.10.2", default-features = false, optional = true }
+serde.workspace = true
+serde_json.workspace = true

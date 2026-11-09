@@ -1,0 +1,60 @@
+# Development defaults prioritize fast incremental rebuilds.
+# Full-feature / release+LTO paths stay on `./caliche build` and `cargo * --features full`.
+[build]
+# Cargo automatically uses all available CPU cores for parallel compilation
+# Enable incremental compilation (faster rebuilds) - this is the default
+incremental = true
+# Use sccache if available (set CARGO_INCREMENTAL=0 when using sccache)
+# Install: cargo install sccache
+# To use sccache, set: RUSTC_WRAPPER=sccache
+rustflags = []
+
+# Lean `agent` preset for day-to-day `cargo b/c/t/r/cl` aliases.
+# Use `ba` / `ca` for the application surface; `bf` / `cf` / `tf` for full.
+[alias]
+b = "build --features agent"
+c = "check --features agent"
+t = "test --features agent"
+r = "run --features agent"
+cl = "clippy --features agent"
+ba = "build --features app"
+ca = "check --features app"
+ta = "test --features app"
+ra = "run --features app"
+cla = "clippy --features app"
+bf = "build --features full"
+cf = "check --features full"
+tf = "test --features full"
+rf = "run --features full"
+clf = "clippy --features full"
+cls = "clippy --features agent -- -D warnings"
+clas = "clippy --features app -- -D warnings"
+clfs = "clippy --features full -- -D warnings"
+
+# For production builds without default features, use: cargo build --no-default-features
+# Or explicitly: cargo build --features app
+
+# macOS: default ld64 linker (lld from Homebrew llvm cannot resolve -lclang_rt.osx for tests).
+# Cargo does not load .cargo/config.local.toml on its own.
+# Optional faster linking: brew install michaeleisel/zld/zld, then pass
+# `cargo --config .cargo/config.local.toml ...` with:
+#   [target.aarch64-apple-darwin]
+#   rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/zld"]
+#   [target.x86_64-apple-darwin]
+#   rustflags = ["-C", "link-arg=-fuse-ld=/usr/local/bin/zld"]
+
+# Linux: the system linker is the default. mold is a link-speed option, not a
+# security boundary. Do not force `-fuse-ld=mold` here: when mold is absent,
+# rustc fails with "cannot find ld" instead of falling back.
+# Opt in with `cargo --config .cargo/config.local.toml ...` after `mold` is on PATH:
+#   [target.x86_64-unknown-linux-gnu]
+#   rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#   [target.aarch64-unknown-linux-gnu]
+#   rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+

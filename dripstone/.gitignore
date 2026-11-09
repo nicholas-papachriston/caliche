@@ -1,0 +1,19 @@
+/target
+.DS_Store
+
+# Local secrets and credentials. Commit `.env.example` only.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+credentials
+
+# Model weights and local corpora. Download these; do not commit them.
+*.onnx
+*.gguf
+*.safetensors
+*.parquet
+*.h5
+*.hdf5

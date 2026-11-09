@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Caliche developer CLI. Run ./caliche help for commands.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+CALICHE_SCRIPTS="${ROOT}/scripts/caliche"
+# shellcheck source=scripts/caliche/lib.sh
+source "${CALICHE_SCRIPTS}/lib.sh"
+
+usage_error() {
+  die "unknown command: ${1:-} (try: ./caliche help)"
+}
+
+is_command() {
+  local name="$1"
+  [[ -f "${CALICHE_SCRIPTS}/${name}" && -x "${CALICHE_SCRIPTS}/${name}" ]]
+}
+
+if [[ $# -eq 0 ]]; then
+  exec "${CALICHE_SCRIPTS}/help"
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  -h | --help | help)
+    exec "${CALICHE_SCRIPTS}/help" "$@"
+    ;;
+  -V | --version)
+    exec "${CALICHE_SCRIPTS}/version" "$@"
+    ;;
+  quick-test)
+    exec "${CALICHE_SCRIPTS}/test" quick "$@"
+    ;;
+  full-test)
+    exec "${CALICHE_SCRIPTS}/test" full "$@"
+    ;;
+esac
+
+if is_command "$cmd"; then
+  exec "${CALICHE_SCRIPTS}/${cmd}" "$@"
+fi
+
+if [[ "$cmd" == *-* ]]; then
+  IFS='-' read -r -a parts <<< "$cmd"
+  n=${#parts[@]}
+  for ((i = n - 1; i >= 1; i--)); do
+    prefix="${parts[0]}"
+    for ((j = 1; j < i; j++)); do
+      prefix="${prefix}-${parts[j]}"
+    done
+    if is_command "$prefix"; then
+      rest="${parts[i]}"
+      for ((j = i + 1; j < n; j++)); do
+        rest="${rest}-${parts[j]}"
+      done
+      exec "${CALICHE_SCRIPTS}/${prefix}" "$rest" "$@"
+    fi
+  done
+fi
+
+usage_error "$cmd"

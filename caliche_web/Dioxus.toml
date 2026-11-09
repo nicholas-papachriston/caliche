@@ -1,0 +1,34 @@
+[application]
+name = "Caliche"
+default_platform = "desktop"
+out_dir = "dist"
+
+[desktop]
+enable_default_menu_bar = true
+
+[desktop.window]
+title = "Caliche"
+width = 1200
+height = 800
+resizable = true
+decorations = true
+
+[web]
+app_name = "Caliche"
+
+[web.app]
+title = "Caliche"
+base_path = "/"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "assets"]
+index_on_404 = true
+
+[web.resource]
+style = []
+script = []
+
+[web.resource.dev]
+style = []
+script = []

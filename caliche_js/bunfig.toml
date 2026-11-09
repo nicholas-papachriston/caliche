@@ -1,0 +1,5 @@
+# Bun configuration
+# Set test root to tests/ directory to exclude dist/ from test discovery
+[test]
+root = "./tests"
+coveragePathIgnorePatterns = ["dist/**", "**/dist/**"]

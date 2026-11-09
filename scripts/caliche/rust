@@ -1,0 +1,506 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+# Root-crate feature lane. Each name builds on macOS without CUDA and
+# without an ONNX runtime download. `full` is not this set: it enables
+# local-inference-ort. inference-mlx does not build without the Metal
+# toolchain. local-inference-llamacpp downloads a GGUF in its test.
+# `embedding-candle` also enables dripstone `vision-candle`. The model
+# download test stays ignored. `mysql` is the sqlx MySQL pool.
+ROOT_TEST_FEATURES="app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle"
+
+usage() {
+  cat <<EOF
+Usage: ./caliche rust <subcommand>
+
+  build              Release library, API, wasm UI, and CLI
+  build-dev          Debug agent build (CALICHE_WITH_UI=1 adds wasm UI)
+  build-composable   Lockstep/facade checks + contracts/engine
+  build-with-ui      Release CLI with embedded UI
+  install            wasm UI, then cargo install the CLI with embedded-ui
+  test               Root, CLI, server, sandbox, embedded web smoke, and dripstone
+  test-embedded-ui   GET / is HTML when the embedded-ui feature is on
+  test-lib           Root crate only: cargo test --lib --features full (needs ONNX)
+  test-features      Root crate tests with --features ${ROOT_TEST_FEATURES} (macOS; no CUDA; no ONNX runtime download)
+  check              cargo check on root, ACP client, CLI, and server
+  clippy             Clippy with -D warnings on root, ACP client, CLI, server, sandbox, and dripstone
+  clippy-strict      Opt-in pedantic/nursery/cargo Clippy
+  fmt / fmt-check    Format Rust or check formatting
+  complexity         McCabe CCN via uvx lizard (--gate is CCN-only deny in ./caliche ci)
+  clean / doc
+EOF
+}
+
+# Root crate features for the merge gate (tests and Clippy). No services, no
+# ONNX Runtime. `testing` keeps the mock-provider tests (tests/sandbox_tests.rs)
+# and `sqlite-store` with it the task ledger test (tests/task_ledger_e2e.rs).
+ROOT_GATE_FEATURES="app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,sqlite-store"
+# Server route groups. They are off in the server default and in the Docker
+# image, so the gate turns them on here to keep that code compiled and tested.
+SERVER_ROUTE_FEATURES="tools-rag,document-loaders,chains,retrieval-chains,reasoning-patterns"
+
+# Every sandbox backend; each one compiles only on its own OS. The root
+# `full` preset enables none of them, so the sandbox crate is tested and
+# linted on its own.
+SANDBOX_FEATURES="all,landlock-net"
+
+# Prove GET / is HTML when embedded-ui is compiled in.
+# A missing dist gets a fixture index.html for this cargo test only.
+# A real caliche_web/dist/index.html is left in place.
+embedded_ui_smoke() {
+  (
+    local index="${UI_DIR}/dist/index.html"
+    local marker="${UI_DIR}/dist/.caliche-embedded-ui-test-fixture"
+    local created=0
+    cleanup() {
+      if [[ "$created" -eq 1 ]]; then
+        rm -f "$index" "$marker"
+        rmdir "${UI_DIR}/dist" 2>/dev/null || true
+      fi
+    }
+    trap cleanup EXIT
+    if [[ ! -f "$index" ]]; then
+      mkdir -p "${UI_DIR}/dist"
+      cat >"$index" <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Caliche</title></head>
+<body>caliche-embedded-ui</body>
+</html>
+EOF
+      : >"$marker"
+      created=1
+      warn "caliche_web/dist/index.html missing; using a fixture for the smoke only"
+    fi
+    step "Proving GET / serves HTML when embedded-ui is on"
+    local log
+    log="$(mktemp)"
+    set +e
+    cargo test -p caliche_server --features embedded-ui --test session_http_tests \
+      root_with_embedded_ui_serves_html -- --test-threads=1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    set -e
+    if [[ "$status" -ne 0 ]]; then
+      rm -f "$log"
+      exit "$status"
+    fi
+    if ! grep -q "root_with_embedded_ui_serves_html" "$log"; then
+      rm -f "$log"
+      echo "embedded-ui smoke did not run root_with_embedded_ui_serves_html" >&2
+      exit 1
+    fi
+    rm -f "$log"
+  )
+}
+
+# Default-feature tests for workspace members other than the root, CLI,
+# server, sandbox, and dripstone crates, then the macOS no-service lanes
+# for those crates. Service and hardware lanes stay opt-in. See AGENTS.md.
+run_workspace_tests() {
+  step "Running workspace tests (member crates, default features)"
+  cargo test --workspace --no-fail-fast \
+    --exclude caliche \
+    --exclude dripstone \
+    --exclude caliche_cli \
+    --exclude caliche_server \
+    --exclude caliche_sandbox
+
+  step "Running root tests (app plus no-service features)"
+  # `app` does not include hybrid-search. That feature links ONNX Runtime.
+  # In-memory durable streams stay on. `full` and hybrid-search stay opt-in.
+  cargo test -p caliche --no-fail-fast --features "$ROOT_GATE_FEATURES"
+
+  step "Running CLI tests (lsp, scheduling, test-utils)"
+  cargo test -p caliche_cli --no-fail-fast --features lsp,scheduling,test-utils
+
+  step "Running API tests (app plus route groups: ${SERVER_ROUTE_FEATURES})"
+  cargo test -p caliche_server --no-fail-fast --features "app,${SERVER_ROUTE_FEATURES}"
+
+  step "Running sandbox tests ($SANDBOX_FEATURES)"
+  cargo test -p caliche_sandbox --features "$SANDBOX_FEATURES" --no-fail-fast
+
+  embedded_ui_smoke
+
+  step "Running dripstone tests (no-service features)"
+  cargo test -p dripstone --no-fail-fast --lib --tests --features \
+    memory-backend,mmap-backend,sqlite-backend,s3-backend,coldforge-backend,corpus,ast,simd,search-advanced,rust-stemmers,hnsw
+  cargo test -p dripstone --no-fail-fast --doc --features \
+    memory-backend,mmap-backend,sqlite-backend,s3-backend,coldforge-backend,corpus,ast,simd,search-advanced,rust-stemmers,hnsw
+
+  ok "Rust tests complete"
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  if [[ -z "$cmd" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+shift
+
+case "$cmd" in
+  build)
+    step "Building Rust project"
+    cargo build --release --features full
+    step "Building API crate (app)"
+    (
+      cd "$API_DIR"
+      cargo build --release --features app
+    )
+    step "Building Dioxus UI for web"
+    caliche_run web wasm
+    step "Building CLI crate with embedded UI"
+    cargo build --release -p caliche_cli --features embedded-ui
+    ok "Rust build complete"
+    ;;
+  build-composable)
+    step "Validating Rust package lockstep and public facade exports"
+    uv run python scripts/check_rust_lockstep_versions.py
+    uv run python scripts/check_package_versions.py
+    uv run python scripts/check_rust_facade_exports.py
+    step "Building caliche_contracts + caliche (release)"
+    cargo build --release -p caliche_contracts -p caliche
+    ok "Rust contracts + engine release build complete"
+    ;;
+  build-dev)
+    step "Building Rust project (dev mode, --features agent)"
+    cargo build --features agent
+    step "Building API crate (dev mode)"
+    (
+      cd "$API_DIR"
+      cargo build
+    )
+    if [[ "$CALICHE_WITH_UI" == "1" ]]; then
+      caliche_run web wasm
+      step "Building CLI crate with embedded UI (dev mode)"
+      cargo build -p caliche_cli --features embedded-ui
+    else
+      step "Building CLI crate (dev mode, no embedded UI; CALICHE_WITH_UI=1 to enable)"
+      cargo build -p caliche_cli
+    fi
+    ok "Rust dev build complete"
+    ;;
+  build-with-ui)
+    caliche_run web wasm
+    step "Building CLI with embedded UI"
+    cargo build --release -p caliche_cli --features embedded-ui
+    ok "CLI with embedded UI complete"
+    ;;
+  install)
+    if caliche_want_help "${1:-}"; then
+      cat <<'EOF'
+Usage: ./caliche rust install
+
+  Build the Dioxus WASM UI, then install caliche on PATH with
+  --features embedded-ui. `caliche --server` then serves that UI at /.
+
+  Requires dx (dioxus-cli) at the same major.minor as caliche_web's
+  dioxus crate, the wasm32-unknown-unknown target, and wasm-opt from
+  binaryen 117 or newer (macOS: brew install binaryen). ./caliche web wasm
+  passes Rust's default wasm features, including --enable-bulk-memory,
+  and exits if wasm-opt fails. The install does not embed an
+  unoptimized bundle.
+
+  Equivalent:
+    ./caliche web wasm
+    cargo install --path caliche_cli --locked --force --features embedded-ui
+
+  `./caliche install` still installs Python and JavaScript dependencies only.
+  The feature stays off the CLI crate default so cargo test and
+  cargo build do not need dx. Day-to-day debug with the UI:
+  CALICHE_WITH_UI=1 ./caliche build-dev
+EOF
+      exit 0
+    fi
+    need_cmd cargo
+    if ! command -v dx >/dev/null 2>&1; then
+      dioxus_ver="$(sed -n 's/.*dioxus *= *{ *version *= *"\([^"]*\)".*/\1/p' "${UI_DIR}/Cargo.toml" | sed -n '1p')"
+      if [[ -n "$dioxus_ver" ]]; then
+        die "missing command: dx (dioxus-cli). Install the matching CLI: cargo install dioxus-cli --version ${dioxus_ver} --locked --force"
+      fi
+      die "missing command: dx (dioxus-cli). Install the version that matches dioxus in ${UI_DIR}/Cargo.toml"
+    fi
+    if command -v rustup >/dev/null 2>&1; then
+      rustup target add wasm32-unknown-unknown >/dev/null
+    fi
+    caliche_run web wasm
+    step "Installing caliche with embedded UI"
+    cargo install --path "$CLI_DIR" --locked --force --features embedded-ui
+    ok "Installed caliche with embedded UI"
+    printf '%sStart:%s caliche --server --bind 127.0.0.1 --port 3000\n' \
+      "${C_GREEN}" "${C_RESET}"
+    printf '%sOpen:%s  http://127.0.0.1:3000/\n' "${C_GREEN}" "${C_RESET}"
+    ;;
+  test-embedded-ui)
+    if caliche_want_help "${1:-}"; then
+      cat <<'EOF'
+Usage: ./caliche rust test-embedded-ui
+
+  cargo test the API with --features embedded-ui and require
+  root_with_embedded_ui_serves_html to run. GET / must be HTML.
+  If caliche_web/dist/index.html is missing, a fixture is written
+  for the test and removed afterward. This does not build the Dioxus UI.
+EOF
+      exit 0
+    fi
+    embedded_ui_smoke
+    ok "embedded UI smoke passed"
+    ;;
+  test)
+    run_workspace_tests
+    ;;
+  test-lib)
+    step "Running Rust library tests"
+    cargo test --lib --features full --no-fail-fast
+    ok "Rust library tests complete"
+    ;;
+  test-features)
+    step "Running root crate tests (macOS; no CUDA; no ONNX runtime download)"
+    cargo test -p caliche --offline --no-fail-fast --features "$ROOT_TEST_FEATURES"
+    ok "Root crate feature tests complete"
+    ;;
+  check)
+    step "Checking Rust code"
+    cargo check --features full
+    step "Checking ACP client crate"
+    cargo check -p caliche_acp_client
+    step "Checking CLI crate"
+    (
+      cd "$CLI_DIR"
+      cargo check
+    )
+    step "Checking API crate"
+    (
+      cd "$API_DIR"
+      cargo check
+    )
+    step "Checking API crate route groups (${SERVER_ROUTE_FEATURES})"
+    cargo check -p caliche_server --all-targets --features "$SERVER_ROUTE_FEATURES"
+    step "Checking CLI crate with the server application surface (server-app)"
+    cargo check -p caliche_cli --features server-app
+    ok "Rust check complete"
+    ;;
+  clippy)
+    step "Running Clippy"
+    # `full` links ONNX Runtime. The gate uses the same no-service set as tests.
+    # With libonnxruntime installed:
+    #   cargo clippy --all-targets --features full,plugins,learning-loop -- -D warnings
+    # --all-targets also lints the lib tests, integration tests, and examples.
+    cargo clippy --all-targets --features "$ROOT_GATE_FEATURES" -- -D warnings
+    step "Running Clippy on ACP client crate"
+    cargo clippy -p caliche_acp_client --all-targets -- -D warnings
+    step "Running Clippy on CLI crate"
+    (
+      cd "$CLI_DIR"
+      cargo clippy -- -D warnings
+    )
+    step "Running Clippy on API crate"
+    (
+      cd "$API_DIR"
+      cargo clippy -- -D warnings
+    )
+    step "Running Clippy on API crate (app plus route groups)"
+    cargo clippy -p caliche_server --features "app,${SERVER_ROUTE_FEATURES}" -- -D warnings
+    # All targets, with default features plus the test-only panic probe, so the
+    # probe and the test build are linted too.
+    step "Running Clippy on JavaScript bindings crate (all targets, panic-probe)"
+    cargo clippy -p caliche_js --all-targets --features panic-probe -- -D warnings
+    step "Running Clippy on sandbox crate ($SANDBOX_FEATURES)"
+    cargo clippy -p caliche_sandbox --all-targets --features "$SANDBOX_FEATURES" -- -D warnings
+    # Dripstone has no standalone GitHub Actions; gate it here explicitly.
+    step "Running Clippy on dripstone"
+    (
+      cd "$DRIPSTONE_DIR"
+      cargo clippy --features memory-backend,mmap-backend,sqlite-backend,s3-backend,hnsw \
+        --lib --tests -- -D warnings
+    )
+    step "Checking dripstone default dependencies"
+    "$DRIPSTONE_DIR/scripts/check-default-deps.sh"
+    ok "Clippy check complete"
+    ;;
+  clippy-strict)
+    step "Running strict Clippy (all/pedantic/nursery/cargo)"
+    cargo clippy --features full -- \
+      -D warnings \
+      -W clippy::all \
+      -W clippy::pedantic \
+      -W clippy::nursery \
+      -W clippy::cargo
+    ok "Strict Clippy check complete"
+    ;;
+  fmt)
+    step "Formatting Rust code"
+    cargo fmt --all
+    step "Formatting CLI crate"
+    (
+      cd "$CLI_DIR"
+      cargo fmt
+    )
+    step "Formatting API crate"
+    (
+      cd "$API_DIR"
+      cargo fmt
+    )
+    ok "Rust formatting complete"
+    ;;
+  fmt-check)
+    step "Checking Rust code formatting"
+    cargo fmt --all -- --check
+    step "Checking CLI crate formatting"
+    (
+      cd "$CLI_DIR"
+      cargo fmt -- --check
+    )
+    step "Checking API crate formatting"
+    (
+      cd "$API_DIR"
+      cargo fmt -- --check
+    )
+    ok "Rust formatting check complete"
+    ;;
+  clean)
+    step "Cleaning Rust build artifacts"
+    cargo clean
+    step "Cleaning CLI crate"
+    (
+      cd "$CLI_DIR"
+      cargo clean
+    )
+    step "Cleaning API crate"
+    (
+      cd "$API_DIR"
+      cargo clean
+    )
+    ok "Rust clean complete"
+    ;;
+  doc)
+    step "Building Rust documentation"
+    cargo doc --features full --no-deps --open
+    ok "Rust documentation complete"
+    ;;
+  complexity)
+    if caliche_want_help "${1:-}"; then
+      cat <<'EOF'
+Usage: ./caliche rust complexity [--gate] [--csv PATH] [--threshold N]
+
+  McCabe CCN report via uvx lizard. Default threshold is 20.
+  Default mode is an audit report. NLOC and parameter warnings do not fail
+  when --gate is set. Clippy cognitive_complexity stays off the deny set.
+
+  --gate           Fail (exit 1) when any function exceeds CCN 20.
+                   Uses -C 20 -L 9999 -a 99 so NLOC and params do not fail.
+  --csv PATH       Also write lizard CSV to PATH
+  --threshold N    Override the CCN warning threshold (default 20).
+                   Ignored with --gate (always CCN 20).
+EOF
+      exit 0
+    fi
+    csv_path=""
+    threshold="20"
+    gate=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --gate)
+          gate=1
+          shift
+          ;;
+        --csv)
+          csv_path="${2:-}"
+          [[ -n "$csv_path" ]] || die "usage: ./caliche rust complexity --csv PATH"
+          shift 2
+          ;;
+        --threshold)
+          threshold="${2:-}"
+          [[ -n "$threshold" ]] || die "usage: ./caliche rust complexity --threshold N"
+          shift 2
+          ;;
+        *)
+          die "unknown rust complexity option: ${1} (try: ./caliche rust complexity help)"
+          ;;
+      esac
+    done
+    export PATH="${HOME}/.local/bin:${PATH}"
+    need_cmd uvx
+    lizard_paths=(
+      src
+      crates/caliche_acp_client/src
+      crates/caliche_contracts/src
+      crates/caliche_orchestration/src
+      caliche_cli/src
+      caliche_server/src
+      caliche_sandbox/src
+      dripstone/src
+    )
+    if [[ "$gate" -eq 1 ]]; then
+      lizard_args=(
+        -l rust
+        -C 20
+        -L 9999
+        -a 99
+        -w
+        -s cyclomatic_complexity
+        -x '*/tests/*'
+        -x '*/shotput/*'
+      )
+    else
+      lizard_args=(
+        -l rust
+        -C "$threshold"
+        -L 150
+        -a 8
+        -w
+        -s cyclomatic_complexity
+        -x '*/tests/*'
+        -x '*/shotput/*'
+      )
+    fi
+    if [[ -n "$csv_path" ]]; then
+      step "Writing lizard CSV to ${csv_path}"
+      uvx lizard "${lizard_paths[@]}" "${lizard_args[@]}" --csv >"$csv_path"
+    fi
+    if [[ "$gate" -eq 1 ]]; then
+      step "McCabe CCN via lizard (merge gate CCN 20, NLOC/params ignored)"
+    else
+      step "McCabe CCN via lizard (threshold ${threshold})"
+    fi
+    set +e
+    uvx lizard "${lizard_paths[@]}" "${lizard_args[@]}"
+    lizard_status=$?
+    set -e
+    if [[ "$lizard_status" -eq 0 ]]; then
+      if [[ "$gate" -eq 1 ]]; then
+        ok "no functions over CCN 20"
+      else
+        ok "no functions over CCN ${threshold}, 150 NLOC, or 8 parameters"
+      fi
+    elif [[ "$lizard_status" -eq 1 ]]; then
+      if [[ "$gate" -eq 1 ]]; then
+        die "lizard reported functions over CCN 20"
+      fi
+      warn "lizard reported functions over the thresholds (audit only, not a merge gate)"
+    else
+      die "lizard failed with exit ${lizard_status}"
+    fi
+    if command -v scc >/dev/null 2>&1; then
+      step "File-level complexity via scc (submodules scanned by path)"
+      set +o pipefail
+      scc --by-file --sort complexity --include-ext rs \
+        src crates caliche_cli/src caliche_server/src caliche_sandbox/src dripstone/src \
+        | head -n 40
+      set -o pipefail
+    else
+      warn "scc not installed; skip file-level complexity"
+    fi
+    if [[ "$gate" -eq 1 ]]; then
+      ok "complexity merge gate complete"
+    else
+      ok "complexity audit complete"
+    fi
+    ;;
+  *)
+    die "unknown rust subcommand: ${cmd} (try: ./caliche rust help)"
+    ;;
+esac

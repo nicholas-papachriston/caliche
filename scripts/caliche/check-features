@@ -1,0 +1,549 @@
+#!/usr/bin/env bash
+#
+# check-features - Run cargo check against all feature flag combinations
+#
+# Ordered to maximize artifact reuse:
+#   1. dripstone (leaf dependency, no caliche dep)
+#   2. caliche core crate (builds incrementally from small to large feature sets)
+#   3. caliche_server (depends on caliche)
+#   4. caliche_cli (depends on caliche + caliche_server)
+#   5. caliche_py (depends on caliche with full)
+#   6. caliche_js (depends on caliche with full)
+#   7. caliche_web (independent, Dioxus-based)
+#
+# Within each crate, features are ordered so that each step adds incrementally
+# on top of previously compiled artifacts rather than invalidating them.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if caliche_want_help "${1:-}"; then
+  cat <<'EOF'
+Usage: ./caliche check-features
+
+  cargo check the workspace feature matrix
+  Set STOP_ON_FAIL=1 to abort on first failure
+EOF
+  exit 0
+fi
+
+
+# ---- Configuration ----
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+DIM='\033[2m'
+NC='\033[0m'
+
+PASS_COUNT=0
+FAIL_COUNT=0
+TOTAL_COUNT=0
+FAILED_CHECKS=()
+START_TIME=$(date +%s)
+
+# ---- Helpers ----
+run_check() {
+    local label="$1"
+    shift
+    TOTAL_COUNT=$((TOTAL_COUNT + 1))
+    local step_start
+    step_start=$(date +%s)
+
+    printf "${BLUE}[%3d] %-70s${NC}" "$TOTAL_COUNT" "$label"
+
+    if "$@" 2>&1 | tail -5 > /tmp/check_all_features_last.log; then
+        local step_end
+        step_end=$(date +%s)
+        local elapsed=$((step_end - step_start))
+        printf "${GREEN} OK${NC} ${DIM}(%ds)${NC}\n" "$elapsed"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        local step_end
+        step_end=$(date +%s)
+        local elapsed=$((step_end - step_start))
+        printf "${RED} FAIL${NC} ${DIM}(%ds)${NC}\n" "$elapsed"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        FAILED_CHECKS+=("$label")
+        if [ "${STOP_ON_FAIL:-0}" = "1" ]; then
+            echo ""
+            echo "${RED}Stopping on first failure. Last output:${NC}"
+            cat /tmp/check_all_features_last.log
+            exit 1
+        fi
+    fi
+}
+
+print_header() {
+    echo ""
+    echo "${YELLOW}========================================================================${NC}"
+    echo "${YELLOW}  $1${NC}"
+    echo "${YELLOW}========================================================================${NC}"
+    echo ""
+}
+
+# ---- Main ----
+echo ""
+echo "${BLUE}Caliche - Comprehensive Feature Check${NC}"
+echo "${DIM}Checking all feature flag combinations across all workspace crates${NC}"
+echo "${DIM}Set STOP_ON_FAIL=1 to abort on first failure${NC}"
+echo ""
+
+# =========================================================================
+# Phase 1: dripstone (leaf crate, no caliche dependency)
+#   Build order: core -> individual backends -> backend groups -> embeddings -> rag -> full
+# =========================================================================
+print_header "Phase 1: dripstone"
+
+# 1a. Core only (minimal, establishes base artifacts)
+run_check "dripstone: --no-default-features" \
+    cargo check -p dripstone --no-default-features
+
+run_check "dripstone: core" \
+    cargo check -p dripstone --no-default-features --features core
+
+# 1b. Individual primary backends (each adds one backend on top of core)
+run_check "dripstone: memory-backend" \
+    cargo check -p dripstone --no-default-features --features memory-backend
+
+run_check "dripstone: redis-backend" \
+    cargo check -p dripstone --no-default-features --features redis-backend
+
+run_check "dripstone: postgres-backend" \
+    cargo check -p dripstone --no-default-features --features postgres-backend
+
+run_check "dripstone: sqlite-backend" \
+    cargo check -p dripstone --no-default-features --features sqlite-backend
+
+run_check "dripstone: qdrant-grpc-backend" \
+    cargo check -p dripstone --no-default-features --features qdrant-grpc-backend
+
+# 1c. Individual HTTP backends (reuse reqwest artifacts from first one)
+run_check "dripstone: qdrant-backend (HTTP)" \
+    cargo check -p dripstone --no-default-features --features qdrant-backend
+
+run_check "dripstone: pinecone-backend" \
+    cargo check -p dripstone --no-default-features --features pinecone-backend
+
+run_check "dripstone: chroma-backend" \
+    cargo check -p dripstone --no-default-features --features chroma-backend
+
+run_check "dripstone: weaviate-backend" \
+    cargo check -p dripstone --no-default-features --features weaviate-backend
+
+run_check "dripstone: milvus-backend" \
+    cargo check -p dripstone --no-default-features --features milvus-backend
+
+# 1d. S3 backends (reuse AWS SDK artifacts)
+run_check "dripstone: s3-backend" \
+    cargo check -p dripstone --no-default-features --features s3-backend
+
+run_check "dripstone: coldforge-backend" \
+    cargo check -p dripstone --no-default-features --features coldforge-backend
+
+# 1e. Memory-mapped backend
+run_check "dripstone: mmap-backend" \
+    cargo check -p dripstone --no-default-features --features mmap-backend
+
+# 1f. Backend groups (artifacts mostly cached from individual checks above)
+run_check "dripstone: backends (primary group)" \
+    cargo check -p dripstone --no-default-features --features backends
+
+run_check "dripstone: backends-http (HTTP group)" \
+    cargo check -p dripstone --no-default-features --features backends-http
+
+run_check "dripstone: backends-s3 (S3 group)" \
+    cargo check -p dripstone --no-default-features --features backends-s3
+
+run_check "dripstone: backends-all" \
+    cargo check -p dripstone --no-default-features --features backends-all
+
+# 1g. Graph backends
+run_check "dripstone: graph-neo4j" \
+    cargo check -p dripstone --no-default-features --features graph-neo4j
+
+run_check "dripstone: graph-age" \
+    cargo check -p dripstone --no-default-features --features graph-age
+
+# 1h. Embeddings (heavy deps - ort, candle, tokenizers)
+run_check "dripstone: embedding-ort" \
+    cargo check -p dripstone --no-default-features --features embedding-ort
+
+run_check "dripstone: embedding-candle" \
+    cargo check -p dripstone --no-default-features --features embedding-candle
+
+run_check "dripstone: embeddings (both)" \
+    cargo check -p dripstone --no-default-features --features embeddings
+
+# 1i. Vision features (reuse embedding artifacts)
+run_check "dripstone: vision-ort" \
+    cargo check -p dripstone --no-default-features --features vision-ort
+
+run_check "dripstone: vision-candle" \
+    cargo check -p dripstone --no-default-features --features vision-candle
+
+# 1j. Inference features
+run_check "dripstone: inference-ort" \
+    cargo check -p dripstone --no-default-features --features inference-ort
+
+run_check "dripstone: inference-candle" \
+    cargo check -p dripstone --no-default-features --features inference-candle
+
+run_check "dripstone: inference (both)" \
+    cargo check -p dripstone --no-default-features --features inference
+
+# 1k. RAG and SIMD
+run_check "dripstone: rag" \
+    cargo check -p dripstone --no-default-features --features rag
+
+run_check "dripstone: simd" \
+    cargo check -p dripstone --no-default-features --features simd
+
+# 1l. Default and full
+run_check "dripstone: default features" \
+    cargo check -p dripstone
+
+run_check "dripstone: full" \
+    cargo check -p dripstone --no-default-features --features full
+
+# =========================================================================
+# Phase 2: caliche core library
+#   Build order: no features -> individual providers -> provider groups
+#   -> individual tools -> tool groups -> vector stores -> advanced -> full
+# =========================================================================
+print_header "Phase 2: caliche (core library)"
+
+# 2a. No default features (bare minimum)
+run_check "caliche: --no-default-features" \
+    cargo check -p caliche --no-default-features
+
+# 2b. Individual providers (reqwest-based first to share artifacts)
+run_check "caliche: openai" \
+    cargo check -p caliche --no-default-features --features openai
+
+run_check "caliche: anthropic" \
+    cargo check -p caliche --no-default-features --features anthropic
+
+run_check "caliche: openrouter" \
+    cargo check -p caliche --no-default-features --features openrouter
+
+run_check "caliche: perplexity" \
+    cargo check -p caliche --no-default-features --features perplexity
+
+run_check "caliche: lmstudio" \
+    cargo check -p caliche --no-default-features --features lmstudio
+
+run_check "caliche: ollama" \
+    cargo check -p caliche --no-default-features --features ollama
+
+run_check "caliche: cohere" \
+    cargo check -p caliche --no-default-features --features cohere
+
+run_check "caliche: google" \
+    cargo check -p caliche --no-default-features --features google
+
+# Providers with heavier/unique deps last
+run_check "caliche: azure-openai" \
+    cargo check -p caliche --no-default-features --features azure-openai
+
+run_check "caliche: bedrock" \
+    cargo check -p caliche --no-default-features --features bedrock
+
+run_check "caliche: local-inference" \
+    cargo check -p caliche --no-default-features --features local-inference
+
+
+# 2c. Provider groups (mostly cached now)
+run_check "caliche: providers" \
+    cargo check -p caliche --no-default-features --features providers
+
+run_check "caliche: providers-cloud" \
+    cargo check -p caliche --no-default-features --features providers-cloud
+
+run_check "caliche: providers-all" \
+    cargo check -p caliche --no-default-features --features providers-all
+
+# 2d. Individual tools (lightweight first)
+run_check "caliche: tools-calculator" \
+    cargo check -p caliche --no-default-features --features tools-calculator
+
+run_check "caliche: tools-echo" \
+    cargo check -p caliche --no-default-features --features tools-echo
+
+run_check "caliche: tools-file" \
+    cargo check -p caliche --no-default-features --features tools-file
+
+run_check "caliche: tools-data" \
+    cargo check -p caliche --no-default-features --features tools-data
+
+run_check "caliche: tools-http" \
+    cargo check -p caliche --no-default-features --features tools-http
+
+run_check "caliche: tools-document" \
+    cargo check -p caliche --no-default-features --features tools-document
+
+run_check "caliche: tools-grep" \
+    cargo check -p caliche --no-default-features --features tools-grep
+
+run_check "caliche: tools-git" \
+    cargo check -p caliche --no-default-features --features tools-git
+
+run_check "caliche: tools-rag" \
+    cargo check -p caliche --no-default-features --features tools-rag
+
+run_check "caliche: tools-graph" \
+    cargo check -p caliche --no-default-features --features tools-graph
+
+# 2e. Tool groups
+run_check "caliche: tools-core" \
+    cargo check -p caliche --no-default-features --features tools-core
+
+run_check "caliche: tools-extended" \
+    cargo check -p caliche --no-default-features --features tools-extended
+
+run_check "caliche: all-tools" \
+    cargo check -p caliche --no-default-features --features all-tools
+
+# 2f. Graph backends
+run_check "caliche: graph-neo4j" \
+    cargo check -p caliche --no-default-features --features graph-neo4j
+
+run_check "caliche: graph-age" \
+    cargo check -p caliche --no-default-features --features graph-age
+
+# 2g. Individual vector stores
+run_check "caliche: vector-memory" \
+    cargo check -p caliche --no-default-features --features vector-memory
+
+run_check "caliche: vector-store-memory" \
+    cargo check -p caliche --no-default-features --features vector-store-memory
+
+run_check "caliche: vector-store-redis" \
+    cargo check -p caliche --no-default-features --features vector-store-redis
+
+run_check "caliche: vector-store-postgres" \
+    cargo check -p caliche --no-default-features --features vector-store-postgres
+
+run_check "caliche: vector-store-qdrant-grpc" \
+    cargo check -p caliche --no-default-features --features vector-store-qdrant-grpc
+
+run_check "caliche: vector-store-qdrant" \
+    cargo check -p caliche --no-default-features --features vector-store-qdrant
+
+run_check "caliche: vector-store-pinecone" \
+    cargo check -p caliche --no-default-features --features vector-store-pinecone
+
+run_check "caliche: vector-store-chroma" \
+    cargo check -p caliche --no-default-features --features vector-store-chroma
+
+run_check "caliche: vector-store-weaviate" \
+    cargo check -p caliche --no-default-features --features vector-store-weaviate
+
+run_check "caliche: vector-store-milvus" \
+    cargo check -p caliche --no-default-features --features vector-store-milvus
+
+run_check "caliche: vector-store-s3-backend" \
+    cargo check -p caliche --no-default-features --features vector-store-s3-backend
+
+run_check "caliche: vector-store-coldforge" \
+    cargo check -p caliche --no-default-features --features vector-store-coldforge
+
+# 2h. Vector store groups
+run_check "caliche: standard-vector-stores" \
+    cargo check -p caliche --no-default-features --features standard-vector-stores
+
+run_check "caliche: vector-store-primary" \
+    cargo check -p caliche --no-default-features --features vector-store-primary
+
+run_check "caliche: vector-store-http" \
+    cargo check -p caliche --no-default-features --features vector-store-http
+
+run_check "caliche: vector-store-s3" \
+    cargo check -p caliche --no-default-features --features vector-store-s3
+
+run_check "caliche: vector-store-all" \
+    cargo check -p caliche --no-default-features --features vector-store-all
+
+# 2i. S3
+run_check "caliche: s3" \
+    cargo check -p caliche --no-default-features --features s3
+
+# 2j. MySQL
+run_check "caliche: mysql" \
+    cargo check -p caliche --no-default-features --features mysql
+
+# 2k. Chain and template features
+run_check "caliche: prompts" \
+    cargo check -p caliche --no-default-features --features prompts
+
+run_check "caliche: output-parsing" \
+    cargo check -p caliche --no-default-features --features output-parsing
+
+run_check "caliche: document-loaders" \
+    cargo check -p caliche --no-default-features --features document-loaders
+
+run_check "caliche: chains" \
+    cargo check -p caliche --no-default-features --features chains
+
+run_check "caliche: retrieval-chains" \
+    cargo check -p caliche --no-default-features --features retrieval-chains
+
+run_check "caliche: chain-features" \
+    cargo check -p caliche --no-default-features --features chain-features
+
+run_check "caliche: templates" \
+    cargo check -p caliche --no-default-features --features templates
+
+# 2l. Miscellaneous features
+run_check "caliche: mcp" \
+    cargo check -p caliche --no-default-features --features mcp
+
+run_check "caliche: reasoning-patterns" \
+    cargo check -p caliche --no-default-features --features reasoning-patterns
+
+run_check "caliche: testing" \
+    cargo check -p caliche --no-default-features --features testing
+
+run_check "caliche: token-tiktoken" \
+    cargo check -p caliche --no-default-features --features token-tiktoken
+
+run_check "caliche: sqlite-store" \
+    cargo check -p caliche --no-default-features --features sqlite-store
+
+run_check "caliche: hybrid-search" \
+    cargo check -p caliche --no-default-features --features hybrid-search
+
+run_check "caliche: rag-reranking" \
+    cargo check -p caliche --no-default-features --features rag-reranking
+
+run_check "caliche: embedding-candle" \
+    cargo check -p caliche --no-default-features --features embedding-candle
+
+run_check "caliche: embedding-ort" \
+    cargo check -p caliche --no-default-features --features embedding-ort
+
+run_check "caliche: embeddings" \
+    cargo check -p caliche --no-default-features --features embeddings
+
+# 2m. Aggregate feature sets (agent ⊂ app ⊂ full)
+run_check "caliche: agent" \
+    cargo check -p caliche --no-default-features --features agent
+
+run_check "caliche: app" \
+    cargo check -p caliche --no-default-features --features app
+
+run_check "caliche: default features (= agent)" \
+    cargo check -p caliche
+
+run_check "caliche: full" \
+    cargo check -p caliche --no-default-features --features full
+
+run_check "caliche: full-local" \
+    cargo check -p caliche --no-default-features --features full-local
+
+# =========================================================================
+# Phase 3: caliche_server
+# =========================================================================
+print_header "Phase 3: caliche_server"
+
+run_check "caliche_server: --no-default-features" \
+    cargo check -p caliche_server --no-default-features
+
+run_check "caliche_server: lambda" \
+    cargo check -p caliche_server --no-default-features --features lambda
+
+run_check "caliche_server: mcp" \
+    cargo check -p caliche_server --no-default-features --features mcp
+
+run_check "caliche_server: templates" \
+    cargo check -p caliche_server --no-default-features --features templates
+
+
+run_check "caliche_server: default features" \
+    cargo check -p caliche_server
+
+# =========================================================================
+# Phase 4: caliche_cli
+# =========================================================================
+print_header "Phase 4: caliche_cli"
+
+run_check "caliche_cli: default features" \
+    cargo check -p caliche_cli
+
+
+run_check "caliche_cli: local-inference" \
+    cargo check -p caliche_cli --features local-inference
+
+run_check "caliche_cli: vector-memory" \
+    cargo check -p caliche_cli --features vector-memory
+
+run_check "caliche_cli: all pass-through features" \
+    cargo check -p caliche_cli --features local-inference,vector-memory
+
+# =========================================================================
+# Phase 5: caliche_py
+# =========================================================================
+print_header "Phase 5: caliche_py"
+
+run_check "caliche_py: default features" \
+    cargo check -p caliche_py
+
+run_check "caliche_py: tools-rag" \
+    cargo check -p caliche_py --features tools-rag
+
+# =========================================================================
+# Phase 6: caliche_js
+# =========================================================================
+print_header "Phase 6: caliche_js"
+
+run_check "caliche_js: default features" \
+    cargo check -p caliche_js
+
+# =========================================================================
+# Phase 7: caliche_web
+# =========================================================================
+print_header "Phase 7: caliche_web"
+
+run_check "caliche_web: --no-default-features" \
+    cargo check -p caliche_web --no-default-features
+
+run_check "caliche_web: desktop (default)" \
+    cargo check -p caliche_web
+
+run_check "caliche_web: web" \
+    cargo check -p caliche_web --no-default-features --features web
+
+run_check "caliche_web: mobile" \
+    cargo check -p caliche_web --no-default-features --features mobile
+
+# =========================================================================
+# Summary
+# =========================================================================
+END_TIME=$(date +%s)
+TOTAL_TIME=$((END_TIME - START_TIME))
+MINUTES=$((TOTAL_TIME / 60))
+SECONDS=$((TOTAL_TIME % 60))
+
+echo ""
+echo "${YELLOW}========================================================================${NC}"
+echo "${YELLOW}  Summary${NC}"
+echo "${YELLOW}========================================================================${NC}"
+echo ""
+echo "  Total checks:  ${TOTAL_COUNT}"
+echo "  ${GREEN}Passed:        ${PASS_COUNT}${NC}"
+echo "  ${RED}Failed:        ${FAIL_COUNT}${NC}"
+echo "  Time:          ${MINUTES}m ${SECONDS}s"
+echo ""
+
+if [ ${FAIL_COUNT} -gt 0 ]; then
+    echo "${RED}Failed checks:${NC}"
+    for failed in "${FAILED_CHECKS[@]}"; do
+        echo "  - ${failed}"
+    done
+    echo ""
+    exit 1
+else
+    echo "${GREEN}All feature checks passed.${NC}"
+    echo ""
+    exit 0
+fi

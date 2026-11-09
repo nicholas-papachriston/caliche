@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+status_file() {
+  local label="$1"
+  local path="$2"
+  if [[ -f "$path" ]]; then
+    printf '  %-12s %sbuilt%s\n' "$label" "${C_GREEN}" "${C_RESET}"
+  else
+    printf '  %-12s %snot built%s\n' "$label" "${C_YELLOW}" "${C_RESET}"
+  fi
+}
+
+status_cmd() {
+  local label="$1"
+  local cmd="$2"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    printf '  %-12s %savailable%s\n' "$label" "${C_GREEN}" "${C_RESET}"
+  else
+    printf '  %-12s %snot found%s\n' "$label" "${C_YELLOW}" "${C_RESET}"
+  fi
+}
+
+printf '%sCaliche project information%s\n\n' "${C_BLUE}" "${C_RESET}"
+printf '%sProject structure:%s\n' "${C_GREEN}" "${C_RESET}"
+printf '  Rust:       %s\n' "$ROOT"
+printf '  CLI:        %s\n' "$CLI_DIR"
+printf '  API:        %s\n' "$API_DIR"
+printf '  Python:     %s (managed with uv)\n' "$PY_DIR"
+printf '  JavaScript: %s\n' "$JS_DIR"
+printf '\n'
+printf '%sBuild status:%s\n' "${C_GREEN}" "${C_RESET}"
+status_file "Rust:" "${ROOT}/target/release/libcaliche.rlib"
+status_file "CLI:" "${CLI_DIR}/target/release/caliche"
+status_file "API:" "${API_DIR}/target/release/libcaliche_server.rlib"
+status_file "JavaScript:" "${JS_DIR}/dist/index.js"
+python_so="$(find "${PY_DIR}/python/caliche" -name '*.so' -type f -print -quit 2>/dev/null || true)"
+if [[ -n "$python_so" ]]; then
+  printf '  %-12s %sbuilt%s\n' "Python:" "${C_GREEN}" "${C_RESET}"
+else
+  printf '  %-12s %snot built%s\n' "Python:" "${C_YELLOW}" "${C_RESET}"
+fi
+printf '\n'
+printf '%sTool availability:%s\n' "${C_GREEN}" "${C_RESET}"
+status_cmd "cargo:" cargo
+status_cmd "bun:" bun
+if command -v uv >/dev/null 2>&1; then
+  printf '  %-12s %savailable%s\n' "uv:" "${C_GREEN}" "${C_RESET}"
+else
+  printf '  %-12s %snot found%s (install: brew install uv, or see https://docs.astral.sh/uv/getting-started/installation/)\n' \
+    "uv:" "${C_YELLOW}" "${C_RESET}"
+fi

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche watch <rust|js>
+
+  rust    cargo watch -x build -x test
+  js      bun run dev in caliche_js
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  if [[ -z "$cmd" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+shift
+
+case "$cmd" in
+  rust)
+    step "Watching Rust project"
+    cargo watch -x build -x test
+    ;;
+  js)
+    step "Watching JavaScript project"
+    (
+      cd "$JS_DIR"
+      bun run dev
+    )
+    ;;
+  *)
+    die "unknown watch subcommand: ${cmd} (try: ./caliche watch help)"
+    ;;
+esac

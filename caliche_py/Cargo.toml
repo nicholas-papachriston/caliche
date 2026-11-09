@@ -1,0 +1,83 @@
+[package]
+name = "caliche_py"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Python bindings for caliche"
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+name = "caliche_py"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["bindings"]
+# The default wheel build tracks root `bindings` (= `bindings-app`).
+bindings = ["caliche/bindings"]
+minimal = ["caliche/bindings-minimal"]
+agent = ["caliche/bindings-agent"]
+app = ["caliche/bindings-app"]
+# Fat opt-in for specialized builds / CI.
+full = ["caliche/full", "durable-streams-redis"]
+extension-module = ["pyo3/extension-module"]
+# Optional binding persistence addons.
+sql = ["caliche/bindings-sql"]
+redis = ["caliche/bindings-redis"]
+# Test-only `_panic_probe` export. Dev builds turn it on; release builds do not.
+panic-probe = []
+# Optional heavy surfaces (not in default bindings).
+tools-rag = ["caliche/tools-rag"]
+vector-memory = ["caliche/vector-memory"]
+s3 = ["caliche/s3"]
+lsp = ["caliche/lsp"]
+vector-store-redis = ["caliche/vector-store-redis"]
+vector-store-postgres = ["caliche/vector-store-postgres"]
+vector-store-sqlite = ["caliche/vector-store-sqlite"]
+vector-store-qdrant = ["caliche/vector-store-qdrant"]
+vector-store-qdrant-grpc = ["caliche/vector-store-qdrant-grpc"]
+vector-store-pinecone = ["caliche/vector-store-pinecone"]
+vector-store-chroma = ["caliche/vector-store-chroma"]
+vector-store-weaviate = ["caliche/vector-store-weaviate"]
+vector-store-milvus = ["caliche/vector-store-milvus"]
+vector-store-s3-backend = ["caliche/vector-store-s3-backend"]
+vector-store-coldforge = ["caliche/vector-store-coldforge"]
+vector-store-dynamodb = ["caliche/vector-store-dynamodb"]
+vector-store-mmap = ["caliche/vector-store-mmap"]
+durable-streams-redis = ["caliche/durable-streams-redis"]
+durable-streams-postgres = ["caliche/durable-streams-postgres"]
+durable-streams-s3 = ["caliche/durable-streams-s3"]
+durable-streams-sqlite = ["caliche/durable-streams-sqlite"]
+local-inference-candle = ["caliche/local-inference-candle"]
+local-inference-ort = ["caliche/local-inference-ort"]
+local-inference-llamacpp = ["caliche/local-inference-llamacpp"]
+local-inference = ["caliche/local-inference"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Path — features come from this crate's feature flags (`default = ["bindings"]`).
+caliche = { path = "..", default-features = false }
+
+# Workspace
+anyhow.workspace = true
+async-trait.workspace = true
+beef.workspace = true
+base64.workspace = true
+chrono.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# Direct
+pyo3 = { version = "0.27", features = ["abi3-py39", "abi3"] }
+pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
+pythonize = "0.27"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

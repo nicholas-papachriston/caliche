@@ -1,0 +1,159 @@
+[package]
+name = "caliche_cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI interface for caliche"
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+name = "caliche_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "caliche"
+path = "src/main.rs"
+
+[features]
+# The default is caliche `agent` plus CLI essentials (MCP, sessions, profiles)
+# and the server without the application surface. `server-app` adds that
+# surface (cloud providers, every vector store, Redis and PostgreSQL session
+# stores). `full` tracks root `full` plus the CLI extras.
+default = []
+server-app = ["caliche_server/app"]
+compaction = ["caliche/compaction"]
+# Requires `caliche_web/dist` (`./caliche web wasm`). Off by default so
+# `cargo test` / `cargo build` do not need dioxus-cli. `./caliche rust install`
+# turns it on for the PATH binary.
+embedded-ui = ["caliche_server/embedded-ui"]
+failover = ["caliche/failover"]
+# Cloud providers left out of the default build.
+bedrock = ["caliche/bedrock"]
+azure-openai = ["caliche/azure-openai"]
+# Marker: on with any local inference backend. The CLI's local inference
+# surface (`/local-model`, the provider, doctor) keys on it.
+local-inference-base = []
+local-inference = ["local-inference-base", "caliche/local-inference"]
+# Opt-in GGUF / llama.cpp (native compile cost; keep out of default CLI features)
+local-inference-llamacpp = ["local-inference-base", "caliche/local-inference-llamacpp"]
+local-inference-llamacpp-metal = [
+    "local-inference-llamacpp",
+    "caliche/local-inference-llamacpp-metal",
+]
+local-inference-llamacpp-cuda = [
+    "local-inference-llamacpp",
+    "caliche/local-inference-llamacpp-cuda",
+]
+inference-mlx = ["local-inference", "caliche/inference-mlx"]
+otlp = ["caliche/otlp", "caliche_server/otlp"]
+scheduling = ["caliche/scheduling"]
+session-tools = ["caliche/session-tools"]
+vector-memory = ["caliche/vector-memory"]
+lsp = ["caliche/lsp"]
+test-utils = []
+# Kitchen-sink CLI surface for release / CI matrices.
+full = [
+    "caliche/full",
+    "caliche/learning-loop",
+    "lsp",
+    "server-app",
+    "vector-memory",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Direct CLI surface stays on `agent` (+ CLI essentials). The server below
+# brings its own always-on root set; `server-app` adds root `app`.
+# Local model backends stay on the `local-inference` feature. That feature
+# links ONNX Runtime.
+caliche = { path = "..", default-features = false, features = [
+    "agent",
+    "sqlite-store",
+    "mcp",
+    "mcp-client",
+    "session-tools",
+    "profiles",
+    "plugins",
+    "learning-loop",
+    "chains",
+    "lsp",
+] }
+agent-client-protocol-schema = { version = "=1.10.2", default-features = false }
+caliche_server = { path = "../caliche_server", default-features = false, features = ["mcp", "templates", "router"] }
+caliche_sandbox = { path = "../caliche_sandbox", features = ["sandbox-macos", "sandbox-linux", "sandbox-windows", "landlock-net"] }
+caliche_contracts = { path = "../crates/caliche_contracts", features = ["acp"] }
+
+# Workspace
+anyhow.workspace = true
+axum.workspace = true
+beef.workspace = true
+chrono.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+parking_lot.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+toml.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+regex.workspace = true
+base64.workspace = true
+similar.workspace = true
+
+# Direct
+arboard = { version = "3.6", default-features = false }
+clap_complete = "4.5"
+clap_mangen = "0.3.0"
+crossterm = { version = "0.29", features = ["event-stream"] }
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+dirs.workspace = true
+glob = "0.3"
+ignore = "0.4"
+libc = "0.2"
+lru = "0.18.0"
+reedline = { version = "0.47.0", features = ["external_printer"] }
+rmp-serde = "1.1"
+schemars = "1.2"
+which = "8"
+keyring-core = "1.0.0"
+tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
+
+[target."cfg(windows)".dependencies]
+windows-native-keyring-store = "1.0.0"
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_NetworkManagement_IpHelper",
+    "Wdk_System_Threading",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1.0.0"
+
+[dev-dependencies]
+# Do not enable `full` here. That feature links ONNX Runtime.
+caliche_cli = { path = ".", features = ["test-utils", "lsp", "scheduling"] }
+serial_test.workspace = true
+tempfile.workspace = true

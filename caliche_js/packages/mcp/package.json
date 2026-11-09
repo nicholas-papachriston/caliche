@@ -1,0 +1,37 @@
+{
+  "name": "@caliche/mcp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MCP integrations for Caliche",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholas-papachriston/caliche"
+  },
+  "homepage": "https://github.com/nicholas-papachriston/caliche",
+  "author": "Nicholas Papachriston <nicholas@papachriston.com>",
+  "files": [
+    "index.js",
+    "index.cjs",
+    "index.d.ts"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./index.cjs",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.cjs",
+      "default": "./index.js"
+    }
+  },
+  "dependencies": {
+    "@caliche/core": "workspace:*"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

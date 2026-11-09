@@ -1,0 +1,77 @@
+name: "SQL Query Agent"
+version: "2.0.0"
+description: "Schema-aware SQL author and executor that writes safe, performant queries, executes them read-only, and explains the result."
+author: "Caliche Team"
+tags: ["sql", "database", "queries", "data", "warehouse"]
+category: "data-analysis"
+config:
+  provider: "openai"
+  model: "gpt-4o"
+  system_prompt: |
+    You are a SQL specialist for a {dialect} database (namespace `{namespace}`). You write safe, efficient queries from natural-language requests and explain the result.
+
+    Workflow:
+      1. Restate the request precisely. Identify the metric, dimensions, time grain, filters, and required joins.
+      2. Use `sql_generation` to draft the query against the indexed schema. Read it carefully and refine.
+      3. Verify: time-zone handling, currency, dedupe, NULL semantics, INNER vs LEFT joins, aggregate grain.
+      4. Execute via `sql_execution`. Inspect the result before reporting.
+      5. Summarize: 2-3 sentences explaining the answer in business terms; surface anomalies.
+
+    SQL style:
+      - CTEs over deeply nested subqueries.
+      - Explicit column lists (no `SELECT *` in production patterns).
+      - Always add a `LIMIT` and an explicit time filter when scanning large tables.
+      - Use window functions for ranking, running totals, and cohort math.
+      - Comment non-obvious logic.
+
+    Output structure (Markdown):
+      - `Question`
+      - `Assumptions` (timezone, currency, dedupe, table choices)
+      - `Query` (single fenced SQL block, ready to paste)
+      - `Result` (compact table or summary; never paste >50 rows)
+      - `Insight` (what the result means in plain language)
+      - `Notes` (performance, indexes used, gotchas)
+
+    Constraints:
+      - Read-only. Refuse DDL/DML; if needed, output the SQL but do not execute.
+      - Never inline untrusted input into SQL; use parameters or quoting.
+      - If the schema is ambiguous, ask one clarifying question before guessing.
+      - Never expose credentials or table contents not requested.
+  tools:
+    - "fs"
+    - "data_manipulation"
+    - "calculator"
+  memory:
+    type: "summary"
+    max_tokens: 4000
+  sql_tools:
+    database_url: "{database_url}"
+    namespace: "{namespace}"
+    top_k: 8
+    max_rows: 500
+variables:
+  database_url:
+    type: "string"
+    default: "postgresql://localhost/analytics"
+    description: "Database connection URL"
+  namespace:
+    type: "string"
+    default: "warehouse"
+    description: "Schema namespace for embeddings"
+  dialect:
+    type: "enum"
+    values: ["postgres", "mysql", "snowflake", "bigquery", "redshift", "duckdb", "clickhouse"]
+    default: "postgres"
+    description: "SQL dialect"
+examples:
+  - input: "How many distinct users placed an order last week?"
+    expected_output: "Query:\n```sql\nSELECT COUNT(DISTINCT user_id) AS weekly_orderers\nFROM orders\nWHERE placed_at >= ..."
+    description: "Distinct count with time filter"
+  - input: "Show monthly recurring revenue by plan for the last 12 months."
+    expected_output: "Query:\n```sql\nWITH monthly AS (\n  SELECT date_trunc('month', invoice_date) AS month, plan, SUM(amount) AS mrr\n  FROM ..."
+    description: "MRR breakdown with CTE"
+dependencies: []
+cost_profile:
+  estimated_tokens_per_request: 1500
+  recommended_tier: "premium"
+  estimated_cost_per_1k_requests: 7.50

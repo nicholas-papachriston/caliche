@@ -1,0 +1,950 @@
+[workspace]
+members = [
+    "caliche_js",
+    "caliche_py",
+    "caliche_cli",
+    "caliche_server",
+    "caliche_web",
+    "dripstone",
+    "caliche_sandbox",
+    "crates/caliche_acp_client",
+    "crates/caliche_contracts",
+    "crates/caliche_orchestration",
+    "crates/caliche_mcp",
+    "crates/caliche_policy",
+    ".",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.92"
+authors = ["Nicholas Papachriston <nicholas@papachriston.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nicholas-papachriston/caliche"
+homepage = "https://github.com/nicholas-papachriston/caliche"
+
+# Workspace-wide rustc + Clippy policy. Members inherit via `[lints] workspace = true`.
+# CI runs `cargo clippy ... -- -D warnings`, so every `warn` here is merge-blocking.
+# Prefer `#[expect(clippy::lint, reason = "...")]` over bare `allow` for exceptions.
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_must_use = "warn"
+# Large facade crates re-export many `pub` items for bindings; keep off by default.
+unreachable_pub = "allow"
+
+[workspace.lints.clippy]
+# Groups (low priority so named lints below can override).
+# Default merge gate is restriction footguns + disallowed-* (the high-signal set).
+# Style groups stay off until cleaned; enable with `./caliche rust clippy-strict`.
+all = { level = "allow", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+cargo = { level = "allow", priority = -1 }
+
+# Panic / placeholder footguns (restriction group) — always merge-blocking.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+exit = "warn"
+get_unwrap = "warn"
+mem_forget = "warn"
+lossy_float_literal = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+pub_underscore_fields = "warn"
+
+# Enforced via clippy.toml disallowed-* tables.
+disallowed_types = "warn"
+disallowed_methods = "warn"
+disallowed_macros = "warn"
+disallowed_names = "warn"
+
+# Critical-path correctness and allocation hygiene.
+# Prefer fixing call sites over `allow`; use `#[expect(..., reason = "...")]`
+# only for trait-shaped async APIs that must stay async.
+await_holding_lock = "warn"
+needless_collect = "warn"
+unnecessary_to_owned = "warn"
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+or_fun_call = "warn"
+unused_async = "warn"
+redundant_clone = "warn"
+# Nursery: oversized futures on the build / agent loop. Keep as warn so
+# `./caliche rust clippy` fails closed; `Box::pin` hot paths when it fires.
+large_futures = "warn"
+
+# Restriction extras that are too broad / high-churn as a default deny.
+wildcard_enum_match_arm = "allow"
+same_name_method = "allow"
+too_many_arguments = "allow"
+indexing_slicing = "allow"
+as_conversions = "allow"
+blanket_clippy_restriction_lints = "allow"
+
+# Workspace is std-first (Tokio runtime). Portable crates opt into core/alloc
+# preference via crate-level `#![warn(clippy::std_instead_of_core)]`.
+std_instead_of_core = "allow"
+std_instead_of_alloc = "allow"
+
+[workspace.dependencies]
+# Core
+anyhow = "1.0"
+arc-swap = "1.9"
+async-trait = "0.1"
+beef = { version = "0.5", features = ["impl_serde"] }
+rkyv = { version = "0.8.15", default-features = true }
+bytes = "1.11"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.1"
+futures = "0.3"
+futures-util = "0.3"
+http = "1.4.0"
+parking_lot = "0.12"
+redis = "0.32"
+# 0.12: single line with UI (`reqwest-eventsource`) and the rest of the workspace. TLS is `rustls-tls`, enabled per crate (not here) so wasm UI can opt out.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "http2", "gzip", "system-proxy"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0.149"
+# No default features (`any`, `macros`, `migrate`): the code uses runtime queries and
+# `derive(FromRow)` only. Each crate enables the database drivers it uses.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "derive", "json", "chrono", "uuid"] }
+thiserror = "2.0"
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "process", "time", "rt", "signal", "io-util", "io-std", "fs", "net"] }
+tracing = "0.1"
+uuid = { version = "1.22", features = ["v7", "serde"] }
+fastrand = "2.3"
+sha2 = "0.10"
+sha1 = "0.10"
+blake3 = "1.5"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+similar = "2"
+
+# Server / HTTP
+axum = { version = "0.8", features = ["json", "ws"] }
+dotenvy = "0.15"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = { version = "8.11", features = ["compression"] }
+
+# Serialization / config
+serde_norway = "0.9"
+toml = "0.8"
+
+# Security / observability / caching
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+moka = { version = "0.12", features = ["future"] }
+# Text exposition only: the protobuf encoder (default feature) is not used.
+prometheus = { version = "0.14", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Async / CLI / tooling
+async-stream = "0.3"
+clap = { version = "4.6", features = ["derive", "env"] }
+lambda_http = "1.1"
+regex = "1.10"
+
+# AWS
+aws-config = "1.8"
+aws-credential-types = "1.2"
+# The SDK `rustls` default adds a second HTTP stack (hyper 0.14, rustls 0.21) and
+# `sigv4a` an older RustCrypto generation. `default-https-client` is rustls 0.23.
+aws-sdk-s3 = { version = "1.124", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
+aws-sigv4 = "1.4"
+
+# ML
+ort = "=2.0.0-rc.11"
+
+# Dev
+serial_test = "3.0"
+tempfile = "3.27"
+dirs = "6.0"
+url = "2.5"
+deadpool-redis = { version = "0.23", features = [] }
+
+# Security / networking primitives
+subtle = "2.6"
+ipnetwork = "0.21"
+
+# Windows FFI (sandbox backends, CLI process liveness)
+windows-sys = "0.59"
+
+[package]
+name = "caliche"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Rust agent runtime with multi-provider LLM support, tools, MCP, and language bindings"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+keywords = ["ai", "agent", "llm", "bedrock", "openai"]
+categories = ["api-bindings", "web-programming"]
+
+[lib]
+name = "caliche"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[features]
+# =============================================================================
+# USER-FACING PRESET LADDER
+# =============================================================================
+#   agent  — lean local agent loop (DEFAULT): HTTP providers + fs/bash/git +
+#            sandbox + compaction/templates. Day-to-day `cargo b/c/t`.
+#   app    — application/server surface on top of `agent`: MCP, JWT, persistence,
+#            vector stores, routing, sessions, chains. No local ML natives.
+#   full   — CI / kitchen-sink: `app` + local-inference + media, docker sandbox,
+#            AgentFS, scheduling, Redis durable streams.
+#
+# Binding ladder mirrors this: bindings-minimal → bindings-agent → bindings-app.
+default = ["agent"]
+
+agent = [
+    "providers",
+    "tools-file",
+    "tools-grep",
+    "tools-git",
+    "compaction",
+    "context-engine",
+    "token-tiktoken",
+    "failover",
+    "sandbox",
+    "templates",
+]
+
+app = [
+    "agent",
+    "providers-cloud",
+    "auth-jwt",
+    "all-tools",
+    "vector-store-all",
+    "chain-features",
+    "mcp",
+    "s3",
+    "reasoning-patterns",
+    "session-tools",
+    "router",
+    "lsp",
+    "prometheus",
+    "persistence-sql",
+    "persistence-redis",
+    "tools-sql",
+]
+
+full = [
+    "app",
+    "local-inference",
+    "durable-streams-redis",
+    "tools-media",
+    "scheduling",
+    "sandbox-docker",
+    "agentfs",
+    "sqlite-store",
+    "vector-store-coldforge",
+]
+
+# Persistence backends. `sqlx` and `persistence-sql` enable both drivers, because
+# their code takes postgres:// and sqlite:// URLs at runtime.
+sqlx = ["dep:sqlx", "sqlx/postgres", "sqlx/sqlite"]
+redis = ["dep:deadpool-redis"]
+persistence-sql = ["sqlx"]
+persistence-redis = ["redis"]
+tools-sql = ["persistence-sql"]
+
+# JS/Python native binding presets. SQL and Redis backends are opt-in
+# via `bindings-sql` / `bindings-redis`. Ladder mirrors agent → app.
+bindings-minimal = [
+    "providers",
+    "tools-core",
+    "tools-http",
+    "compaction",
+    "context-engine",
+    "token-tiktoken",
+    "failover",
+    "templates",
+    "mcp",
+    "mcp-client",
+]
+
+bindings-agent = [
+    "bindings-minimal",
+    "tools-grep",
+    "tools-git",
+    "sandbox",
+]
+
+bindings-app = [
+    "bindings-agent",
+    "auth-jwt",
+    "prompts",
+    "output-parsing",
+    "document-loaders",
+    "chains",
+    "reasoning-patterns",
+    "vector-memory",
+]
+# The default native build tracks the application binding surface.
+bindings = ["bindings-app"]
+
+# Optional binding addons
+bindings-sql = ["tools-sql", "persistence-sql"]
+bindings-redis = ["persistence-redis", "durable-streams-redis"]
+
+# Durable event streams (replay, resume, Redis/memory/mmap/sqlite/postgres/s3 backends)
+durable-streams-redis = ["redis"]
+durable-streams-mmap = []
+durable-streams-sqlite = ["dep:sqlx", "sqlx?/sqlite"]
+durable-streams-postgres = ["dep:sqlx", "sqlx?/postgres"]
+durable-streams-s3 = ["s3"]
+
+# Provider groups
+#   providers       — HTTP remote providers (OpenAI-compatible + Anthropic/Google/…)
+#   providers-cloud — + AWS Bedrock / Azure OpenAI
+#   providers-all   — + local-inference (Candle+ORT); keep out of `app`
+providers = [
+    "openai",
+    "anthropic",
+    "openrouter",
+    "perplexity",
+    "lmstudio",
+    "cohere",
+    "google",
+    "ollama",
+    "cloudflare-ai-gateway",
+]
+providers-cloud = ["providers", "bedrock", "azure-openai"]
+providers-all = ["providers-cloud", "local-inference"]
+
+# Individual provider features (for fine-grained control)
+bedrock = ["aws-sdk-bedrockruntime", "aws-sdk-bedrock", "aws-config", "aws-credential-types", "aws-sdk-sso", "aws-sdk-ssooidc", "aws-sdk-sts"]
+
+openai = ["reqwest"]
+anthropic = ["reqwest"]
+openrouter = ["reqwest"]
+perplexity = ["reqwest"]
+lmstudio = ["reqwest"]
+ollama = ["reqwest"]
+cohere = ["reqwest"]
+google = ["reqwest"]
+cloudflare-ai-gateway = ["reqwest"]
+
+azure-openai = ["reqwest", "azure_identity", "azure_core"]
+# Marker enabled by candle and/or ort variants. Prefer a single variant for lean builds.
+local-inference-base = []
+local-inference-candle = ["local-inference-base", "dep:dripstone", "dripstone/inference-candle"]
+local-inference-ort = ["local-inference-base", "dep:dripstone", "dripstone/inference-ort"]
+# GGUF / llama.cpp (opt-in; keep out of agent/app/bindings defaults — native compile cost)
+local-inference-llamacpp = ["local-inference-base", "dep:dripstone", "dripstone/inference-llamacpp"]
+local-inference-llamacpp-metal = ["local-inference-llamacpp", "dripstone/inference-llamacpp-metal"]
+local-inference-llamacpp-cuda = ["local-inference-llamacpp", "dripstone/inference-llamacpp-cuda"]
+# Umbrella: Candle + ORT. Prefer local-inference-candle for smaller binaries.
+# Does not include llama.cpp (pull in local-inference-llamacpp explicitly).
+local-inference = ["local-inference-candle", "local-inference-ort"]
+inference-mlx = ["dep:dripstone", "dripstone/inference-mlx"]
+
+# S3 support (for reading files from S3)
+s3 = ["aws-sdk-s3", "aws-config", "aws-credential-types"]
+
+# Optional MySQL support (persistence + SQL tools)
+mysql = ["sqlx", "sqlx/mysql"]
+
+# Context window compaction (LLM summarization, sliding window, importance scoring)
+compaction = []
+
+# Pluggable context engine (trait-based context assembly / compaction lifecycle)
+context-engine = ["compaction"]
+
+# Prometheus metrics recorder (MetricsRecorder + /metrics scrape helpers)
+prometheus = ["dep:prometheus"]
+# JWT / JWKS validation (jsonwebtoken)
+auth-jwt = ["dep:jsonwebtoken"]
+
+# OpenTelemetry OTLP export (traces to Jaeger, Grafana Tempo, Datadog, etc.)
+# Also pulls the OTel SDK used by init_telemetry; without this feature, telemetry init is a no-op.
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
+# Autonomous skill learning loop (self-evaluation, skill authoring, memory nudges)
+learning-loop = ["plugins"]
+
+# Deterministic harness discipline budget fixtures (no live LLM)
+discipline-budget-tests = []
+
+# Model failover chain + auth profile rotation
+failover = []
+
+# Provider routing (static, weighted, cost-optimized strategies)
+router = []
+
+# Schema-based plugin authoring (tools, providers, backends, skills, source plugins)
+plugins = ["reqwest", "persistence-sql"]
+
+# LSP (Language Server Protocol) integration for diagnostics and type information
+lsp = []
+
+# Agent-to-agent session tools (sessions_list, sessions_history, sessions_send, sessions_spawn)
+session-tools = []
+
+# Cron / scheduled agent tasks
+scheduling = ["dep:cron", "reqwest"]
+
+# Sandbox isolation (noop backend; use sandbox-docker for Docker)
+sandbox = ["dep:caliche_sandbox"]
+sandbox-docker = ["sandbox", "caliche_sandbox/docker"]
+
+# AgentFS integration (SQLite-backed agent filesystem, KV, tool audit trail)
+agentfs = ["dep:agentfs-sdk", "dep:caliche_sandbox", "caliche_sandbox/agentfs"]
+
+# Tool tiers
+tools-core = ["tools-calculator", "tools-file", "tools-data"]
+tools-extended = ["tools-core", "tools-http", "tools-document"]
+# tools-grep powers fs op=grep/glob (required for agent search); tools-git is included so
+# the unified git tool is available under app/full presets.
+all-tools = ["tools-extended", "tools-grep", "tools-git", "tools-rag", "tools-graph", "tools-ast", "tools-sql"]
+
+# Individual tool features (for fine-grained control)
+tools-calculator = []
+tools-file = []
+tools-data = []
+tools-http = ["reqwest"]
+tools-document = ["image", "lopdf"]
+tools-grep = ["grep-regex", "grep-matcher", "ignore"]
+tools-git = ["git2"]
+# Media understanding (audio transcription, image/video description)
+tools-media = []
+# Vector memory capabilities (independent of RAG tools)
+vector-memory = ["dep:dripstone", "dripstone/hnsw"]
+# RAG tool (depends on vector-memory since it needs vector capabilities).
+# `search-advanced` enables Dripstone query expansion and temporal decay without
+# pulling the heavier `dripstone/rag` stack (`embedding-ort`).
+tools-rag = [
+    "vector-memory",
+    # `rag::graph` builds its extraction prompts with `PromptTemplate`.
+    "prompts",
+    "ignore",
+    "notify",
+    "vector-store-sqlite",
+    "persistence-sql",
+    "dripstone/search-advanced",
+]
+tools-graph = ["dep:dripstone"]
+tools-ast = ["ast-all", "tools-graph"]
+
+# AST parsing core
+ast = ["dep:tree-sitter"]
+
+# AST language grammars (individual + grouped)
+ast-rust = ["ast", "dep:tree-sitter-rust"]
+ast-python = ["ast", "dep:tree-sitter-python"]
+ast-javascript = ["ast", "dep:tree-sitter-javascript"]
+ast-typescript = ["ast", "dep:tree-sitter-typescript"]
+ast-go = ["ast", "dep:tree-sitter-go"]
+ast-java = ["ast", "dep:tree-sitter-java"]
+ast-c = ["ast", "dep:tree-sitter-c"]
+ast-cpp = ["ast", "dep:tree-sitter-cpp"]
+ast-json = ["ast", "dep:tree-sitter-json"]
+ast-yaml = ["ast", "dep:tree-sitter-yaml"]
+ast-html = ["ast", "dep:tree-sitter-html"]
+# ast-markdown: tree-sitter-md 0.3.2 for tree-sitter 0.24; 0.5.x requires tree-sitter 0.26
+ast-markdown = ["ast", "dep:tree-sitter-md"]
+# ast-toml: tree-sitter-toml 0.20 requires tree-sitter 0.20, incompatible with 0.24. Omit until compatible grammar exists.
+# ast-csv: tree-sitter-csv 1.2 requires tree-sitter ~0.20 and cc ~1.0.82. Language/Csv added for extension detection; grammar omitted until compatible crate exists.
+ast-csv = ["ast"]
+ast-all = ["ast-rust", "ast-python", "ast-javascript", "ast-typescript", "ast-go", "ast-java", "ast-c", "ast-cpp", "ast-json", "ast-yaml", "ast-html", "ast-markdown", "ast-csv"]
+
+graph-neo4j = ["tools-graph", "dripstone/graph-neo4j"]
+graph-age = ["tools-graph", "dripstone/graph-age"]
+
+# Vector store tiers
+standard-vector-stores = ["vector-store-redis"]
+vector-store-primary = ["standard-vector-stores", "vector-store-postgres", "vector-store-qdrant-grpc", "vector-store-qdrant"]
+vector-store-http = ["vector-store-pinecone", "vector-store-chroma", "vector-store-weaviate", "vector-store-milvus"]
+# ColdForge (parquet, arrow, tree-sitter, model download) is opt-in: `vector-store-coldforge`, `vector-store-aws`, or `full`.
+vector-store-s3 = ["vector-store-s3-backend"]
+vector-store-aws = ["vector-store-s3", "vector-store-coldforge", "vector-store-dynamodb"]
+vector-store-all = ["vector-store-primary", "vector-store-http", "vector-store-s3", "vector-store-dynamodb", "vector-store-mmap"]
+
+# Individual vector store features (for fine-grained control)
+vector-store-redis = ["dep:dripstone", "dripstone/redis-backend"]
+vector-store-postgres = ["dep:dripstone", "dripstone/postgres-backend"]
+vector-store-sqlite = ["dep:dripstone", "dripstone/sqlite-backend"]
+vector-store-qdrant-grpc = ["dep:dripstone", "dripstone/qdrant-grpc-backend"]
+vector-store-qdrant = ["dep:dripstone", "dripstone/qdrant-backend"]
+vector-store-pinecone = ["dep:dripstone", "dripstone/pinecone-backend"]
+vector-store-chroma = ["dep:dripstone", "dripstone/chroma-backend"]
+vector-store-weaviate = ["dep:dripstone", "dripstone/weaviate-backend"]
+vector-store-milvus = ["dep:dripstone", "dripstone/milvus-backend"]
+vector-store-s3-backend = ["dep:dripstone", "dripstone/s3-backend"]
+vector-store-coldforge = ["dep:dripstone", "dripstone/coldforge-backend"]
+vector-store-dynamodb = ["dep:dripstone", "dripstone/dynamodb-backend"]
+vector-store-mmap = ["dep:dripstone", "dripstone/mmap-backend"]
+
+# Advanced RAG features
+hybrid-search = ["dep:dripstone", "dripstone/rag"]
+rag-reranking = ["dep:dripstone", "dripstone/rag"]
+
+# Local embedding generation
+embedding-candle = [
+    "dripstone/embedding-candle",
+    "dripstone/vision-candle",
+    "dep:candle-core",
+    "dep:candle-transformers",
+]
+embedding-ort = ["dripstone/embedding-ort"]
+embeddings = ["embedding-candle", "embedding-ort"]
+# Optional video embedding path used by the vision providers.
+video-processing = ["dripstone/video-processing"]
+
+# Reasoning patterns
+reasoning-patterns = []
+
+# Templates feature
+templates = ["serde_norway"]
+
+# Named agent profiles (Markdown + YAML frontmatter)
+profiles = ["serde_norway", "dirs"]
+
+# Testing feature
+testing = []
+
+prompts = []
+output-parsing = ["jsonschema", "serde_norway"]
+document-loaders = ["csv", "pulldown-cmark", "html5ever", "html2text"]
+document-loaders-extended = [
+    "document-loaders",
+    "dep:pdf-extract",
+    "dep:calamine",
+    "dep:quick-xml",
+    "dep:zip",
+]
+chains = ["prompts", "output-parsing"]
+retrieval-chains = ["chains", "dep:dripstone"]
+chain-features = ["prompts", "output-parsing", "document-loaders", "chains", "retrieval-chains"]
+token-tiktoken = ["tiktoken-rs"]
+
+# MCP feature (used by API crate)
+mcp = ["templates", "dep:caliche_mcp", "caliche_mcp/server"]
+mcp-client = ["mcp", "reqwest"]
+code-mode = ["mcp", "sandbox", "caliche_sandbox/code-mode"]
+
+# SQLite persistence store. Only the SQLite driver; `persistence-sql` adds PostgreSQL.
+# `sqlx?/` keeps the driver feature from also turning on the `sqlx` feature above.
+sqlite-store = ["dep:sqlx", "sqlx?/sqlite"]
+
+
+
+# `full` plus local embedding/rerank natives (requires ONNX runtime shared libs).
+full-local = ["full", "rag-reranking", "embeddings"]
+reqwest = ["dep:reqwest"]
+
+[dependencies]
+# Workspace (alphabetical)
+anyhow.workspace = true
+arc-swap.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+beef.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+http.workspace = true
+moka.workspace = true
+parking_lot.workspace = true
+prometheus = { workspace = true, optional = true }
+rkyv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+hmac.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "process", "time", "rt", "signal", "io-util", "io-std", "fs", "net"] }
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+fastrand.workspace = true
+base64.workspace = true
+
+# Direct (required)
+# Used by core LLM retry, HTTP/tools helpers, session sharing, and SQL safety —
+# keep non-optional so the lean `agent` default compiles.
+regex.workspace = true
+shell-words = "1.1"
+url.workspace = true
+
+# Distributed / persistence
+deadpool-redis = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+
+# Observability (optional; see features `prometheus` and `otlp`)
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "http-proto", "reqwest-client"], optional = true }
+
+# Security
+jsonwebtoken = { workspace = true, optional = true }
+subtle.workspace = true
+
+# Optional (workspace)
+tracing-subscriber = { workspace = true, optional = true }
+
+# Optional (providers)
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+aws-sdk-bedrock = { version = "~1.133", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-bedrockruntime = { version = "~1.126", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-sso = { version = "~1.95", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssooidc = { version = "~1.97", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "~1.99", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+# rustls instead of native-tls. Without `old_azure_cli`, Azure CLI credentials need Azure CLI 2.54 or newer.
+azure_core = { version = "0.20", optional = true, default-features = false, features = ["enable_reqwest_rustls"] }
+azure_identity = { version = "0.20", optional = true, default-features = false, features = ["enable_reqwest_rustls"] }
+reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
+
+# Shared wire contracts (stream/chat DTOs used by API and bindings)
+caliche_contracts = { path = "crates/caliche_contracts" }
+# Orchestration primitives (ACL, privilege, quarantine, external harness dispatch)
+caliche_orchestration = { path = "crates/caliche_orchestration" }
+# Unified policy types (floor, fail-closed parse, shadow-only compare). No engine dependency.
+caliche_policy = { path = "crates/caliche_policy" }
+caliche_mcp = { path = "crates/caliche_mcp", default-features = false, optional = true }
+
+# Optional (tools / RAG / parsing)
+caliche_sandbox = { path = "caliche_sandbox", optional = true }
+agentfs-sdk = { version = "0.6.2", optional = true }
+candle-core = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
+csv = { version = "1.3", optional = true }
+dirs = { workspace = true, optional = true }
+# Local repository operations only. No `https`/`ssh` (OpenSSL, libssh2), and the
+# bundled libgit2 so native modules do not link a system libgit2.
+git2 = { version = "0.20.4", optional = true, default-features = false, features = ["vendored-libgit2"] }
+grep-matcher = { version = "0.1", optional = true }
+grep-regex = { version = "0.1", optional = true }
+html2text = { version = "0.16", optional = true }
+# Pinned to the version html2text uses, so no second copy is built.
+html5ever = { version = "=0.38.0", optional = true }
+ignore = { version = "0.4", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
+# `default-features = false`: drop `resolve-http` so jsonschema does not pull `reqwest` 0.13; workspace stays on `reqwest` 0.12 only. Remote `$ref` URLs are not fetched by jsonschema (file refs still work via `resolve-file`).
+jsonschema = { version = "0.42", optional = true, default-features = false, features = ["resolve-file"] }
+lopdf = { version = "0.39.0", optional = true }
+pdf-extract = { version = "0.7", optional = true }
+calamine = { version = "0.34", optional = true }
+quick-xml = { version = "0.38", optional = true }
+zip = { version = "2.2", optional = true }
+notify = { version = "8", optional = true }
+pulldown-cmark = { version = "0.13", optional = true }
+serde_norway = { workspace = true, optional = true }
+tiktoken-rs = { version = "0.9.1", optional = true }
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-md = { version = "0.5", optional = true, default-features = false }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+dripstone = { path = "dripstone", default-features = false, features = ["memory-backend", "simd", "tokio"], optional = true }
+
+# Optional (scheduling)
+cron = { version = "0.15", optional = true }
+
+[dev-dependencies]
+beef.workspace = true
+# Native sandbox backends for tool isolation tests (feature "sandbox")
+caliche_sandbox = { path = "caliche_sandbox", features = ["sandbox-macos", "sandbox-linux", "sandbox-windows"] }
+dotenvy.workspace = true
+tempfile.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
+redis.workspace = true
+serial_test.workspace = true
+tracing-subscriber.workspace = true
+futures-util.workspace = true
+async-openai = { version = "0.34", features = ["_api", "chat-completion"] }
+# AWS SDK dependencies for examples that need bucket management
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
+
+# Development profile: Optimize for fast compilation
+# Dependencies are compiled with minimal optimization for faster builds
+[profile.dev]
+# Optimize dependencies less aggressively (faster compilation)
+opt-level = 0
+# Keep debug info for better error messages
+debug = true
+# Enable incremental compilation
+incremental = true
+# Split debuginfo on macOS for faster linking
+split-debuginfo = "unpacked"
+# Use more codegen units for better parallelization (can increase compile time slightly but improves parallelism)
+codegen-units = 256
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# `cargo install` compiles proc-macros with the release profile. On macOS 27,
+# `rustc -C strip` (llvm-objcopy) leaves the dylib LINKEDIT string pool off an
+# 8-byte boundary. dyld then rejects `libsqlx_macros-*.dylib` with
+# "mis-aligned LINKEDIT string pool", and the release install stops.
+# Build scripts and proc-macros are compile-time only. Keep them unstripped.
+# The installed binary still uses `strip = true` above.
+[profile.release.build-override]
+strip = false
+
+# Release Python and Node native modules. `release` aborts on panic, which ends
+# the host process. Unwinding lets PyO3 raise `PanicException` and lets NAPI
+# reject an async call or throw from a sync one instead. On macOS 27, stripped
+# fat-LTO modules (`strip = true` or `"debuginfo"`) failed to load in 3 of 6
+# builds with "mis-aligned LINKEDIT string pool", the same fault as the
+# proc-macro note above. Unstripped builds loaded in 4 of 4, so these modules
+# are not stripped. The release scripts also load each module after building.
+[profile.release-bindings]
+inherits = "release"
+panic = "unwind"
+strip = false
+
+# Optimized binary without fat LTO — much faster than `release` when you need
+# a quick performance check. Usage: cargo build --profile release-fast --features agent
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+panic = "unwind"
+
+# Test profile: Fast compilation for tests
+[profile.test]
+opt-level = 0
+debug = true
+incremental = true
+split-debuginfo = "unpacked"
+codegen-units = 256
+
+# Benchmark profile: Optimize for performance
+[profile.bench]
+opt-level = 3
+debug = false
+lto = "thin"
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
+
+# Example configurations with required features
+[[example]]
+name = "agent"
+
+[[example]]
+name = "anthropic"
+required-features = ["anthropic"]
+
+[[example]]
+name = "azure_openai"
+required-features = ["azure-openai"]
+
+[[example]]
+name = "bedrock"
+required-features = ["bedrock"]
+
+[[example]]
+name = "cohere"
+required-features = ["cohere"]
+
+[[example]]
+name = "external"
+
+[[example]]
+name = "llm_client"
+required-features = ["openai"]
+
+[[example]]
+name = "lmstudio"
+required-features = ["lmstudio"]
+
+[[example]]
+name = "local_inference"
+required-features = ["local-inference"]
+
+[[example]]
+name = "ollama"
+required-features = ["ollama"]
+
+[[example]]
+name = "openai"
+required-features = ["openai"]
+
+[[example]]
+name = "plugins"
+required-features = ["plugins", "openai"]
+
+[[example]]
+name = "openrouter"
+required-features = ["openrouter"]
+
+[[example]]
+name = "cloudflare_ai_gateway"
+required-features = ["cloudflare-ai-gateway"]
+
+[[example]]
+name = "perplexity"
+required-features = ["perplexity"]
+
+[[example]]
+name = "chains"
+required-features = ["chains"]
+
+[[example]]
+name = "cost_tracking"
+
+[[example]]
+name = "distributed"
+required-features = ["redis"]
+
+[[example]]
+name = "document_loaders"
+required-features = ["document-loaders"]
+
+[[example]]
+name = "enterprise"
+
+[[example]]
+name = "evaluation"
+
+[[example]]
+name = "google"
+required-features = ["google"]
+
+
+
+[[example]]
+name = "memory"
+
+[[example]]
+name = "message_bus"
+
+[[example]]
+name = "object_storage"
+required-features = ["s3"]
+
+[[example]]
+name = "orchestration"
+
+[[example]]
+name = "persistence"
+required-features = ["redis", "sqlx"]
+
+[[example]]
+name = "prompts"
+required-features = ["prompts"]
+
+[[example]]
+name = "providers"
+required-features = ["providers"]
+
+[[example]]
+name = "rag"
+required-features = ["tools-rag"]
+
+[[example]]
+name = "ast_rag"
+required-features = ["tools-rag", "tools-ast", "openai"]
+
+[[example]]
+name = "reasoning_patterns"
+required-features = ["reasoning-patterns"]
+
+[[example]]
+name = "sandbox"
+required-features = ["testing"]
+
+[[example]]
+name = "security"
+
+[[example]]
+name = "streaming"
+
+[[example]]
+name = "durable_streams"
+required-features = ["openai"]
+
+[[example]]
+name = "structured_output"
+required-features = ["output-parsing"]
+
+[[example]]
+name = "templates"
+required-features = ["templates", "s3", "prompts"]
+
+[[example]]
+name = "tools"
+required-features = ["all-tools"]
+
+[[example]]
+name = "vector_stores"
+required-features = ["vector-memory"]
+
+[[example]]
+name = "workflows"
+
+[[example]]
+name = "agent_controls"
+required-features = ["mcp"]
+
+[[example]]
+name = "graph_agent"
+required-features = ["tools-graph", "graph-age", "graph-neo4j", "openai"]
+
+[[example]]
+name = "compaction"
+required-features = ["compaction", "openai"]
+
+[[example]]
+name = "failover"
+required-features = ["failover", "openai", "anthropic"]
+
+[[example]]
+name = "session_tools"
+required-features = ["session-tools", "openai"]
+
+[[example]]
+name = "agentfs"
+required-features = ["agentfs", "openai"]
+
+[[test]]
+name = "distributed_tests"
+required-features = ["redis"]

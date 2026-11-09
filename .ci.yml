@@ -1,0 +1,11 @@
+# Keep local CI `build` fast. Full release artifacts remain `./caliche build`.
+# Without this map, detection would run release + LTO + wasm on every pre-push gate.
+commands:
+  build: ./caliche build-dev
+  lint: ./caliche rust fmt-check && ./caliche rust clippy
+  check: ./caliche check
+  # Root, CLI, server, sandbox, embedded web smoke, and dripstone, then Python and JS.
+  # Postgres, Qdrant, Redis, Docker, CUDA, llama.cpp, and ONNX/Candle downloads
+  # stay opt-in. Linux-only and Windows-only tests run on those hosts.
+  # See the Agent gate section in AGENTS.md.
+  test: ./caliche test

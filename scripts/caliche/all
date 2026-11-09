@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if caliche_want_help "${1:-}"; then
+  cat <<'EOF'
+Usage: ./caliche all
+
+  Release build, then Rust + Python + JS tests against it
+EOF
+  exit 0
+fi
+
+caliche_run build
+# Test the release bindings just built. ./caliche test would rebuild them as debug.
+caliche_run rust test
+caliche_run py test
+caliche_run js test

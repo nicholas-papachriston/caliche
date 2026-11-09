@@ -1,0 +1,109 @@
+{
+  "name": "caliche-js-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workspace root for Caliche JavaScript packages",
+  "keywords": [
+    "agent",
+    "ai",
+    "anthropic",
+    "llm",
+    "napi-rs",
+    "openai",
+    "rust"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholas-papachriston/caliche"
+  },
+  "homepage": "https://github.com/nicholas-papachriston/caliche",
+  "author": "Nicholas Papachriston <nicholas@papachriston.com>",
+  "workspaces": [
+    "packages/*",
+    "npm/*"
+  ],
+  "type": "commonjs",
+  "scripts": {
+    "develop": "bun run build:debug && bun run build && bun run smoke",
+    "test": "bun test tests/",
+    "test:rust": "cargo test",
+    "test:types": "bunx tsd --typings ./packages/core/index.d.ts --files \"./tests/types/*.test-d.ts\"",
+    "build:rust": "bun run build:release",
+    "build:release": "bunx @napi-rs/cli build --platform --profile release-bindings && node -e \"const fs=require('fs');const files=fs.readdirSync('.').filter(f=>f.endsWith('.node')&&f!=='index.node');if(files.length>0){try{fs.unlinkSync('index.node');}catch(e){if(e.code!=='ENOENT')throw e;}fs.symlinkSync(files[0],'index.node','file');}\" && node ./scripts/check-native-load.mjs",
+    "build:debug": "bunx @napi-rs/cli build --platform && node -e \"const fs=require('fs');const files=fs.readdirSync('.').filter(f=>f.endsWith('.node')&&f!=='index.node');if(files.length>0){try{fs.unlinkSync('index.node');}catch(e){if(e.code!=='ENOENT')throw e;}fs.symlinkSync(files[0],'index.node','file');}\"",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build": "bun run build:ts && node ./scripts/prepare-composable-packages.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.build.json",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "smoke": "node ./scripts/smoke-imports.mjs",
+    "prepublishOnly": "bun run build:rust && bun run build && bun run typecheck && bun run test:types && bun run verify:lockstep && bun run smoke",
+    "verify:lockstep": "node ./scripts/verify-lockstep.mjs",
+    "lint": "oxfmt && oxlint --fix . && oxfmt --check && oxlint .",
+    "lint:fix": "oxfmt && oxlint --fix .",
+    "format": "oxfmt"
+  },
+  "devDependencies": {
+    "@langchain/core": "^1.2.4",
+    "@langchain/openai": "^1.5.5",
+    "@napi-rs/cli": "3.5.1",
+    "@types/node": "^22.15.0",
+    "ai": "^6.0.103",
+    "bun-types": "1.4.2",
+    "effect": "^4.0.0",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
+    "tsd": "^0.33.0",
+    "typescript": "5.9.3",
+    "zod": "^4.4.3",
+    "zod-to-json-schema": "^3.25.1"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@langchain/core": "^1.2.0",
+    "ai": "^6.0.103",
+    "effect": "^4.0.0",
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.1"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/provider": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    },
+    "zod-to-json-schema": {
+      "optional": true
+    }
+  },
+  "napi": {
+    "binaryName": "index",
+    "packageName": "@caliche/runtime-node",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "engines": {
+    "bun": ">=1.4.2",
+    "node": ">=18.0.0"
+  },
+  "packageManager": "bun@1.4.2"
+}

@@ -1,0 +1,122 @@
+# Build artifacts
+target/
+**/target/
+
+# Git
+.git/
+.gitignore
+**/.git
+**/.git/**
+
+# IDE and editor
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# Node.js (JS bindings)
+**/node_modules/
+**/.npm/
+**/dist/
+**/*.node
+
+# Python (Python bindings)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.venv/
+**/venv/
+**/.python-version
+**/*.egg-info/
+
+# Documentation and non-essential files
+*.md
+!README.md
+LICENSE*
+CHANGELOG*
+docs/
+
+# Test and development files
+tests/
+**/tests/
+# dripstone `Cargo.toml` declares [[test]] targets; cargo fails if those paths are missing from the Docker `ws` context.
+!dripstone/tests/
+**/*.test.*
+**/*.spec.*
+.env*
+!.env.example
+
+# Terraform
+terraform/
+**/*.tfstate*
+**/.terraform/
+
+# Profiling and debugging
+*.svg
+flamegraph*
+*.prof
+*.profraw
+
+# Docker (avoid sending context back to itself)
+Dockerfile*
+docker-compose*
+.docker/
+
+# Deployment configs (not needed for build)
+deploy/
+
+# Scripts
+scripts/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Misc
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Local runtime/state data not needed for image builds
+responses/
+
+# Local Cursor/project state
+.cursor/projects/
+.cursor/plugins/
+.cursor/extensions/
+.cursor/cache/
+
+# Keep only essential source for the build
+!Cargo.toml
+!Cargo.lock
+!src/
+!dripstone/
+!examples/
+!lambda/
+!templates/
+
+# Secrets and credentials (do not send to the builder)
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_ecdsa*
+id_rsa*
+id_ed25519*
+credentials.toml
+credentials.json
+secrets.toml
+secrets.json
+*service-account*.json
+.npmrc
+.pypirc
+.netrc
+.aws/
+.caliche/
+prod.env

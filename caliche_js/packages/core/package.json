@@ -1,0 +1,210 @@
+{
+  "name": "@caliche/core",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Core TypeScript SDK for Caliche",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholas-papachriston/caliche"
+  },
+  "homepage": "https://github.com/nicholas-papachriston/caliche",
+  "author": "Nicholas Papachriston <nicholas@papachriston.com>",
+  "files": [
+    "index.js",
+    "index.cjs",
+    "index.d.ts",
+    "dist/**"
+  ],
+  "type": "module",
+  "sideEffects": [
+    "./index.js",
+    "./index.cjs",
+    "./dist/index.cjs",
+    "./dist/native/**/*.cjs"
+  ],
+  "main": "./index.cjs",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.cjs",
+      "default": "./index.js"
+    },
+    "./streaming/events": {
+      "types": "./dist/streaming/events.d.ts",
+      "import": "./dist/streaming/events.js",
+      "require": "./dist/streaming/events.cjs",
+      "default": "./dist/streaming/events.js"
+    },
+    "./streaming/collectors": {
+      "types": "./dist/streaming/collectors.d.ts",
+      "import": "./dist/streaming/collectors.js",
+      "require": "./dist/streaming/collectors.cjs",
+      "default": "./dist/streaming/collectors.js"
+    },
+    "./streaming/normalization": {
+      "types": "./dist/streaming/stream-normalization.d.ts",
+      "import": "./dist/streaming/stream-normalization.js",
+      "require": "./dist/streaming/stream-normalization.cjs",
+      "default": "./dist/streaming/stream-normalization.js"
+    },
+    "./transport/sse": {
+      "types": "./dist/transport/sse.d.ts",
+      "import": "./dist/transport/sse.js",
+      "require": "./dist/transport/sse.cjs",
+      "default": "./dist/transport/sse.js"
+    },
+    "./runtime/env-resolve": {
+      "types": "./dist/runtime/env-resolve.d.ts",
+      "import": "./dist/runtime/env-resolve.js",
+      "require": "./dist/runtime/env-resolve.cjs",
+      "default": "./dist/runtime/env-resolve.js"
+    },
+    "./runtime/env": {
+      "types": "./dist/runtime/env.d.ts",
+      "import": "./dist/runtime/env.js",
+      "require": "./dist/runtime/env.cjs",
+      "default": "./dist/runtime/env.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "require": "./dist/types.cjs",
+      "default": "./dist/types.js"
+    },
+    "./hooks": {
+      "types": "./dist/hooks.d.ts",
+      "import": "./dist/hooks.js",
+      "require": "./dist/hooks.cjs",
+      "default": "./dist/hooks.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js",
+      "require": "./dist/mcp.cjs",
+      "default": "./dist/mcp.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js",
+      "require": "./dist/session.cjs",
+      "default": "./dist/session.js"
+    },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "import": "./dist/agent/index.js",
+      "require": "./dist/agent/index.cjs",
+      "default": "./dist/agent/index.js"
+    },
+    "./llm": {
+      "types": "./dist/llm/index.d.ts",
+      "import": "./dist/llm/index.js",
+      "require": "./dist/llm/index.cjs",
+      "default": "./dist/llm/index.js"
+    },
+    "./chains": {
+      "types": "./dist/chains/index.d.ts",
+      "import": "./dist/chains/index.js",
+      "require": "./dist/chains/index.cjs",
+      "default": "./dist/chains/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/index.d.ts",
+      "import": "./dist/workflow/index.js",
+      "require": "./dist/workflow/index.cjs",
+      "default": "./dist/workflow/index.js"
+    },
+    "./rag": {
+      "types": "./dist/rag/index.d.ts",
+      "import": "./dist/rag/index.js",
+      "require": "./dist/rag/index.cjs",
+      "default": "./dist/rag/index.js"
+    },
+    "./adapters/ai-sdk": {
+      "types": "./dist/adapters/ai-sdk.d.ts",
+      "import": "./dist/adapters/ai-sdk.js",
+      "require": "./dist/adapters/ai-sdk.cjs",
+      "default": "./dist/adapters/ai-sdk.js"
+    },
+    "./adapters/langchain": {
+      "types": "./dist/adapters/langchain-index.d.ts",
+      "import": "./dist/adapters/langchain-index.js",
+      "require": "./dist/adapters/langchain-index.cjs",
+      "default": "./dist/adapters/langchain-index.js"
+    },
+    "./mutation-style": {
+      "types": "./dist/mutation-style.d.ts",
+      "import": "./dist/mutation-style.js",
+      "require": "./dist/mutation-style.cjs",
+      "default": "./dist/mutation-style.js"
+    },
+    "./tool-registry": {
+      "types": "./dist/tool-registry.d.ts",
+      "import": "./dist/tool-registry.js",
+      "require": "./dist/tool-registry.cjs",
+      "default": "./dist/tool-registry.js"
+    },
+    "./tool-inspection": {
+      "types": "./dist/tool-inspection.d.ts",
+      "import": "./dist/tool-inspection.js",
+      "require": "./dist/tool-inspection.cjs",
+      "default": "./dist/tool-inspection.js"
+    },
+    "./jsonl-session": {
+      "types": "./dist/jsonl-session.d.ts",
+      "import": "./dist/jsonl-session.js",
+      "require": "./dist/jsonl-session.cjs",
+      "default": "./dist/jsonl-session.js"
+    },
+    "./builtin-tools": {
+      "types": "./dist/builtin-tools.d.ts",
+      "import": "./dist/builtin-tools.js",
+      "require": "./dist/builtin-tools.cjs",
+      "default": "./dist/builtin-tools.js"
+    },
+    "./package.json": {
+      "default": "./package.json"
+    }
+  },
+  "scripts": {
+    "build": "cd ../.. && bun run build"
+  },
+  "dependencies": {
+    "@caliche/contracts": "workspace:*",
+    "@caliche/runtime-node": "workspace:*"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@langchain/core": "^1.2.0",
+    "ai": "^6.0.103",
+    "effect": "^4.0.0",
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.1"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/provider": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    },
+    "zod-to-json-schema": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

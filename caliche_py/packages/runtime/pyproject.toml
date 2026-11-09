@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.11,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "caliche-runtime"
+version = "0.1.0"
+description = "Native runtime wheel for Caliche Python bindings"
+requires-python = ">=3.9"
+classifiers = [
+  "Typing :: Typed",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+]
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Nicholas Papachriston", email = "nicholas@papachriston.com" }]
+
+# Canonical native extension build. Crate default features provide lean `bindings`.
+[tool.maturin]
+manifest-path = "../../Cargo.toml"
+python-source = "python"
+module-name = "caliche_runtime._caliche_py"
+bindings = "pyo3"
+features = ["pyo3/extension-module", "pyo3/abi3-py39"]
+# Unwind on panic so a Rust panic raises `PanicException` in Python. Builds that
+# do not pass `--profile` (for example `pip install` from an sdist) use this.
+profile = "release-bindings"
+
+[project.urls]
+Repository = "https://github.com/nicholas-papachriston/caliche"
+Homepage = "https://github.com/nicholas-papachriston/caliche"

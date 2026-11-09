@@ -1,0 +1,589 @@
+# Stack auth: set variables in `.env` (see `.env.example`). Defaults match `dripstone/tests/common/mod.rs`.
+# Override any secret in production.
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    environment:
+      VALKEY_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    ports:
+      - "127.0.0.1:6380:6379"
+    command: ["sh", "-c", "exec valkey-server --requirepass \"$$VALKEY_PASSWORD\""]
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Redis Sentinel (HA) ---
+  redis-sentinel-master:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    ports:
+      - "127.0.0.1:6381:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-sentinel-replica-1:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --replicaof redis-sentinel-master 6379 --masterauth \"$$REDIS_PASSWORD\" --requirepass \"$$REDIS_PASSWORD\"",
+      ]
+    depends_on:
+      redis-sentinel-master:
+        condition: service_healthy
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-sentinel-replica-2:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --replicaof redis-sentinel-master 6379 --masterauth \"$$REDIS_PASSWORD\" --requirepass \"$$REDIS_PASSWORD\"",
+      ]
+    depends_on:
+      redis-sentinel-master:
+        condition: service_healthy
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-sentinel-1:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      - sh
+      - -c
+      - |
+        printf '%s\n' \
+          'bind 0.0.0.0' \
+          'port 26379' \
+          'protected-mode no' \
+          'daemonize no' \
+          'sentinel monitor mymaster redis-sentinel-master 6379 2' \
+          "sentinel auth-pass mymaster $$REDIS_PASSWORD" \
+          'sentinel down-after-milliseconds mymaster 5000' \
+          'sentinel failover-timeout mymaster 60000' \
+          'sentinel parallel-syncs mymaster 1' \
+          > /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf
+    depends_on:
+      redis-sentinel-master:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:26379:26379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-sentinel-2:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      - sh
+      - -c
+      - |
+        printf '%s\n' \
+          'bind 0.0.0.0' \
+          'port 26379' \
+          'protected-mode no' \
+          'daemonize no' \
+          'sentinel monitor mymaster redis-sentinel-master 6379 2' \
+          "sentinel auth-pass mymaster $$REDIS_PASSWORD" \
+          'sentinel down-after-milliseconds mymaster 5000' \
+          'sentinel failover-timeout mymaster 60000' \
+          'sentinel parallel-syncs mymaster 1' \
+          > /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf
+    depends_on:
+      redis-sentinel-master:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:26380:26379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-sentinel-3:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      - sh
+      - -c
+      - |
+        printf '%s\n' \
+          'bind 0.0.0.0' \
+          'port 26379' \
+          'protected-mode no' \
+          'daemonize no' \
+          'sentinel monitor mymaster redis-sentinel-master 6379 2' \
+          "sentinel auth-pass mymaster $$REDIS_PASSWORD" \
+          'sentinel down-after-milliseconds mymaster 5000' \
+          'sentinel failover-timeout mymaster 60000' \
+          'sentinel parallel-syncs mymaster 1' \
+          > /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf
+    depends_on:
+      redis-sentinel-master:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:26381:26379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  # --- Redis Cluster (6 nodes: 3 masters + 3 replicas) ---
+  redis-cluster-1:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6390:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-2:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6391:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-3:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6392:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-4:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6393:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-5:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6394:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-6:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command:
+      [
+        "sh",
+        "-c",
+        "exec redis-server --port 6379 --requirepass \"$$REDIS_PASSWORD\" --masterauth \"$$REDIS_PASSWORD\" --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes",
+      ]
+    ports:
+      - "127.0.0.1:6395:6379"
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  redis-cluster-init:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${STACK_REDIS_PASSWORD:-caliche_dev_redis}
+    command: >
+      sh -c "sleep 10;
+      redis-cli -h redis-cluster-1 -p 6379 -a \"$$REDIS_PASSWORD\" cluster info 2>/dev/null | grep -q 'cluster_state:ok' && echo 'Cluster already formed.' && exit 0;
+      redis-cli -a \"$$REDIS_PASSWORD\" --cluster create redis-cluster-1:6379 redis-cluster-2:6379 redis-cluster-3:6379 redis-cluster-4:6379 redis-cluster-5:6379 redis-cluster-6:6379 --cluster-replicas 1 --cluster-yes;
+      echo 'Cluster created.'"
+    depends_on:
+      - redis-cluster-1
+      - redis-cluster-2
+      - redis-cluster-3
+      - redis-cluster-4
+      - redis-cluster-5
+      - redis-cluster-6
+    networks:
+      - caliche-net
+    restart: "no"
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: embeddings
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${STACK_POSTGRES_PASSWORD:-caliche_dev_pg}
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d embeddings"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  age:
+    image: apache/age:release_PG16_1.5.0
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${STACK_POSTGRES_PASSWORD:-caliche_dev_pg}
+      POSTGRES_DB: age
+    ports:
+      - "127.0.0.1:5455:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d age"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${STACK_NEO4J_PASSWORD:-caliche_dev_neo4j}
+    ports:
+      - "127.0.0.1:7687:7687"
+      - "127.0.0.1:7474:7474"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    environment:
+      QDRANT__SERVICE__API_KEY: ${STACK_QDRANT_API_KEY:-caliche_dev_qdrant}
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- --header=\"api-key: $$QDRANT__SERVICE__API_KEY\" http://127.0.0.1:6333/healthz | grep -q .",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:1.0.15
+    environment:
+      CHROMA_SERVER_HOST: 0.0.0.0
+      CHROMA_SERVER_HTTP_PORT: 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.30.0
+    ports:
+      - "127.0.0.1:8080:8080"     # REST API
+      # Host 50551 avoids clashing with other local gRPC listeners on 50051; container still listens on 50051
+      - "127.0.0.1:50551:50051" # gRPC (from host use localhost:50551)
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: ${STACK_WEAVIATE_API_KEY:-caliche_dev_weaviate}
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: ${STACK_WEAVIATE_API_KEY:-caliche_dev_weaviate}
+      STACK_WEAVIATE_API_KEY: ${STACK_WEAVIATE_API_KEY:-caliche_dev_weaviate}
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      CLUSTER_HOSTNAME: node1
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- --header=\"Authorization: Bearer $$STACK_WEAVIATE_API_KEY\" http://127.0.0.1:8080/v1/.well-known/ready | grep -q .",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  # etcd is not published to the host. listen-client-urls stays 0.0.0.0 so
+  # other containers on caliche-net can connect. etcd rejects a hostname there.
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - milvus-etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://milvus-etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  milvus-minio:
+    image: quay.io/minio/minio:latest  # no tag for this registry is recorded in-repo; do not guess
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvus-minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9002"
+    ports:
+      - "127.0.0.1:9002:9002"  # Milvus MinIO console (separate from main MinIO)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.5.0
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "127.0.0.1:19530:19530"  # gRPC
+      - "127.0.0.1:9091:9091"    # Metrics
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    ports:
+      - "127.0.0.1:16686:16686"  # UI
+      - "127.0.0.1:4317:4317"    # OTLP gRPC
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus  # no version pin is recorded in-repo; do not guess
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus-web.yml:/etc/prometheus/web.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.config.file=/etc/prometheus/web.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana  # no version pin is recorded in-repo; do not guess
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=stack
+      - GF_SECURITY_ADMIN_PASSWORD=${STACK_GRAFANA_ADMIN_PASSWORD:-caliche_dev_grafana}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - STACK_PROMETHEUS_USER=${STACK_PROMETHEUS_USER:-stack}
+      - STACK_PROMETHEUS_PASSWORD=${STACK_PROMETHEUS_PASSWORD:-caliche_dev_prom}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio:latest  # no tag for this registry is recorded in-repo; do not guess
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${STACK_MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${STACK_MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"  # S3 API port
+      - "127.0.0.1:9001:9001"  # Console port
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest  # no version pin is recorded in-repo; do not guess
+    user: "127.0.0.1:0:0"  # Run as root to avoid permission issues with volumes
+    ports:
+      - "127.0.0.1:9010:9000"  # S3 API port
+      - "127.0.0.1:9011:9001"  # Console port
+    environment:
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=${STACK_RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - RUSTFS_SECRET_KEY=${STACK_RUSTFS_SECRET_KEY:-rustfsadmin}
+      - RUSTFS_VOLUMES=/data/rustfs0,/data/rustfs1,/data/rustfs2,/data/rustfs3
+      - RUSTFS_ADDRESS=0.0.0.0:9000
+      - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+      - RUSTFS_EXTERNAL_ADDRESS=:9000
+      - RUSTFS_CORS_ALLOWED_ORIGINS=*
+      - RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS=*
+    volumes:
+      - rustfs-data-0:/data/rustfs0
+      - rustfs-data-1:/data/rustfs1
+      - rustfs-data-2:/data/rustfs2
+      - rustfs-data-3:/data/rustfs3
+      - rustfs-logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh", "-c",
+          "curl -f http://localhost:9000/health && curl -f http://localhost:9001/health"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - caliche-net
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+  minio-data:
+  rustfs-data-0:
+  rustfs-data-1:
+  rustfs-data-2:
+  rustfs-data-3:
+  rustfs-logs:
+  weaviate-data:
+  milvus-etcd-data:
+  milvus-minio-data:
+  milvus-data:
+
+networks:
+  caliche-net:
+    driver: bridge
+

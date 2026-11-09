@@ -1,0 +1,120 @@
+[package]
+name = "caliche_server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HTTP API server for caliche"
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+name = "caliche_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "caliche_server"
+path = "src/main.rs"
+
+[features]
+# Lean HTTP server defaults. Opt into `lambda` / `stream-lambda` for AWS Lambda.
+default = ["mcp", "templates", "router"]
+embedded-ui = ["rust-embed"]
+lambda = ["lambda_http"]
+# Enables `lambda::run_lambda_streaming_server`, which pipes Axum
+# responses back to the Lambda runtime via `run_with_streaming_response`.
+# Use this when deploying to Lambda Response Streaming (Function URLs with
+# `InvokeMode: RESPONSE_STREAM`).
+stream-lambda = ["lambda"]
+mcp = ["caliche/mcp"]
+otlp = ["caliche/otlp"]
+router = ["caliche/router"]
+templates = ["caliche/templates", "serde_norway"]
+full = ["mcp", "templates", "router", "lambda", "app"]
+# Route groups. Off by default and off in the Docker image: each one adds HTTP
+# routes, so turning one on changes the server's exposed surface.
+tools-rag = ["caliche/tools-rag"]
+document-loaders = ["caliche/document-loaders"]
+chains = ["caliche/chains"]
+retrieval-chains = ["chains", "caliche/retrieval-chains"]
+reasoning-patterns = ["caliche/reasoning-patterns"]
+# Backends and providers on top of the always-on root set below.
+bedrock = ["caliche/bedrock"]
+redis = ["caliche/persistence-redis"]
+postgres = ["caliche/persistence-sql"]
+# The application surface: cloud providers, every vector store, Redis and
+# PostgreSQL session stores. The Docker image and release builds enable it.
+app = ["caliche/app", "bedrock", "redis", "postgres"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Always-on root features. `models.rs` exposes the RAG, document loader, and
+# reasoning types on the wire, so those three stay on. The heavy application
+# surface is the `app` feature above.
+caliche = { path = "..", default-features = false, features = [
+  "agent",
+  "tools-rag",
+  "document-loaders",
+  "reasoning-patterns",
+  "sqlite-store",
+  "plugins",
+  "mcp-client",
+  "prometheus",
+  "auth-jwt",
+  "session-tools",
+] }
+agent-client-protocol-schema = { version = "=1.10.2", default-features = false }
+caliche_contracts = { path = "../crates/caliche_contracts", features = ["acp"] }
+caliche_sandbox = { path = "../caliche_sandbox", features = ["landlock-net"] }
+
+# Workspace
+anyhow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, features = ["multipart"] }
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+dashmap.workspace = true
+dotenvy.workspace = true
+futures-util.workspace = true
+http.workspace = true
+jsonwebtoken.workspace = true
+moka.workspace = true
+prometheus.workspace = true
+regex.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+subtle.workspace = true
+ipnetwork.workspace = true
+
+# Optional (workspace)
+lambda_http = { workspace = true, optional = true }
+serde_norway = { workspace = true, optional = true }
+
+# Direct
+dirs.workspace = true
+ed25519-dalek = "2.1"
+hex = "0.4"
+url.workspace = true
+
+# Optional (direct)
+rust-embed = { workspace = true, optional = true }
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,65 @@
+[package]
+name = "caliche_web"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cross-platform UI for Caliche using Dioxus (Desktop, Web, Mobile)"
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop", "tokio", "tracing-subscriber"]
+mobile = ["dioxus/mobile", "tokio", "tracing-subscriber"]
+web = ["dioxus/web"]
+test-utils = []
+
+[lints]
+workspace = true
+
+[dependencies]
+caliche_contracts = { path = "../crates/caliche_contracts" }
+
+# Workspace
+anyhow.workspace = true
+chrono = { workspace = true, features = ["wasmbind"] }
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+reqwest.workspace = true
+reqwest-eventsource = "0.6"
+
+# Optional (workspace)
+tokio = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+# Direct
+dioxus = { version = "0.7.3", default-features = false, features = ["minimal", "document"] }
+pulldown-cmark = "0.13"
+base64.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+futures-channel = "0.3"
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+tracing-wasm = "0.2"
+uuid = { workspace = true, features = ["v4", "js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Document", "Navigator", "Clipboard", "MediaQueryList", "Location", "WebSocket", "MessageEvent", "CloseEvent", "EventTarget", "Event", "Storage"] }
+
+[dev-dependencies]
+caliche_web = { path = ".", features = ["test-utils"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls-tls"] }
+dirs = { workspace = true }
+# Native file picker used by the native chat input so desktop users can pick
+# images/audio/video/docs without the web-only <input type=file> DOM trick.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }

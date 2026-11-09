@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ./caliche js <subcommand>
+
+  install                Install JavaScript dependencies
+  build                  Release native + TypeScript + smoke imports
+  build-dev              Debug native + TypeScript
+  build-native           Native bindings only
+  build-release-check    Dry-run pack composable packages
+  test / test-watch
+  test-rag              Opt-in: cargo test with tools-rag (not the default gate)
+  lint / typecheck
+  McCabe CCN 20 is enforced by oxlint `complexity` during lint.
+
+  dev                    TypeScript watch mode
+  clean
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+  usage
+  if [[ -z "$cmd" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+shift
+
+case "$cmd" in
+  install)
+    step "Installing JavaScript dependencies"
+    (
+      cd "$JS_DIR"
+      bun install
+    )
+    ok "JavaScript dependencies installed"
+    ;;
+  build)
+    step "Building JavaScript SDK"
+    (
+      cd "$JS_DIR"
+      bun run build:rust
+      bun run build
+      node ./scripts/smoke-imports.mjs
+    )
+    ok "JavaScript build complete"
+    ;;
+  build-release-check)
+    step "Dry-run packing composable JavaScript packages"
+    (
+      cd "${JS_DIR}/packages/runtime-node"
+      bun pm pack --dry-run >/dev/null
+    )
+    (
+      cd "${JS_DIR}/packages/core"
+      bun pm pack --dry-run >/dev/null
+    )
+    ok "JavaScript composable package dry-run complete"
+    ;;
+  build-dev)
+    step "Building JavaScript SDK (dev mode)"
+    (
+      cd "$JS_DIR"
+      bun run develop
+    )
+    ok "JavaScript dev build complete"
+    ;;
+  build-native)
+    step "Building JavaScript native bindings"
+    (
+      cd "$JS_DIR"
+      bun run build:rust
+    )
+    ok "JavaScript native bindings complete"
+    ;;
+  test)
+    step "Running JavaScript tests"
+    (
+      cd "$JS_DIR"
+      bun test
+    )
+    ok "JavaScript tests complete"
+    ;;
+  test-rag)
+    step "Running JavaScript native tests with tools-rag"
+    cargo test -p caliche_js --features tools-rag --no-fail-fast
+    ok "JavaScript tools-rag tests complete"
+    ;;
+  test-watch)
+    step "Running JavaScript tests in watch mode"
+    (
+      cd "$JS_DIR"
+      bun run test:watch
+    )
+    ;;
+  lint)
+    step "Linting JavaScript code"
+    (
+      cd "$JS_DIR"
+      bun run lint
+    )
+    ok "JavaScript linting complete"
+    ;;
+  typecheck)
+    step "Type checking JavaScript code"
+    (
+      cd "$JS_DIR"
+      bun run typecheck
+    )
+    ok "JavaScript type checking complete"
+    ;;
+  dev)
+    step "Running JavaScript TypeScript watch mode"
+    (
+      cd "$JS_DIR"
+      bun run watch
+    )
+    ;;
+  clean)
+    step "Cleaning JavaScript build artifacts"
+    (
+      cd "$JS_DIR"
+      rm -rf dist/ node_modules/.cache/
+    )
+    ok "JavaScript clean complete"
+    ;;
+  *)
+    die "unknown js subcommand: ${cmd} (try: ./caliche js help)"
+    ;;
+esac

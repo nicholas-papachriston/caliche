@@ -1,0 +1,477 @@
+[package]
+name = "dripstone"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Nicholas Papachriston <nicholas@papachriston.com>"]
+license = "MIT OR Apache-2.0"
+description = "High-performance vector search and RAG pipelines"
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+# Unpublished until a public release is explicitly approved. Remove this
+# only when publishing to crates.io is an intentional decision.
+publish = false
+keywords = ["vector", "search", "embeddings", "rag", "ann"]
+categories = ["database-implementations", "science"]
+
+# Standalone crate: keep local [lints] (cannot use workspace = true
+# when built outside caliche). Keep these tables aligned with
+# caliche [workspace.lints]. `publish = false` until a release is approved.
+[lints.rust]
+unsafe_code = "warn"
+unused_must_use = "warn"
+unreachable_pub = "allow"
+
+[lints.clippy]
+all = { level = "allow", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+cargo = { level = "allow", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+exit = "warn"
+get_unwrap = "warn"
+mem_forget = "warn"
+lossy_float_literal = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+pub_underscore_fields = "warn"
+disallowed_types = "warn"
+disallowed_methods = "warn"
+disallowed_macros = "warn"
+disallowed_names = "warn"
+await_holding_lock = "warn"
+needless_collect = "warn"
+unnecessary_to_owned = "warn"
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+or_fun_call = "warn"
+unused_async = "warn"
+redundant_clone = "warn"
+large_futures = "warn"
+wildcard_enum_match_arm = "allow"
+same_name_method = "allow"
+too_many_arguments = "allow"
+indexing_slicing = "allow"
+as_conversions = "allow"
+blanket_clippy_restriction_lints = "allow"
+std_instead_of_core = "allow"
+std_instead_of_alloc = "allow"
+
+[features]
+# `local` is the in-process store and hashing embedder behind Dripstone::open.
+# It pulls Tokio through `memory-backend` and does not enable remote backends,
+# ONNX, Candle, tokenizers, or an HTTP client.
+default = ["core", "local"]
+
+# =============================================================================
+# COARSE FEATURE GROUPS
+# =============================================================================
+
+# Core functionality
+core = []
+
+# Zero-config directory store (`Dripstone::open`) and the hashing embedder.
+local = ["memory-backend"]
+
+# Primary vector storage backends (gRPC/native connections)
+backends = ["memory-backend", "postgres-backend", "qdrant-grpc-backend", "qdrant-backend", "redis-backend", "sqlite-backend"]
+
+# HTTP-based vector storage backends
+backends-http = ["pinecone-backend", "chroma-backend", "weaviate-backend", "milvus-backend"]
+
+# S3-based storage backends
+backends-s3 = ["s3-backend", "coldforge-backend"]
+
+# AWS managed vector backends (S3 Vectors + DynamoDB native vectors)
+backends-aws = ["backends-s3", "dynamodb-backend"]
+
+# All backends combined
+backends-all = ["backends", "backends-http", "backends-s3", "dynamodb-backend", "mmap-backend"]
+
+# Local embedding generation
+embeddings = ["embedding-ort", "embedding-candle"]
+
+# RAG features (chunking, reranking, hybrid search)
+# NOTE: Reranking requires tokenizers + ndarray + ort, which are provided by `embedding-ort`.
+rag = ["rust-stemmers", "embedding-ort", "search-advanced"]
+
+# Advanced search (MMR, temporal decay, query expansion)
+search-advanced = ["chrono", "regex"]
+
+# Full feature set
+full = ["backends-all", "embeddings", "rag", "simd", "hnsw"]
+
+# =============================================================================
+# CANONICAL BACKEND FEATURES (used by cfg checks)
+# =============================================================================
+
+# HNSW approximate nearest neighbor index (`HnswIndex`, `IndexedBuilder::with_hnsw`).
+hnsw = ["dep:hnsw_rs", "tokio"]
+
+# Primary backends
+memory-backend = ["tokio"]
+postgres-backend = ["sqlx", "sqlx/postgres", "pgvector", "tokio"]
+qdrant-grpc-backend = ["qdrant-client", "tokio"]
+redis-backend = ["redis", "tokio"]
+sqlite-backend = ["sqlx", "sqlx/sqlite", "tokio"]
+
+# HTTP backends (require reqwest)
+qdrant-backend = ["reqwest", "tokio"]
+pinecone-backend = ["reqwest", "tokio"]
+chroma-backend = ["reqwest", "tokio"]
+weaviate-backend = ["reqwest", "tokio"]
+milvus-backend = ["reqwest", "tokio"]
+
+# S3 backends (require AWS SDK)
+s3-backend = ["aws-sdk-s3", "aws-config", "aws-credential-types", "aws-sigv4", "http", "flate2", "reqwest", "tokio"]
+coldforge-backend = ["s3-backend", "corpus"]
+
+# Tree-sitter grammars for ChunkStrategy::AstAware. `corpus` enables this so
+# code-retrieval ingest and the live scene chunk source at function boundaries.
+ast = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-java",
+]
+
+# Download, normalize, and stream vector corpora (HDF5, Parquet, CoIR CoSQA).
+# Enabled by coldforge-backend so the live scene can ingest a real corpus.
+corpus = ["model-download", "tokio", "ndarray", "dep:hdf5-reader", "dep:arrow-array", "dep:arrow-schema", "dep:parquet", "ast"]
+
+# DynamoDB native vector search (SearchVectors via SigV4 JSON protocol)
+dynamodb-backend = ["aws-config", "aws-credential-types", "aws-sigv4", "http", "reqwest", "tokio"]
+
+# Memory-mapped backend
+mmap-backend = ["memmap2", "tokio"]
+
+# =============================================================================
+# INDIVIDUAL EMBEDDING FEATURES
+# =============================================================================
+
+# Lightweight model provisioning (curl download + optional sha256). No Candle/ORT.
+model-download = ["dep:sha2", "dep:hex"]
+
+# Optional ureq-based HuggingFace Hub client. Embeddings/inference default to
+# curl via `model-download` to avoid pulling a second HTTP stack (ureq).
+hf-hub = ["dep:hf-hub"]
+embedding-ort = ["dep:ort", "tokenizers", "ndarray", "num_cpus", "tokio", "local-ort", "model-download"]
+embedding-candle = ["candle-core", "candle-nn", "candle-transformers", "tokenizers", "tokio", "local-candle", "model-download"]
+local-ort = ["dep:ort", "tokenizers", "ndarray", "num_cpus", "tokio"]
+local-candle = ["candle-core", "candle-nn", "candle-transformers", "tokenizers", "tokio"]
+vision-ort = ["embedding-ort", "dep:image"]
+vision-candle = ["embedding-candle", "dep:image"]
+
+# Optional Candle accelerator backends. When enabled the embedder will try
+# the accelerator first and transparently fall back to CPU if it fails.
+candle-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+candle-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+# =============================================================================
+# INFERENCE FEATURES
+# =============================================================================
+
+# Inference backends for text generation
+inference-candle = ["embedding-candle", "async-stream"]
+inference-ort = ["embedding-ort", "async-stream"]
+inference-mlx = ["local-mlx", "embedding-mlx", "async-stream", "tokio", "model-download"]
+# GGUF via llama.cpp (opt-in; do not enable from lean coding/bindings presets)
+inference-llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs", "model-download", "async-stream", "tokio"]
+inference-llamacpp-metal = ["inference-llamacpp", "llama-cpp-2/metal"]
+inference-llamacpp-cuda = ["inference-llamacpp", "llama-cpp-2/cuda"]
+inference-llamacpp-vulkan = ["inference-llamacpp", "llama-cpp-2/vulkan"]
+inference = ["inference-candle", "inference-ort"]
+
+# MLX runtime (Apple Silicon); used by runtime selection and MLX backends
+local-mlx = ["dep:mlx-rs", "tokenizers"]
+embedding-mlx = ["local-mlx", "tokio", "model-download"]
+
+# =============================================================================
+# OPTIONAL ENHANCEMENTS
+# =============================================================================
+
+simd = []
+
+# Video frame extraction (ffmpeg) and URL download for VideoInput::Url
+video-processing = ["tokio", "reqwest", "url"]
+
+# Graph backends (queryable graph databases)
+graph-neo4j = ["neo4rs", "tokio"]
+graph-age = ["sqlx", "sqlx/postgres", "tokio"]
+
+[dependencies]
+# Workspace (core)
+async-trait = "0.1"
+arc-swap = "1.9"
+bytes = "1.11"
+dashmap = "6.1"
+futures = "0.3"
+futures-util = "0.3"
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0.149"
+thiserror = "2.0"
+tracing = "0.1"
+uuid = { version = "1.22", features = ["v5", "v7", "serde", "macro-diagnostics"] }
+fastrand = "2.3"
+
+# Direct (required)
+rkyv = { version = "0.8.15", default-features = true }
+beef = { version = "0.5", features = ["impl_serde"] }
+hnsw_rs = { version = "0.3", optional = true }
+half = "2.7"
+time = { version = "0.3", features = ["formatting", "macros", "serde", "parsing"] }
+
+# Optional (workspace)
+async-stream = { version = "0.3", optional = true }
+aws-config = { version = "1.8", optional = true }
+aws-credential-types = { version = "1.2", optional = true }
+# No SDK `rustls` (hyper 0.14, rustls 0.21) or `sigv4a`; `default-https-client` is rustls 0.23.
+aws-sdk-s3 = { version = "1.124", optional = true, default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
+aws-sigv4 = { version = "1.4", optional = true }
+http = { version = "1.4.0", optional = true }
+ort = { version = "=2.0.0-rc.11", optional = true }
+redis = { version = "0.32", optional = true, features = ["tokio-comp", "aio"] }
+reqwest = { version = "0.12", default-features = false, optional = true, features = ["json", "rustls-tls"] }
+tokio = { version = "1.50.0", features = ["time", "rt", "rt-multi-thread", "sync", "macros"], optional = true }
+
+# Optional (direct)
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+flate2 = { version = "1.1", optional = true }
+hf-hub = { version = "0.3", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
+memmap2 = { version = "0.9", optional = true }
+ndarray = { version = "0.17", optional = true }
+hdf5-reader = { version = "0.1.3", optional = true, default-features = false, features = ["lz4"] }
+arrow-array = { version = "53", optional = true, default-features = false }
+arrow-schema = { version = "53", optional = true, default-features = false }
+parquet = { version = "53", optional = true, default-features = false, features = ["arrow", "snap", "lz4", "zstd"] }
+# Caret 0.26 so a nested caliche workspace (`tree-sitter = "^0.26"`) can
+# unify. This crate sets `links = "tree-sitter"`, so 0.25 and 0.26 cannot
+# coexist. Grammar crates depend on `tree-sitter-language`, not `tree-sitter`.
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+neo4rs = { version = "0.8", optional = true }
+num_cpus = { version = "1", optional = true }
+pgvector = { version = "0.4", optional = true, features = ["sqlx"] }
+qdrant-client = { version = "1.17", optional = true }
+regex = { version = "1.10", optional = true }
+rust-stemmers = { version = "1.2", optional = true }
+# Each backend enables only its own driver (`sqlx/postgres`, `sqlx/sqlite`).
+sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio-rustls", "chrono"] }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+url = { version = "2.5", optional = true }
+mlx-rs = { version = "0.25", optional = true, default-features = false, features = ["metal", "safetensors"] }
+roaring = "0.11.3"
+siphasher = { version = "1", default-features = false }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+libc = "0.2"
+encoding_rs = { version = "0.8", optional = true }
+llama-cpp-2 = { version = "0.1.154", optional = true, default-features = true }
+
+[dev-dependencies]
+async-trait = "0.1"
+bytes = "1.11"
+serial_test = "3.0"
+tempfile = "3.27"
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time"] }
+aws-sdk-s3 = { version = "1.124", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "1.93", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3vectors = { version = "1.23", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-smithy-runtime-api = "1.11.6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0.149"
+time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
+# Corpus fixtures are read through the `corpus` feature (hdf5-reader, arrow, parquet).
+
+# These targets use modules that only exist behind a feature. `memory-backend`
+# turns on the backend module and `tokio`.
+[[test]]
+name = "deferred_index_benchmark"
+required-features = ["memory-backend", "hnsw"]
+
+[[test]]
+name = "deferred_index_tests"
+required-features = ["memory-backend", "hnsw"]
+
+[[test]]
+name = "distributed_correctness"
+required-features = ["memory-backend"]
+
+[[test]]
+name = "distributed_integration_tests"
+required-features = ["tokio"]
+
+[[test]]
+name = "distributed_replication_tests"
+required-features = ["tokio"]
+
+[[test]]
+name = "distributed_sharding_tests"
+required-features = ["tokio"]
+
+[[test]]
+name = "graph_integration"
+required-features = ["tokio"]
+
+[[test]]
+name = "hnsw_index_tests"
+required-features = ["tokio", "hnsw"]
+
+[[test]]
+name = "multi_tenant_tests"
+required-features = ["tokio"]
+
+[[test]]
+name = "pipeline"
+required-features = ["tokio"]
+
+[[test]]
+name = "open_store"
+required-features = ["local"]
+
+[[test]]
+name = "sqlite_metadata_filter_test"
+required-features = ["sqlite-backend"]
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+required-features = [
+    "coldforge-backend",
+    "hnsw",
+    "mmap-backend",
+    "memory-backend",
+    "redis-backend",
+]
+
+# Examples
+
+[[example]]
+name = "quickstart"
+required-features = ["local"]
+
+[[example]]
+name = "coldforge_example"
+required-features = ["coldforge-backend"]
+
+[[example]]
+name = "coldforge_redis_hot_tier_example"
+required-features = ["coldforge-backend", "redis-backend"]
+
+[[example]]
+name = "coldforge_live_aws_example"
+required-features = ["coldforge-backend", "redis-backend"]
+
+[[test]]
+name = "live_aws"
+required-features = ["coldforge-backend", "memory-backend"]
+
+[[example]]
+name = "filter_dsl_example"
+required-features = ["memory-backend"]
+
+[[example]]
+name = "hnsw_indexing_example"
+required-features = ["memory-backend", "hnsw"]
+
+[[example]]
+name = "http_client_with_retry_example"
+required-features = ["qdrant-backend", "chroma-backend"]
+
+[[example]]
+name = "advanced_search_example"
+required-features = ["memory-backend", "rag", "tokio"]
+
+[[example]]
+name = "hybrid_search_example"
+required-features = ["memory-backend"]
+
+[[example]]
+name = "performance_example"
+required-features = ["memory-backend"]
+
+[[example]]
+name = "quantization_example"
+required-features = ["memory-backend"]
+
+[[example]]
+name = "rag_workflow_example"
+required-features = ["memory-backend"]
+
+[[example]]
+name = "s3_storage_example"
+required-features = ["s3-backend", "memory-backend"]
+
+[[example]]
+name = "s3_vector_buckets_example"
+required-features = ["s3-backend"]
+
+[[example]]
+name = "s3_vector_tiered_example"
+required-features = ["s3-backend", "memory-backend"]
+
+[[example]]
+name = "dynamodb_vector_tiered_example"
+required-features = ["dynamodb-backend", "memory-backend"]
+
+[[test]]
+name = "dynamodb_vector_tests"
+required-features = ["dynamodb-backend", "memory-backend", "tokio"]
+
+[[test]]
+name = "llamacpp_gguf_tests"
+required-features = ["inference-llamacpp"]
+
+[[example]]
+name = "simd_benchmark_example"
+required-features = ["simd"]
+
+[[example]]
+name = "tiered_advanced_example"
+required-features = ["memory-backend", "s3-backend"]
+
+[[example]]
+name = "tiered_coldforge_example"
+required-features = ["coldforge-backend", "s3-backend"]
+
+[[example]]
+name = "tiered_redis_example"
+required-features = ["redis-backend", "s3-backend"]
+
+[[example]]
+name = "tiered_three_tiers_example"
+required-features = ["sqlite-backend", "redis-backend", "memory-backend"]
+
+[[example]]
+name = "vision_embedding_example"
+required-features = ["vision-candle", "video-processing"]
+
+[[example]]
+name = "graph_age_neo4j_example"
+required-features = ["graph-age", "graph-neo4j"]
+
+[[example]]
+name = "ast_hashline_example"
+required-features = ["memory-backend", "tokio"]

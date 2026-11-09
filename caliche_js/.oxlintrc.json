@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "index.js",
+    "index.d.ts",
+    "packages/runtime-node/native-loader.js",
+    "packages/runtime-node/native-loader.cjs",
+    "packages/runtime-node/native-loader.d.ts",
+    "**/*.node",
+    "**/tests/**",
+    "**/examples/**"
+  ],
+  "categories": {
+    "correctness": "off",
+    "suspicious": "off",
+    "pedantic": "off",
+    "style": "off",
+    "restriction": "off",
+    "nursery": "off"
+  },
+  "rules": {
+    "complexity": ["error", { "max": 20, "variant": "classic" }]
+  }
+}

@@ -1,0 +1,14 @@
+target
+index.node
+**/node_modules
+npm-debug.log*
+cargo.log
+cross.log
+*.log
+dist/
+*.tsbuildinfo
+*.dylib
+*.node
+.DS_Store
+# Copied from index.d.ts by scripts/prepare-composable-packages.mjs
+packages/runtime-node/native-loader.d.ts

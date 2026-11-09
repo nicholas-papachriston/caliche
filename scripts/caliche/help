@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+printf '%sCaliche build and test commands%s\n' "${C_BLUE}" "${C_RESET}"
+printf '\n'
+printf '%sUsage:%s ./caliche <command> [args]\n' "${C_GREEN}" "${C_RESET}"
+printf '\n'
+printf '%sCore%s\n' "${C_GREEN}" "${C_RESET}"
+cat <<'EOF'
+  help                 Show this help
+  all                  Release build, then all tests
+  build                Release artifacts (LTO + wasm + wheels)
+  build-dev            Fast local debug/agent build
+  build-preflight      Check tools and wasm32 before a long build
+  test                 Rust + Python + JS tests
+  quick-test           Root crate only (cargo test --lib --features full, needs ONNX), plus Python and JavaScript
+  full-test            Root crate tests with --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle (macOS; no CUDA; no ONNX runtime download), plus Python and JavaScript
+  check                Type-check Rust, JS, and Python
+  lint                 Format and fix Rust, Python, and JS
+  fmt-check            Check Rust and Python formatting
+  ci                   CI checks (wasm-opt, fmt-check, clippy, complexity --gate, tests, typecheck)
+  ci-full              CI checks using rust test-features: Root crate tests with --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle (macOS; no CUDA; no ONNX runtime download)
+  clean                Remove all build artifacts
+  install              Install Python and JS dependencies
+  version              Show package versions
+  info                 Show project paths, build status, and tools
+  rebuild              Clean, then release build
+  docs                 Build Rust documentation
+  audit                Run cargo-audit
+  check-features       Cargo-check the feature matrix
+EOF
+printf '\n'
+printf '%sRust%s\n' "${C_GREEN}" "${C_RESET}"
+cat <<'EOF'
+  rust-build           Release library, API, wasm UI, and CLI
+  rust-build-dev       Debug agent build (CALICHE_WITH_UI=1 adds wasm UI)
+  rust-build-composable  Lockstep/facade checks + contracts/engine
+  rust-build-with-ui   Release CLI with embedded UI
+  rust-install         wasm UI, then cargo install the CLI with embedded-ui
+  rust-test            Root, CLI, server, sandbox, embedded web smoke, and dripstone
+  rust-test-embedded-ui  GET / is HTML when embedded-ui is on
+  rust-test-lib        Root crate only: cargo test --lib --features full (needs ONNX)
+  rust-test-features   Root crate tests with --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,otlp,profiles,document-loaders-extended,graph-neo4j,graph-age,scheduling,sandbox-docker,agentfs,tools-media,sqlite-store,durable-streams-redis,durable-streams-mmap,durable-streams-sqlite,durable-streams-postgres,durable-streams-s3,bindings,bindings-sql,bindings-redis,local-inference-candle,mysql,embedding-candle (macOS; no CUDA; no ONNX runtime download)
+  rust-check           cargo check on root, ACP client, CLI, and server
+  rust-clippy          Clippy with -D warnings on root, ACP client, CLI, server, sandbox, and dripstone
+  rust-clippy-strict   Opt-in pedantic/nursery/cargo Clippy
+  rust-fmt / rust-fmt-check
+  rust-complexity      McCabe CCN via uvx lizard (audit; --gate is CCN-only deny)
+  rust-clean / rust-doc
+  repl-smoke           Deterministic CLI REPL smoke test
+EOF
+printf '\n'
+printf '%sPython / JavaScript / UI%s\n' "${C_GREEN}" "${C_RESET}"
+cat <<'EOF'
+  py-install py-build py-build-dev py-build-composable
+  py-test py-test-coverage py-lint py-lint-fix
+  py-format py-format-check py-typecheck py-clean py-sync
+  js-install js-build js-build-dev js-build-native
+  js-build-release-check js-test js-test-watch
+  js-lint              oxfmt + oxlint (McCabe CCN 20)
+  js-typecheck js-dev js-clean
+
+  web-wasm             Dioxus WASM UI into caliche_web/dist
+EOF
+printf '\n'
+printf '%sWatch / release%s\n' "${C_GREEN}" "${C_RESET}"
+cat <<'EOF'
+  watch-rust watch-js
+  release-check release-build
+EOF
+printf '\n'
+printf '%sExamples%s\n' "${C_GREEN}" "${C_RESET}"
+cat <<'EOF'
+  ./caliche build-dev
+  ./caliche test
+  ./caliche rust test
+  ./caliche rust install
+  CALICHE_WITH_UI=1 ./caliche build-dev
+EOF
+printf '\n'
+printf '%sNote:%s Python SDK uses uv. Install with brew install uv, or follow https://docs.astral.sh/uv/getting-started/installation/\n' \
+  "${C_BLUE}" "${C_RESET}"
