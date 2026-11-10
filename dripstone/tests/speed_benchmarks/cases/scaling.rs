@@ -34,6 +34,7 @@ use serial_test::serial;
 #[cfg(feature = "memory-backend")]
 #[tokio::test]
 #[serial]
+#[ignore = "wall-clock bound; run with ./caliche rust bench"]
 async fn test_performance_scaling() -> Result<(), DripstoneError> {
     let corpus = datasets::load_integration_corpus().await?;
     let max_pts = dripstone_bench_max_points();

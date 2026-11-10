@@ -212,7 +212,12 @@ cd caliche_js && bun test
 
 # Local CI sequence
 ./caliche ci
+
+# Dripstone wall-clock benchmarks (release, one thread; not in the gate)
+./caliche rust bench
 ```
+
+Latency and throughput bounds do not belong in merge-gate tests. Mark them `#[ignore = "wall-clock bound; run with ./caliche rust bench"]`, add them to `./caliche rust bench`, and record the numbers in [BENCHMARKS.md](BENCHMARKS.md).
 
 - Tests are in `tests/` (workspace integration tests), in each crate's `tests/` folder, and in inline `#[cfg(test)]` modules.
 - Use `#[tokio::test]` for async Rust tests, and `serial_test` where tests cannot run in parallel.

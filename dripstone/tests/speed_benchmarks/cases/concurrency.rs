@@ -33,6 +33,7 @@ use serial_test::serial;
 #[cfg(feature = "memory-backend")]
 #[tokio::test]
 #[serial]
+#[ignore = "wall-clock bound; run with ./caliche rust bench"]
 async fn test_concurrent_read_throughput() -> Result<(), DripstoneError> {
     use tokio::task::JoinSet;
     let corpus = datasets::load_integration_corpus().await?;

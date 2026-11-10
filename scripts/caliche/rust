@@ -23,6 +23,7 @@ Usage: ./caliche rust <subcommand>
   test-embedded-ui   GET / is HTML when the embedded-ui feature is on
   test-lib           Root crate only: cargo test --lib --features full (needs ONNX)
   test-features      Root crate tests with --features ${ROOT_TEST_FEATURES} (macOS; no CUDA; no ONNX runtime download)
+  bench              dripstone wall-clock benchmarks: release, ignored tests, one thread
   check              cargo check on root, ACP client, CLI, and server
   clippy             Clippy with -D warnings on root, ACP client, CLI, server, sandbox, and dripstone
   clippy-strict      Opt-in pedantic/nursery/cargo Clippy
@@ -279,6 +280,17 @@ EOF
     step "Running Rust library tests"
     cargo test --lib --features full --no-fail-fast
     ok "Rust library tests complete"
+    ;;
+  bench)
+    # Latency and throughput bounds are not merge-gate tests: they flake on a
+    # loaded machine and in debug builds. Run them alone, in release.
+    step "Running dripstone wall-clock benchmarks (release, one thread)"
+    cargo test -p dripstone --release --test speed_benchmarks --features \
+      memory-backend,mmap-backend,sqlite-backend,s3-backend,coldforge-backend,corpus,ast,simd,search-advanced,rust-stemmers,hnsw \
+      -- --ignored --test-threads=1 \
+      test_search_latency_percentiles test_upsert_latency_percentiles \
+      test_search_throughput test_concurrent_read_throughput test_performance_scaling
+    ok "Benchmarks complete; record the numbers in BENCHMARKS.md"
     ;;
   test-features)
     step "Running root crate tests (macOS; no CUDA; no ONNX runtime download)"

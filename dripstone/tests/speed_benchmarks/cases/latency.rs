@@ -37,6 +37,7 @@ use serial_test::serial;
 #[cfg(feature = "memory-backend")]
 #[tokio::test]
 #[serial]
+#[ignore = "wall-clock bound; run with ./caliche rust bench"]
 async fn test_search_latency_percentiles() -> Result<(), DripstoneError> {
     let corpus = datasets::load_integration_corpus().await?;
     let backend: Arc<dyn Backend> = Arc::new(MemBackend::new());
@@ -80,6 +81,7 @@ async fn test_search_latency_percentiles() -> Result<(), DripstoneError> {
 #[cfg(feature = "memory-backend")]
 #[tokio::test]
 #[serial]
+#[ignore = "wall-clock bound; run with ./caliche rust bench"]
 async fn test_upsert_latency_percentiles() -> Result<(), DripstoneError> {
     let corpus = datasets::load_integration_corpus().await?;
     let ntrain = corpus.base.len();
@@ -129,6 +131,7 @@ async fn test_upsert_latency_percentiles() -> Result<(), DripstoneError> {
 #[cfg(feature = "memory-backend")]
 #[tokio::test]
 #[serial]
+#[ignore = "wall-clock bound; run with ./caliche rust bench"]
 async fn test_search_throughput() -> Result<(), DripstoneError> {
     let corpus = datasets::load_integration_corpus().await?;
     let backend: Arc<dyn Backend> = Arc::new(MemBackend::new());

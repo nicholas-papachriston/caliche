@@ -237,6 +237,7 @@ Configuration and reference:
 - [Tools](docs/tools.md)
 - [Feature flags](docs/reference/feature-flags.md)
 - [Binary formats](docs/reference/binary-formats.md)
+- [Benchmarks](BENCHMARKS.md)
 
 Libraries:
 
