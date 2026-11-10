@@ -90,21 +90,24 @@ fn replace_file_atomically(
     write: impl FnOnce(&mut File) -> Result<(), DripstoneError>,
 ) -> Result<(), DripstoneError> {
     let tmp = temp_sibling(path, label)?;
-    let written = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| DripstoneError::storage_with_source(format!("{label} create file"), e))?;
+    // A failed create leaves nothing to clean up: a name that already exists
+    // belongs to someone else and must not be removed.
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| DripstoneError::storage_with_source(format!("{label} create file"), e))?;
+    let written = (|mut file: File| {
         write(&mut file)?;
         file.sync_all()
             .map_err(|e| DripstoneError::storage_with_source(format!("{label} sync"), e))?;
         drop(file);
         std::fs::rename(&tmp, path)
             .map_err(|e| DripstoneError::storage_with_source(format!("{label} replace file"), e))
-    })();
+    })(file);
     if written.is_err() {
-        // Best effort: the target is untouched, so only the partial temp file remains.
+        // Best effort: the target is untouched, so only this call's partial
+        // temp file remains.
         let _ = std::fs::remove_file(&tmp);
     }
     written?;

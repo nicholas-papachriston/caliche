@@ -500,6 +500,34 @@ fn mmap_write_does_not_follow_a_symlink_planted_at_the_temp_name() {
 }
 
 #[test]
+fn mmap_write_leaves_a_file_already_at_the_temp_name() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+
+    // The next temp names this process will use. Other tests may take a few.
+    let next = super::codec::NEXT_TEMP.load(std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let planted: Vec<_> = (next..next + 256)
+        .map(|n| dir.path().join(format!(".idx.vf1.{pid}.{n}.tmp")))
+        .collect();
+    for name in &planted {
+        std::fs::write(name, b"theirs").expect("plant file");
+    }
+
+    let err =
+        write_dripstone_mmap_with_encoding(&path, &test_chunks(None), MmapVectorEncoding::F32)
+            .expect_err("the write must refuse a taken temp name");
+    assert!(
+        err.to_string().contains("create file"),
+        "unexpected error: {err}"
+    );
+    for name in &planted {
+        assert_eq!(std::fs::read(name).expect("planted file kept"), b"theirs");
+    }
+    assert!(!path.exists());
+}
+
+#[test]
 fn mmap_failed_replace_leaves_no_temp_file() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("idx.vf1");
