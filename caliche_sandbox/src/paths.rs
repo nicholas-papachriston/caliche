@@ -788,6 +788,17 @@ mod swap_tests {
             .expect("run mkfifo");
         assert!(status.success());
 
+        // Hold a reader open so the write open succeeds at the syscall
+        // level; without one it fails with ENXIO before any check runs.
+        let reader = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::File::options()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(workspace.join("pipe"))
+                .expect("open the FIFO's read end")
+        };
+
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let read = read_validated_file(&workspace, &config, "pipe").map(|_| ());
@@ -797,12 +808,17 @@ mod swap_tests {
         let (read, write) = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("opening a FIFO must not block");
+        drop(reader);
         let read = read.expect_err("a FIFO must not be read");
         assert!(
             read.to_string().contains("not a regular file"),
             "unexpected: {read:#}"
         );
-        assert!(write.is_err(), "a FIFO must not be written");
+        let write = write.expect_err("a FIFO must not be written");
+        assert!(
+            write.to_string().contains("not a regular file"),
+            "unexpected: {write:#}"
+        );
     }
 
     #[test]
