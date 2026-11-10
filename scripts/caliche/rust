@@ -97,6 +97,26 @@ EOF
 # Default-feature tests for workspace members other than the root, CLI,
 # server, sandbox, and dripstone crates, then the macOS no-service lanes
 # for those crates. Service and hardware lanes stay opt-in. See AGENTS.md.
+# caliche_py's Rust tests embed Python, so they link libpython. Left to
+# itself, PyO3 links whatever `python3` is first on PATH: under a login
+# shell on macOS that is the Xcode Python 3.9 framework, which loads only
+# through an rpath the test binaries do not have. Pin the uv interpreter
+# the py stage uses instead. Its libpython carries a placeholder install
+# name (/install/lib/...) and compiled-in prefix, so point the loader at
+# its real LIBDIR and the embedded interpreter at its real home.
+run_py_crate_tests() {
+  local python libdir home
+  python="$(cd "$PY_DIR" && uv python find)" ||
+    die "no uv-managed Python for caliche_py (see caliche_py/.python-version)"
+  libdir="$("$python" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+  home="$("$python" -c 'import sys; print(sys.base_prefix)')"
+  step "Running caliche_py Rust tests (PyO3 pinned to ${python})"
+  PYO3_PYTHON="$python" PYTHONHOME="$home" \
+    DYLD_FALLBACK_LIBRARY_PATH="${libdir}:/usr/local/lib:/usr/lib" \
+    LD_LIBRARY_PATH="${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    cargo test -p caliche_py --no-fail-fast
+}
+
 run_workspace_tests() {
   step "Running workspace tests (member crates, default features)"
   cargo test --workspace --no-fail-fast \
@@ -104,7 +124,10 @@ run_workspace_tests() {
     --exclude dripstone \
     --exclude caliche_cli \
     --exclude caliche_server \
-    --exclude caliche_sandbox
+    --exclude caliche_sandbox \
+    --exclude caliche_py
+
+  run_py_crate_tests
 
   step "Running root tests (app plus no-service features)"
   # `app` does not include hybrid-search. That feature links ONNX Runtime.
