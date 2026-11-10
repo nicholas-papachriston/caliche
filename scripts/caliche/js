@@ -110,6 +110,9 @@ case "$cmd" in
     step "Type checking JavaScript code"
     (
       cd "$JS_DIR"
+      # The typecheck needs the pinned TypeScript and type packages, so
+      # install exactly what the lockfile names (from the cache offline).
+      bun install --frozen-lockfile
       bun run typecheck
     )
     ok "JavaScript type checking complete"
