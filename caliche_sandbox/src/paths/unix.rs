@@ -211,6 +211,7 @@ fn c_name(name: &OsStr) -> io::Result<CString> {
 }
 
 /// Name a symlink refusal so callers and tests can tell it from other errors.
+/// It is `PermissionDenied`, as on Windows.
 ///
 /// `O_NOFOLLOW` on a symlink fails with `ELOOP`, or with `ENOTDIR` when
 /// `O_DIRECTORY` is also set (macOS), so both are checked with `lstat`.
@@ -218,7 +219,7 @@ fn describe(err: io::Error, parent: &OwnedFd, name: &OsStr, target: &Path) -> io
     let maybe_link = matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR));
     if maybe_link && is_symlink_at(parent, name) {
         return io::Error::new(
-            err.kind(),
+            io::ErrorKind::PermissionDenied,
             format!(
                 "refusing to follow symlink at '{}' in '{}'",
                 Path::new(name).display(),

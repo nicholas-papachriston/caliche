@@ -11,6 +11,7 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::AppState;
@@ -88,8 +89,11 @@ fn get_workspace_root() -> PathBuf {
 
 /// Validate that a path is within the workspace.
 pub(crate) fn validate_workspace_path(path: &Path) -> Result<PathBuf> {
-    let workspace = get_workspace_root();
+    resolve_in_workspace(&get_workspace_root(), path).map(|(_, target)| target)
+}
 
+/// The canonical workspace and the canonical `path` inside it.
+fn resolve_in_workspace(workspace: &Path, path: &Path) -> Result<(PathBuf, PathBuf)> {
     // Canonicalize both paths for comparison
     let canonical_workspace = workspace
         .canonicalize()
@@ -108,7 +112,7 @@ pub(crate) fn validate_workspace_path(path: &Path) -> Result<PathBuf> {
         bail!("Access denied: path is outside workspace");
     }
 
-    Ok(canonical_target)
+    Ok((canonical_workspace, canonical_target))
 }
 
 /// Handler to check if file browsing is enabled
@@ -143,8 +147,21 @@ pub async fn list_files_handler(
     }
 
     let workspace = get_workspace_root();
-    let target_path = query
-        .path
+    let requested = query.path;
+    tokio::task::spawn_blocking(move || list_workspace_dir(workspace, requested))
+        .await
+        .unwrap_or_else(|join| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Directory listing task failed: {join}") })),
+            )
+                .into_response()
+        })
+}
+
+/// List a directory inside `workspace` for the file browser (blocking).
+fn list_workspace_dir(workspace: PathBuf, requested: Option<String>) -> axum::response::Response {
+    let target_path = requested
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.clone());
 
@@ -254,68 +271,88 @@ pub async fn read_file_handler(
     }
 
     let path = PathBuf::from(&query.path);
-
-    // Validate the path
-    let canonical_path = match validate_workspace_path(&path) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response();
+    let max_lines = query.max_lines.unwrap_or(DEFAULT_MAX_LINES);
+    let workspace = get_workspace_root();
+    let read =
+        tokio::task::spawn_blocking(move || read_workspace_file(&workspace, &path, max_lines))
+            .await;
+    match read {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err((status, error))) => {
+            (status, Json(serde_json::json!({ "error": error }))).into_response()
         }
-    };
-
-    // Check if it's a file
-    if !canonical_path.is_file() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Path is not a file" })),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("File read task failed: {join}") })),
         )
-            .into_response();
+            .into_response(),
+    }
+}
+
+/// Read a file inside `workspace` for the file browser.
+///
+/// The path is validated, then opened below the canonical workspace without
+/// following any link, so a directory swapped for a symlink after validation
+/// is refused with 403. At most `MAX_FILE_SIZE + 1` bytes are read, so a file
+/// over the limit (or one that grew after a size check) is refused with 400.
+fn read_workspace_file(
+    workspace: &Path,
+    path: &Path,
+    max_lines: usize,
+) -> std::result::Result<ReadFileResponse, (StatusCode, String)> {
+    let (root, target) = resolve_in_workspace(workspace, path)
+        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    // A by-path check only picks the 400 message for a directory; the open
+    // below is what refuses anything but a regular file.
+    if !target.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()));
+    }
+    after_validate(&target);
+
+    let file = caliche_sandbox::open_file_beneath(&root, &target).map_err(|e| {
+        let status = match e.kind() {
+            std::io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+            std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, format!("Failed to open file: {e}"))
+    })?;
+    let metadata = file.metadata().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read file metadata: {e}"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()));
     }
 
-    // Get file size
-    let metadata = match std::fs::metadata(&canonical_path) {
-        Ok(m) => m,
-        Err(e) => {
-            return (
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::json!({ "error": format!("Failed to read file metadata: {}", e) }),
-                ),
+                format!("Failed to read file: {e}"),
             )
-                .into_response();
-        }
-    };
-
-    let size = metadata.len();
-
-    // Check file size
+        })?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     if size > MAX_FILE_SIZE {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("File is too large ({} bytes). Maximum is {} bytes.", size, MAX_FILE_SIZE)
-            })),
-        ).into_response();
+            format!(
+                "File is too large (over {MAX_FILE_SIZE} bytes). Maximum is {MAX_FILE_SIZE} bytes."
+            ),
+        ));
     }
-
-    // Read file contents
-    let content = match std::fs::read_to_string(&canonical_path) {
-        Ok(c) => c,
-        Err(e) => {
-            // Try reading as binary and show error
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to read file (may be binary): {}", e) })),
-            ).into_response();
-        }
-    };
+    let content = String::from_utf8(bytes).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read file (may be binary): {e}"),
+        )
+    })?;
 
     // Apply line limit
-    let max_lines = query.max_lines.unwrap_or(DEFAULT_MAX_LINES);
     let lines: Vec<&str> = content.lines().collect();
     let line_count = lines.len();
     let truncated = line_count > max_lines;
@@ -326,12 +363,103 @@ pub async fn read_file_handler(
         content
     };
 
-    Json(ReadFileResponse {
-        path: canonical_path.to_string_lossy().to_string(),
+    Ok(ReadFileResponse {
+        path: target.to_string_lossy().to_string(),
         content: final_content,
         size,
         truncated,
         line_count,
     })
-    .into_response()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook that runs between validation and open, to swap a component.
+    static AFTER_VALIDATE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_validate(target: &Path) {
+    if let Some(hook) = AFTER_VALIDATE.with(|cell| cell.borrow_mut().take()) {
+        hook(target);
+    }
+}
+
+#[cfg(not(test))]
+const fn after_validate(_target: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::{AFTER_VALIDATE, MAX_FILE_SIZE, read_workspace_file};
+    use axum::http::StatusCode;
+    use std::path::{Path, PathBuf};
+
+    fn workspace() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("workspace");
+        let root = dir.path().canonicalize().expect("canonical workspace");
+        (dir, root)
+    }
+
+    fn file_of_len(root: &Path, name: &str, len: u64) {
+        let bytes = vec![b'a'; usize::try_from(len).expect("len fits usize")];
+        std::fs::write(root.join(name), bytes).expect("write file");
+    }
+
+    #[test]
+    fn read_at_the_limit_returns_the_file() {
+        let (_dir, root) = workspace();
+        file_of_len(&root, "max.txt", MAX_FILE_SIZE);
+        let response = read_workspace_file(&root, Path::new("max.txt"), 10).expect("read");
+        assert_eq!(response.size, 1_048_576);
+        assert_eq!(response.line_count, 1);
+    }
+
+    #[test]
+    fn read_of_a_directory_is_400_not_a_file() {
+        let (_dir, root) = workspace();
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        let Err((status, error)) = read_workspace_file(&root, Path::new("sub"), 10) else {
+            panic!("a directory must be refused");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error, "Path is not a file");
+    }
+
+    #[test]
+    fn read_over_the_limit_is_400_too_large() {
+        let (_dir, root) = workspace();
+        file_of_len(&root, "big.txt", MAX_FILE_SIZE + 1);
+        let Err((status, error)) = read_workspace_file(&root, Path::new("big.txt"), 10) else {
+            panic!("a file over the limit must be refused");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error.contains("too large"), "unexpected error: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_through_a_parent_swapped_for_a_symlink_is_403() {
+        let (_dir, root) = workspace();
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").expect("outside file");
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        std::fs::write(root.join("sub/secret.txt"), b"inside").expect("inside file");
+
+        let ws = root.clone();
+        let target = outside.path().to_path_buf();
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(move |_validated: &Path| {
+                std::fs::rename(ws.join("sub"), ws.join("sub.moved")).expect("move sub");
+                std::os::unix::fs::symlink(&target, ws.join("sub")).expect("symlink");
+            }));
+        });
+
+        let Err((status, error)) = read_workspace_file(&root, Path::new("sub/secret.txt"), 10)
+        else {
+            panic!("a swapped parent must be refused");
+        };
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(error.contains("symlink"), "unexpected error: {error}");
+    }
 }

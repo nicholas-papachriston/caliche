@@ -413,6 +413,31 @@ pub fn read_validated_file(
     Ok(bytes)
 }
 
+/// Open an existing file below `root` for reading, following no link below it.
+///
+/// `root` must be canonical and `target` a canonical path strictly below it.
+/// The path is walked one component at a time, each opened relative to its
+/// parent, as in [`read_validated_file`]: on Unix from `/`, the root's own
+/// components included, and on Windows from the root down. A symlink,
+/// junction, or other reparse point swapped in after the caller validated
+/// `target` is refused.
+///
+/// # Errors
+///
+/// Returns an error when `target` is not below `root`, a component is a link,
+/// or the file cannot be opened.
+#[cfg(any(unix, windows))]
+pub fn open_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    {
+        unix::open_beneath(root, target, unix::Access::Read)
+    }
+    #[cfg(windows)]
+    {
+        windows::open_beneath(root, target, windows::Access::Read)
+    }
+}
+
 /// Write file bytes after path validation.
 ///
 /// Missing parent directories are created, and every component below the
