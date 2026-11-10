@@ -25,6 +25,9 @@ impl MmapBackend {
     /// into memory and never truncates it; a missing or empty file starts an empty index.
     /// Flushes replace the file atomically (see [`super::write_dripstone_mmap_v1`]).
     ///
+    /// Changing the file by other means while it is open is not supported: a read-only
+    /// mapping would see the new bytes.
+    ///
     /// # Errors
     ///
     /// Fails if the file is missing in read-only mode, or if an existing non-empty file does
@@ -50,6 +53,7 @@ impl MmapBackend {
         }
 
         let existing = Self::load_existing(path, &config)?;
+        let existing_len = std::fs::metadata(path).map_or(0, |meta| meta.len());
         let mut store = WritableStore::new(
             config.file_path.clone(),
             config.dimension,
@@ -62,7 +66,7 @@ impl MmapBackend {
             data: ActiveMmapData::Empty,
             _file: None,
             writable: Some(Arc::new(RwLock::new(store))),
-            snapshot_bytes: AtomicU64::new(0),
+            snapshot_bytes: AtomicU64::new(existing_len),
         })
     }
 
@@ -119,7 +123,8 @@ impl MmapBackend {
         Self::list_mapped(&data, None, None)
     }
 
-    /// Byte length of the on-disk snapshot after the last flush (read-write mode only).
+    /// Byte length of the on-disk snapshot after the last flush, or of the file loaded at
+    /// a read-write open (read-write mode only).
     #[must_use]
     pub fn last_snapshot_len(&self) -> u64 {
         self.snapshot_bytes.load(Ordering::Relaxed)

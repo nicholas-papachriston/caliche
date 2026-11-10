@@ -34,16 +34,22 @@ fn validate_chunks(chunks: &[Chunk]) -> Result<usize, DripstoneError> {
     Ok(dim)
 }
 
+/// Counter for temp file names, so two writes in one process never share one.
+pub(super) static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
 /// A new, unused path next to `path` for the bytes that will replace it.
-fn temp_sibling(path: &Path, label: &str) -> Result<PathBuf, DripstoneError> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+///
+/// The name is `.<file name>.<pid>.<n>.tmp`. It is opened with `create_new`,
+/// so a file or symlink already at that name fails the write instead of being
+/// written through.
+pub(super) fn temp_sibling(path: &Path, label: &str) -> Result<PathBuf, DripstoneError> {
     let name = path.file_name().ok_or_else(|| {
         DripstoneError::storage(format!(
             "{label}: path has no file name: {}",
             path.display()
         ))
     })?;
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(name);
     tmp_name.push(format!(".{}.{n}.tmp", std::process::id()));
@@ -74,6 +80,10 @@ fn sync_parent_dir(_path: &Path, _label: &str) -> Result<(), DripstoneError> {
 /// `path`. A reader that mapped the old file keeps the old bytes, because the old file is
 /// never truncated or written. A crash leaves either the complete old file or the complete
 /// new one. On Windows the rename fails while another handle maps the old file.
+///
+/// The rename puts a new regular file at `path`: a symlink at `path` is replaced, not
+/// followed, and the new file gets default permissions instead of the old file's mode
+/// and owner. A temp file left by a crash before the rename stays next to `path`.
 fn replace_file_atomically(
     path: &Path,
     label: &str,
@@ -99,6 +109,11 @@ fn replace_file_atomically(
     }
     written?;
     sync_parent_dir(path, label)
+}
+
+/// Replace `path` with an empty file, which read-write open treats as an empty index.
+pub(super) fn write_empty_snapshot(path: &Path) -> Result<(), DripstoneError> {
+    replace_file_atomically(path, "mmap empty snapshot", |_| Ok(()))
 }
 
 fn write_zero_padding(file: &mut File, len: usize) -> Result<(), DripstoneError> {

@@ -411,3 +411,109 @@ fn mmap_flush_replaces_the_file_with_a_new_inode() {
     assert_eq!(block_on(fresh.count(Some("n1"))).expect("count"), 2);
     assert_eq!(file_names(dir.path()), vec!["rw.vf1".to_string()]);
 }
+
+#[test]
+fn mmap_deleting_every_chunk_persists_across_a_read_write_reopen() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+    write_dripstone_mmap_with_encoding(
+        &path,
+        &test_chunks(Some("ns1".to_string())),
+        MmapVectorEncoding::F32,
+    )
+    .expect("write");
+    let open_rw = || {
+        MmapBackend::new(
+            MmapBackendConfig::new(path.to_string_lossy(), 3)
+                .with_read_write(true)
+                .with_flush_every(0),
+        )
+        .expect("open rw")
+    };
+
+    let backend = open_rw();
+    block_on(backend.delete_namespace("ns1")).expect("delete namespace");
+    block_on(backend.flush()).expect("flush");
+    assert_eq!(backend.last_snapshot_len(), 0);
+    drop(backend);
+    assert_eq!(block_on(open_rw().count(Some("ns1"))).expect("count"), 0);
+
+    write_dripstone_mmap_with_encoding(
+        &path,
+        &test_chunks(Some("ns1".to_string())),
+        MmapVectorEncoding::F32,
+    )
+    .expect("rewrite");
+    let backend = open_rw();
+    block_on(backend.delete("d1#0", Some("ns1"))).expect("delete d1");
+    block_on(backend.delete("d2#0", Some("ns1"))).expect("delete d2");
+    block_on(backend.flush()).expect("flush");
+    drop(backend);
+    assert_eq!(block_on(open_rw().count(None)).expect("count"), 0);
+    assert_eq!(file_names(dir.path()), vec!["idx.vf1".to_string()]);
+}
+
+#[test]
+fn mmap_read_write_open_of_an_empty_file_starts_empty() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("empty.vf1");
+    std::fs::write(&path, b"").expect("empty file");
+
+    let backend = MmapBackend::new(
+        MmapBackendConfig::new(path.to_string_lossy(), 3)
+            .with_read_write(true)
+            .with_flush_every(0)
+            .with_vector_encoding(MmapVectorEncoding::F32),
+    )
+    .expect("an empty file opens read-write");
+    assert_eq!(block_on(backend.count(None)).expect("count"), 0);
+    let chunks = test_chunks(Some("ns1".to_string()));
+    block_on(backend.upsert(&chunks)).expect("upsert");
+    block_on(backend.flush()).expect("flush");
+    let reader =
+        MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3)).expect("open reader");
+    assert_eq!(block_on(reader.count(Some("ns1"))).expect("count"), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn mmap_write_does_not_follow_a_symlink_planted_at_the_temp_name() {
+    let dir = tempdir().expect("tempdir");
+    let outside = tempdir().expect("outside");
+    let victim = outside.path().join("victim.txt");
+    std::fs::write(&victim, b"victim").expect("victim");
+    let path = dir.path().join("idx.vf1");
+
+    // The next temp names this process will use. Other tests may take a few.
+    let next = super::codec::NEXT_TEMP.load(std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    for n in next..next + 256 {
+        std::os::unix::fs::symlink(&victim, dir.path().join(format!(".idx.vf1.{pid}.{n}.tmp")))
+            .expect("plant symlink");
+    }
+
+    let result =
+        write_dripstone_mmap_with_encoding(&path, &test_chunks(None), MmapVectorEncoding::F32);
+    assert!(result.is_err(), "the write must refuse the planted name");
+    assert_eq!(std::fs::read(&victim).expect("read victim"), b"victim");
+    assert!(!path.exists());
+}
+
+#[test]
+fn mmap_failed_replace_leaves_no_temp_file() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+    // A non-empty directory at the target makes the rename fail after the write.
+    std::fs::create_dir(&path).expect("target dir");
+    std::fs::write(path.join("keep.txt"), b"keep").expect("keep file");
+
+    let result =
+        write_dripstone_mmap_with_encoding(&path, &test_chunks(None), MmapVectorEncoding::F32);
+    let err = result.expect_err("rename over a directory fails");
+    assert!(
+        err.to_string().contains("replace file"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(file_names(dir.path()), vec!["idx.vf1".to_string()]);
+    assert_eq!(std::fs::read(path.join("keep.txt")).expect("read"), b"keep");
+}

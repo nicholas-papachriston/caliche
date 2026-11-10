@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::backend::mmap::codec::write_dripstone_mmap_with_encoding;
+use crate::backend::mmap::codec::{write_dripstone_mmap_with_encoding, write_empty_snapshot};
 use crate::backend::mmap::format::VectorEncoding;
 use crate::backend::shared::build_composite_key;
 use crate::core::{Chunk, SearchQuery, SearchResult};
@@ -90,10 +90,18 @@ impl WritableStore {
     }
 
     /// Write all chunks to the configured mmap file and reset the flush counter.
+    ///
+    /// An empty store replaces an existing file with an empty one, so chunks deleted
+    /// since the last flush do not come back on the next read-write open.
     pub fn flush_to_disk(&mut self) -> Result<Option<u64>, DripstoneError> {
         if self.chunks.is_empty() {
             self.ops_since_flush = 0;
-            return Ok(None);
+            let path = Path::new(&self.file_path);
+            if !path.exists() {
+                return Ok(None);
+            }
+            write_empty_snapshot(path)?;
+            return Ok(Some(0));
         }
         let mut list: Vec<Chunk> = self.chunks.values().cloned().collect();
         list.sort_by(|a, b| {
