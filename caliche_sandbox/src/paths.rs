@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+mod unix;
 #[cfg(windows)]
 mod windows;
 
@@ -387,11 +389,12 @@ pub fn in_workspace_git_dir(workspace: &Path, resolved: &Path) -> bool {
 
 /// Read file bytes after path validation.
 ///
-/// The final open uses `O_NOFOLLOW` on Unix so a last-component symlink
-/// created after validation cannot redirect the read. On Windows every
-/// component below the allowed root is opened without following reparse
-/// points and stays open until the file is open, so a symlink, junction, or
-/// other reparse point anywhere below the root is refused.
+/// Every component below the allowed root is opened relative to its parent
+/// without following links: with `openat` and `O_NOFOLLOW` on Unix, and
+/// without following reparse points on Windows, where each handle stays open
+/// until the file is open. A symlink, junction, or other reparse point
+/// anywhere below the root is refused, including one swapped in after
+/// validation.
 ///
 /// # Errors
 ///
@@ -403,6 +406,7 @@ pub fn read_validated_file(
     path: &str,
 ) -> Result<Vec<u8>> {
     let resolved = validate_read_path(workspace, config, path)?;
+    after_validate(&resolved);
     let mut file = open_validated_read(&resolved, &read_allowed_roots(workspace, config))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -412,10 +416,9 @@ pub fn read_validated_file(
 
 /// Write file bytes after path validation.
 ///
-/// Parent directories are created without following symlinks. The final open
-/// uses `O_NOFOLLOW` on Unix so a last-component swap cannot escape. On
-/// Windows every component below the writable root is opened or created
-/// without following reparse points, as for [`read_validated_file`].
+/// Missing parent directories are created, and every component below the
+/// writable root is opened or created without following links, as for
+/// [`read_validated_file`].
 ///
 /// # Errors
 ///
@@ -428,19 +431,51 @@ pub fn write_validated_file(
     content: &[u8],
 ) -> Result<()> {
     let resolved = validate_write_path(workspace, config, path)?;
+    after_validate(&resolved);
     let mut file = open_validated_write(&resolved, &write_allowed_roots(config))?;
     file.write_all(content)
         .with_context(|| format!("write '{}'", resolved.display()))?;
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(test)]
+thread_local! {
+    /// Test hook that runs between validation and open, to swap a component.
+    static AFTER_VALIDATE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn after_validate(resolved: &Path) {
+    if let Some(hook) = AFTER_VALIDATE.with(|cell| cell.borrow_mut().take()) {
+        hook(resolved);
+    }
+}
+
+#[cfg(not(test))]
+const fn after_validate(_resolved: &Path) {}
+
+#[cfg(unix)]
+fn open_validated_read(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
+    let root = containing_root(resolved, roots)?;
+    unix::open_beneath(&root, resolved, unix::Access::Read)
+        .map_err(|err| anyhow::anyhow!("read '{}': {err}", resolved.display()))
+}
+
+#[cfg(unix)]
+fn open_validated_write(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
+    let root = containing_root(resolved, roots)?;
+    unix::open_beneath(&root, resolved, unix::Access::Write)
+        .map_err(|err| anyhow::anyhow!("write '{}': {err}", resolved.display()))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_validated_read(resolved: &Path, _roots: &[PathBuf]) -> Result<File> {
     reject_existing_symlink(resolved)?;
     open_nofollow_read(resolved).with_context(|| format!("read '{}'", resolved.display()))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn open_validated_write(resolved: &Path, _roots: &[PathBuf]) -> Result<File> {
     if let Some(parent) = resolved.parent() {
         create_dir_all_nofollow(parent)
@@ -465,7 +500,7 @@ fn open_validated_write(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
 }
 
 /// The canonical form of the first allowed root that contains `resolved`.
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 fn containing_root(resolved: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
     roots
         .iter()
@@ -479,7 +514,7 @@ fn containing_root(resolved: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
         })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn reject_existing_symlink(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -489,7 +524,7 @@ fn reject_existing_symlink(path: &Path) -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn create_dir_all_nofollow(dir: &Path) -> Result<()> {
     if dir.as_os_str().is_empty() || existing_dir_is_usable(dir)? {
         return Ok(());
@@ -503,7 +538,7 @@ fn create_dir_all_nofollow(dir: &Path) -> Result<()> {
     create_one_dir(dir)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn existing_dir_is_usable(dir: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(dir) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -518,7 +553,7 @@ fn existing_dir_is_usable(dir: &Path) -> Result<bool> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn create_one_dir(dir: &Path) -> Result<()> {
     match std::fs::create_dir(dir) {
         Ok(()) => Ok(()),
@@ -527,7 +562,7 @@ fn create_one_dir(dir: &Path) -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 fn accept_created_dir(dir: &Path) -> Result<()> {
     let meta =
         std::fs::symlink_metadata(dir).with_context(|| format!("stat '{}'", dir.display()))?;
@@ -539,26 +574,6 @@ fn accept_created_dir(dir: &Path) -> Result<()> {
     } else {
         anyhow::bail!("parent path '{}' is not a directory", dir.display())
     }
-}
-
-#[cfg(unix)]
-fn open_nofollow_read(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    File::options()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(unix)]
-fn open_nofollow_write(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -573,4 +588,103 @@ fn open_nofollow_write(path: &Path) -> std::io::Result<File> {
         .create(true)
         .truncate(true)
         .open(path)
+}
+
+#[cfg(all(test, unix))]
+mod swap_tests {
+    use super::{AFTER_VALIDATE, read_validated_file, write_validated_file};
+    use crate::config::{NamedPolicy, SandboxBackendType, policy_to_config};
+    use std::path::Path;
+
+    /// Before the open, replace `workspace/sub` with a symlink to `outside`.
+    #[expect(clippy::expect_used, reason = "test fixture setup panics with context")]
+    fn swap_sub_for_symlink(workspace: &Path, outside: &Path) {
+        let workspace = workspace.to_path_buf();
+        let outside = outside.to_path_buf();
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(move |_resolved: &Path| {
+                std::fs::rename(workspace.join("sub"), workspace.join("sub.moved"))
+                    .expect("move sub away");
+                std::os::unix::fs::symlink(&outside, workspace.join("sub")).expect("symlink");
+            }));
+        });
+    }
+
+    #[expect(clippy::expect_used, reason = "test fixture setup panics with context")]
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let ws = tempfile::tempdir().expect("workspace");
+        let out = tempfile::tempdir().expect("outside");
+        let workspace = ws.path().canonicalize().expect("canonical workspace");
+        std::fs::create_dir(workspace.join("sub")).expect("sub");
+        std::fs::write(workspace.join("sub/file.txt"), b"inside").expect("inside file");
+        std::fs::write(out.path().join("file.txt"), b"orig").expect("outside file");
+        (ws, out, workspace)
+    }
+
+    #[test]
+    fn read_refuses_a_parent_swapped_for_a_symlink() {
+        let (_ws, out, workspace) = fixture();
+        let config = policy_to_config(
+            NamedPolicy::WorkspaceWrite,
+            &workspace,
+            None,
+            SandboxBackendType::Noop,
+        );
+        swap_sub_for_symlink(&workspace, out.path());
+
+        let err = read_validated_file(&workspace, &config, "sub/file.txt")
+            .expect_err("swapped parent must be refused");
+        assert!(
+            format!("{err:#}").contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            std::fs::read(out.path().join("file.txt")).expect("read"),
+            b"orig"
+        );
+    }
+
+    #[test]
+    fn write_refuses_a_parent_swapped_for_a_symlink() {
+        let (_ws, out, workspace) = fixture();
+        let config = policy_to_config(
+            NamedPolicy::WorkspaceWrite,
+            &workspace,
+            None,
+            SandboxBackendType::Noop,
+        );
+        swap_sub_for_symlink(&workspace, out.path());
+
+        let err = write_validated_file(&workspace, &config, "sub/file.txt", b"evil")
+            .expect_err("swapped parent must be refused");
+        assert!(
+            format!("{err:#}").contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            std::fs::read(out.path().join("file.txt")).expect("read"),
+            b"orig"
+        );
+    }
+
+    #[test]
+    fn write_creates_missing_parents_and_reads_back() {
+        let (_ws, _out, workspace) = fixture();
+        let config = policy_to_config(
+            NamedPolicy::WorkspaceWrite,
+            &workspace,
+            None,
+            SandboxBackendType::Noop,
+        );
+        write_validated_file(&workspace, &config, "a/b/new.txt", b"made").expect("write");
+        assert_eq!(
+            read_validated_file(&workspace, &config, "a/b/new.txt").expect("read"),
+            b"made"
+        );
+        write_validated_file(&workspace, &config, "sub/file.txt", b"x").expect("overwrite");
+        assert_eq!(
+            std::fs::read(workspace.join("sub/file.txt")).expect("read"),
+            b"x"
+        );
+    }
 }
