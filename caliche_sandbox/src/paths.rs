@@ -406,7 +406,6 @@ pub fn read_validated_file(
     path: &str,
 ) -> Result<Vec<u8>> {
     let resolved = validate_read_path(workspace, config, path)?;
-    after_validate(&resolved);
     let mut file = open_validated_read(&resolved, &read_allowed_roots(workspace, config))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -431,33 +430,34 @@ pub fn write_validated_file(
     content: &[u8],
 ) -> Result<()> {
     let resolved = validate_write_path(workspace, config, path)?;
-    after_validate(&resolved);
     let mut file = open_validated_write(&resolved, &write_allowed_roots(config))?;
     file.write_all(content)
         .with_context(|| format!("write '{}'", resolved.display()))?;
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 thread_local! {
-    /// Test hook that runs between validation and open, to swap a component.
+    /// Test hook that runs after the containing root is chosen and before the
+    /// open, to swap a component.
     static AFTER_VALIDATE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         std::cell::RefCell::new(None);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn after_validate(resolved: &Path) {
     if let Some(hook) = AFTER_VALIDATE.with(|cell| cell.borrow_mut().take()) {
         hook(resolved);
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(unix, not(test)))]
 const fn after_validate(_resolved: &Path) {}
 
 #[cfg(unix)]
 fn open_validated_read(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
     let root = containing_root(resolved, roots)?;
+    after_validate(resolved);
     unix::open_beneath(&root, resolved, unix::Access::Read)
         .map_err(|err| anyhow::anyhow!("read '{}': {err}", resolved.display()))
 }
@@ -465,6 +465,7 @@ fn open_validated_read(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
 #[cfg(unix)]
 fn open_validated_write(resolved: &Path, roots: &[PathBuf]) -> Result<File> {
     let root = containing_root(resolved, roots)?;
+    after_validate(resolved);
     unix::open_beneath(&root, resolved, unix::Access::Write)
         .map_err(|err| anyhow::anyhow!("write '{}': {err}", resolved.display()))
 }
@@ -685,6 +686,138 @@ mod swap_tests {
         assert_eq!(
             std::fs::read(workspace.join("sub/file.txt")).expect("read"),
             b"x"
+        );
+    }
+
+    fn set_hook(hook: impl FnOnce(&Path) + 'static) {
+        AFTER_VALIDATE.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    fn config_for(workspace: &Path) -> crate::config::SandboxConfig {
+        policy_to_config(
+            NamedPolicy::WorkspaceWrite,
+            workspace,
+            None,
+            SandboxBackendType::Noop,
+        )
+    }
+
+    #[test]
+    fn write_refuses_a_root_swapped_for_a_symlink() {
+        let outer = tempfile::tempdir().expect("outer");
+        let out = tempfile::tempdir().expect("outside");
+        let outer_path = outer.path().canonicalize().expect("canonical outer");
+        let workspace = outer_path.join("ws");
+        std::fs::create_dir(&workspace).expect("ws");
+        let config = config_for(&workspace);
+
+        let ws = workspace.clone();
+        let outside = out.path().to_path_buf();
+        set_hook(move |_resolved: &Path| {
+            std::fs::rename(&ws, ws.with_file_name("ws.moved")).expect("move ws");
+            std::os::unix::fs::symlink(&outside, &ws).expect("symlink ws");
+        });
+
+        let err = write_validated_file(&workspace, &config, "f.txt", b"evil")
+            .expect_err("swapped root must be refused");
+        assert!(
+            err.to_string().contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!out.path().join("f.txt").exists());
+    }
+
+    #[test]
+    fn write_into_a_new_dir_under_a_swapped_parent_creates_nothing_outside() {
+        let (_ws, out, workspace) = fixture();
+        let config = config_for(&workspace);
+        swap_sub_for_symlink(&workspace, out.path());
+
+        let err = write_validated_file(&workspace, &config, "sub/newdir/f.txt", b"evil")
+            .expect_err("swapped parent must be refused");
+        assert!(
+            err.to_string().contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!out.path().join("newdir").exists());
+    }
+
+    #[test]
+    fn read_and_write_refuse_a_last_component_swapped_for_a_symlink() {
+        let (_ws, out, workspace) = fixture();
+        let config = config_for(&workspace);
+        let swap = |workspace: &Path, outside: &Path| {
+            let file = workspace.join("sub/file.txt");
+            let target = outside.join("file.txt");
+            set_hook(move |_resolved: &Path| {
+                std::fs::remove_file(&file).expect("remove file");
+                std::os::unix::fs::symlink(&target, &file).expect("symlink file");
+            });
+        };
+
+        swap(&workspace, out.path());
+        let err = read_validated_file(&workspace, &config, "sub/file.txt")
+            .expect_err("swapped file must not be read");
+        assert!(
+            err.to_string().contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+
+        std::fs::remove_file(workspace.join("sub/file.txt")).expect("remove link");
+        std::fs::write(workspace.join("sub/file.txt"), b"inside").expect("restore file");
+        swap(&workspace, out.path());
+        let err = write_validated_file(&workspace, &config, "sub/file.txt", b"evil")
+            .expect_err("swapped file must not be written");
+        assert!(
+            err.to_string().contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            std::fs::read(out.path().join("file.txt")).expect("read"),
+            b"orig"
+        );
+    }
+
+    #[test]
+    fn read_and_write_refuse_a_fifo_without_blocking() {
+        let (_ws, _out, workspace) = fixture();
+        let config = config_for(&workspace);
+        let status = std::process::Command::new("mkfifo")
+            .arg(workspace.join("pipe"))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let read = read_validated_file(&workspace, &config, "pipe").map(|_| ());
+            let write = write_validated_file(&workspace, &config, "pipe", b"x");
+            let _ = tx.send((read, write));
+        });
+        let (read, write) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("opening a FIFO must not block");
+        let read = read.expect_err("a FIFO must not be read");
+        assert!(
+            read.to_string().contains("not a regular file"),
+            "unexpected: {read:#}"
+        );
+        assert!(write.is_err(), "a FIFO must not be written");
+    }
+
+    #[test]
+    fn write_creates_a_writable_root_that_does_not_exist_yet() {
+        let outer = tempfile::tempdir().expect("outer");
+        let workspace = outer
+            .path()
+            .canonicalize()
+            .expect("canonical outer")
+            .join("not-yet/ws");
+        let config = config_for(&workspace);
+        write_validated_file(&workspace, &config, "a.txt", b"made").expect("write");
+        assert_eq!(
+            std::fs::read(workspace.join("a.txt")).expect("read"),
+            b"made"
         );
     }
 }

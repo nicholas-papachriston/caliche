@@ -2,10 +2,11 @@
 //!
 //! `O_NOFOLLOW` only covers the last path component, so a directory replaced
 //! by a symlink after validation would still be followed by an open of the
-//! full path. Here the root is opened once, and each component below it is
-//! opened relative to its parent's descriptor with `openat` and `O_NOFOLLOW`.
-//! No component is looked up by a full path string after validation, so a
-//! swapped directory makes the open fail instead of leaving the root.
+//! full path. Here the walk starts at `/` and opens every component of the
+//! canonical target, the root's own components included, relative to its
+//! parent's descriptor with `openat` and `O_NOFOLLOW`. No component is looked
+//! up by a full path string after validation, so a swapped directory, at the
+//! root, above it or below it, makes the open fail instead of leaving the root.
 
 use std::ffi::{CString, OsStr};
 use std::fs::File;
@@ -26,26 +27,41 @@ pub(super) enum Access {
 
 const DIR_FLAGS: libc::c_int =
     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-const READ_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-const WRITE_FLAGS: libc::c_int =
-    libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+// `O_NONBLOCK` keeps a FIFO from blocking the open; `require_regular_file`
+// then refuses it and clears the flag on a regular file.
+const READ_FLAGS: libc::c_int =
+    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+const WRITE_FLAGS: libc::c_int = libc::O_WRONLY
+    | libc::O_CREAT
+    | libc::O_TRUNC
+    | libc::O_NOFOLLOW
+    | libc::O_CLOEXEC
+    | libc::O_NONBLOCK;
 
-/// Open `target`, which must lie strictly below the canonical `root`.
+/// Open `target`, a canonical absolute path strictly below the canonical `root`.
 ///
-/// The root itself is trusted and may be reached through symlinks. Every
-/// component below it, including the target, must not be one.
+/// No component of `target`, from `/` down, may be a symlink, so the root
+/// cannot be swapped for one either. Writes create missing directories on the
+/// way, including a configured root that does not exist yet. The target must
+/// be a regular file.
 pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Result<File> {
-    let names = components_below(root, target)?;
-    let Some((file_name, dir_names)) = names.split_last() else {
+    if components_below(root, target)?.is_empty() {
         return Err(invalid_input(format!(
             "'{}' names the sandbox root, not a file",
+            target.display()
+        )));
+    }
+    let names = absolute_components(target)?;
+    let Some((file_name, dir_names)) = names.split_last() else {
+        return Err(invalid_input(format!(
+            "'{}' has no file name",
             target.display()
         )));
     };
     let mut dir: OwnedFd = File::options()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
-        .open(root)?
+        .open("/")?
         .into();
     for name in dir_names {
         dir = open_dir(&dir, name, access, target)?;
@@ -56,7 +72,51 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
         Access::Write => openat(&dir, &name, WRITE_FLAGS),
     }
     .map_err(|err| describe(err, &dir, file_name, target))?;
-    Ok(File::from(file))
+    require_regular_file(File::from(file), target)
+}
+
+/// The names of every component of the absolute path `target`, below `/`.
+fn absolute_components(target: &Path) -> io::Result<Vec<&OsStr>> {
+    let mut components = target.components();
+    if components.next() != Some(Component::RootDir) {
+        return Err(invalid_input(format!(
+            "'{}' is not an absolute path",
+            target.display()
+        )));
+    }
+    components
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name),
+            other => Err(invalid_input(format!(
+                "unexpected path component {:?} in '{}'",
+                other.as_os_str(),
+                target.display()
+            ))),
+        })
+        .collect()
+}
+
+/// Refuse anything but a regular file, then make the descriptor blocking again.
+fn require_regular_file(file: File, target: &Path) -> io::Result<File> {
+    if !file.metadata()?.is_file() {
+        return Err(invalid_input(format!(
+            "'{}' is not a regular file",
+            target.display()
+        )));
+    }
+    // SAFETY: `file` owns an open descriptor for the whole call.
+    #[expect(unsafe_code, reason = "fcntl F_GETFL on an owned descriptor")]
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `file` owns an open descriptor for the whole call.
+    #[expect(unsafe_code, reason = "fcntl F_SETFL on an owned descriptor")]
+    let set = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    if set < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
 }
 
 fn components_below<'a>(root: &Path, target: &'a Path) -> io::Result<Vec<&'a OsStr>> {
