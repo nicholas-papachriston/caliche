@@ -35,7 +35,8 @@ pub struct MmapBackendConfig {
     pub file_path: String,
     /// Expected embedding dimension (must match the file header).
     pub dimension: usize,
-    /// Whether to allow writes (creates/truncates an empty file; not a full `Backend` writer).
+    /// `false` opens read-write: an existing index is loaded into memory (never truncated),
+    /// and flushes replace the file atomically.
     pub read_only: bool,
     /// After this many mutating operations, flush a snapshot to disk (`0` = never auto-flush).
     pub flush_every_ops: usize,
@@ -74,7 +75,7 @@ impl MmapBackendConfig {
 }
 
 pub(super) enum ActiveMmapData {
-    /// No mapped data (truncated create mode).
+    /// No mapped data (read-write mode keeps its chunks in memory).
     Empty,
     AlignedV1 {
         mmap: Mmap,

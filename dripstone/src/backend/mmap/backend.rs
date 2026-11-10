@@ -198,45 +198,7 @@ impl Backend for MmapBackend {
             return Ok(w.read().list(namespace, limit));
         }
 
-        match &self.data {
-            ActiveMmapData::Empty => Err(Self::not_ready()),
-            ActiveMmapData::AlignedV1 { mmap, header } => {
-                let row_meta_table = Self::rkyv_row_meta_v1_unchecked(mmap, header);
-                let mut out = Vec::new();
-                for (row_index, row_meta) in row_meta_table.rows.iter().enumerate() {
-                    if !Self::namespace_matches_v1(row_meta, namespace) {
-                        continue;
-                    }
-                    out.push(Self::materialize_v1_chunk(
-                        mmap, header, row_meta, row_index, None, true, true,
-                    )?);
-                    if let Some(limit) = limit
-                        && out.len() >= limit
-                    {
-                        break;
-                    }
-                }
-                Ok(out)
-            }
-            ActiveMmapData::AlignedV2 { mmap, header } => {
-                let row_meta_table = Self::rkyv_row_meta_v2_unchecked(mmap, header);
-                let mut out = Vec::new();
-                for (row_index, row_meta) in row_meta_table.rows.iter().enumerate() {
-                    if !Self::namespace_matches_v1(row_meta, namespace) {
-                        continue;
-                    }
-                    out.push(Self::materialize_v2_chunk(
-                        mmap, header, row_meta, row_index, None, true, true,
-                    )?);
-                    if let Some(limit) = limit
-                        && out.len() >= limit
-                    {
-                        break;
-                    }
-                }
-                Ok(out)
-            }
-        }
+        Self::list_mapped(&self.data, namespace, limit)
     }
 
     async fn flush(&self) -> Result<(), DripstoneError> {

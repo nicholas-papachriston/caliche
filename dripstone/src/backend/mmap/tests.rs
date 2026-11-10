@@ -277,3 +277,137 @@ fn mmap_read_write_upsert_flush_and_snapshot_len() {
         .expect("chunk");
     assert_eq!(result.vector.as_ref(), &[0.0_f32, 1.0, 0.0]);
 }
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("rt")
+        .block_on(future)
+}
+
+fn file_names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn mmap_reader_keeps_its_bytes_when_the_file_is_rewritten() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+    let ns = Some("ns1".to_string());
+    write_dripstone_mmap_with_encoding(&path, &test_chunks(ns.clone()), MmapVectorEncoding::F32)
+        .expect("write");
+    let reader =
+        MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3)).expect("open reader");
+
+    // Same ids, contents and layout; only the two vectors swap.
+    let mut swapped = test_chunks(ns);
+    swapped[0].vector = std::sync::Arc::from(vec![0.0_f32, 1.0, 0.0]);
+    swapped[1].vector = std::sync::Arc::from(vec![1.0_f32, 0.0, 0.0]);
+    write_dripstone_mmap_with_encoding(&path, &swapped, MmapVectorEncoding::F32).expect("rewrite");
+
+    let old = block_on(reader.get("d2#0", Some("ns1")))
+        .expect("get")
+        .expect("chunk");
+    assert_eq!(old.vector.as_ref(), &[0.0_f32, 1.0, 0.0]);
+
+    let fresh = MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3))
+        .expect("open fresh reader");
+    let new = block_on(fresh.get("d2#0", Some("ns1")))
+        .expect("get")
+        .expect("chunk");
+    assert_eq!(new.vector.as_ref(), &[1.0_f32, 0.0, 0.0]);
+    assert_eq!(file_names(dir.path()), vec!["idx.vf1".to_string()]);
+}
+
+#[test]
+fn mmap_read_write_open_keeps_existing_chunks() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+    write_dripstone_mmap_with_encoding(
+        &path,
+        &test_chunks(Some("ns1".to_string())),
+        MmapVectorEncoding::F32,
+    )
+    .expect("write");
+
+    let backend = MmapBackend::new(
+        MmapBackendConfig::new(path.to_string_lossy(), 3)
+            .with_read_write(true)
+            .with_flush_every(0),
+    )
+    .expect("open rw");
+    let chunk = block_on(backend.get("d1#0", Some("ns1")))
+        .expect("get")
+        .expect("chunk");
+    assert_eq!(chunk.vector.as_ref(), &[1.0_f32, 0.0, 0.0]);
+    assert_eq!(chunk.content, "hello");
+    assert_eq!(block_on(backend.count(Some("ns1"))).expect("count"), 2);
+    drop(backend);
+
+    let reader = MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3))
+        .expect("file still holds the index");
+    assert_eq!(block_on(reader.count(Some("ns1"))).expect("count"), 2);
+}
+
+#[test]
+fn mmap_read_write_open_rejects_a_foreign_file_and_leaves_it() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"NOTFORGE keep me").expect("write");
+
+    let err =
+        MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3).with_read_write(true))
+            .expect_err("foreign file must not open read-write");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("DRIPST01") && msg.contains("DRIPST02"),
+        "unexpected error: {msg}"
+    );
+    assert_eq!(std::fs::read(&path).expect("read"), b"NOTFORGE keep me");
+}
+
+#[cfg(unix)]
+#[test]
+fn mmap_flush_replaces_the_file_with_a_new_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("rw.vf1");
+    let backend = MmapBackend::new(
+        MmapBackendConfig::new(path.to_string_lossy(), 3)
+            .with_read_write(true)
+            .with_flush_every(0)
+            .with_vector_encoding(MmapVectorEncoding::F32),
+    )
+    .expect("open rw");
+    let mut chunks = test_chunks(Some("n1".to_string()));
+    let second = chunks.pop().expect("second chunk");
+    block_on(backend.upsert(&chunks)).expect("upsert");
+    block_on(backend.flush()).expect("flush");
+    let first_inode = std::fs::metadata(&path).expect("stat").ino();
+
+    let reader =
+        MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3)).expect("open reader");
+    block_on(backend.upsert(std::slice::from_ref(&second))).expect("upsert");
+    block_on(backend.flush()).expect("flush");
+    let second_inode = std::fs::metadata(&path).expect("stat").ino();
+
+    assert_ne!(first_inode, second_inode);
+    assert_eq!(block_on(reader.count(Some("n1"))).expect("count"), 1);
+    let fresh = MmapBackend::new(MmapBackendConfig::new(path.to_string_lossy(), 3))
+        .expect("open fresh reader");
+    assert_eq!(block_on(fresh.count(Some("n1"))).expect("count"), 2);
+    assert_eq!(file_names(dir.path()), vec!["rw.vf1".to_string()]);
+}

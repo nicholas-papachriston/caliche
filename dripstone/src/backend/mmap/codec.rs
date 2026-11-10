@@ -1,8 +1,9 @@
 //! Encode `Dripstone` mmap files (see [`super::format`]).
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::backend::mmap::format::{
     MMAP_HEADER_V1_LEN, MMAP_HEADER_V2_LEN, MMAP_V1_DEFAULT_ALIGNMENT, MmapHeaderV1Spec,
@@ -31,6 +32,73 @@ fn validate_chunks(chunks: &[Chunk]) -> Result<usize, DripstoneError> {
     }
 
     Ok(dim)
+}
+
+/// A new, unused path next to `path` for the bytes that will replace it.
+fn temp_sibling(path: &Path, label: &str) -> Result<PathBuf, DripstoneError> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().ok_or_else(|| {
+        DripstoneError::storage(format!(
+            "{label}: path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.{n}.tmp", std::process::id()));
+    Ok(path.with_file_name(tmp_name))
+}
+
+/// Make a rename in the directory that holds `path` durable.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path, label: &str) -> Result<(), DripstoneError> {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| DripstoneError::storage_with_source(format!("{label} sync directory"), e))
+}
+
+/// Windows cannot open a directory as a file to sync it; the rename itself is atomic.
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path, _label: &str) -> Result<(), DripstoneError> {
+    Ok(())
+}
+
+/// Replace `path` with a file written by `write`, without modifying the existing file.
+///
+/// The bytes go to a new file in the same directory, which is synced and then renamed over
+/// `path`. A reader that mapped the old file keeps the old bytes, because the old file is
+/// never truncated or written. A crash leaves either the complete old file or the complete
+/// new one. On Windows the rename fails while another handle maps the old file.
+fn replace_file_atomically(
+    path: &Path,
+    label: &str,
+    write: impl FnOnce(&mut File) -> Result<(), DripstoneError>,
+) -> Result<(), DripstoneError> {
+    let tmp = temp_sibling(path, label)?;
+    let written = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| DripstoneError::storage_with_source(format!("{label} create file"), e))?;
+        write(&mut file)?;
+        file.sync_all()
+            .map_err(|e| DripstoneError::storage_with_source(format!("{label} sync"), e))?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+            .map_err(|e| DripstoneError::storage_with_source(format!("{label} replace file"), e))
+    })();
+    if written.is_err() {
+        // Best effort: the target is untouched, so only the partial temp file remains.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    sync_parent_dir(path, label)
 }
 
 fn write_zero_padding(file: &mut File, len: usize) -> Result<(), DripstoneError> {
@@ -329,27 +397,24 @@ pub fn write_dripstone_mmap_v1(
         plan_aligned_slab(chunks, encoding, MMAP_HEADER_V1_LEN, "mmap v1")?;
     let header = build_v1_header(dim, chunks.len(), encoding, &layout)?;
 
-    let mut file = File::create(path)
-        .map_err(|e| DripstoneError::storage_with_source("mmap v1 create file", e))?;
-    write_slab_sidecars(
-        &mut file,
-        "mmap v1",
-        &header,
-        &layout,
-        &index_bytes,
-        &row_meta_bytes,
-        chunks,
-    )?;
+    replace_file_atomically(path, "mmap v1", |file| {
+        write_slab_sidecars(
+            file,
+            "mmap v1",
+            &header,
+            &layout,
+            &index_bytes,
+            &row_meta_bytes,
+            chunks,
+        )?;
 
-    let padding = layout.vector_stride_bytes - encoded_vector_bytes;
-    for chunk in chunks {
-        write_v1_vector_row(&mut file, encoding, chunk)?;
-        write_zero_padding(&mut file, padding)?;
-    }
-
-    file.sync_all()
-        .map_err(|e| DripstoneError::storage_with_source("mmap v1 sync", e))?;
-    Ok(())
+        let padding = layout.vector_stride_bytes - encoded_vector_bytes;
+        for chunk in chunks {
+            write_v1_vector_row(file, encoding, chunk)?;
+            write_zero_padding(file, padding)?;
+        }
+        Ok(())
+    })
 }
 
 /// Write a new memory-mapped index file using the v2 int8 slab format.
@@ -381,31 +446,29 @@ pub fn write_dripstone_mmap_v2(
         quant_zero_point,
     )?;
 
-    let mut file = File::create(path)
-        .map_err(|e| DripstoneError::storage_with_source("mmap v2 create file", e))?;
-    write_slab_sidecars(
-        &mut file,
-        "mmap v2",
-        &header,
-        &layout,
-        &index_bytes,
-        &row_meta_bytes,
-        chunks,
-    )?;
+    replace_file_atomically(path, "mmap v2", |file| {
+        write_slab_sidecars(
+            file,
+            "mmap v2",
+            &header,
+            &layout,
+            &index_bytes,
+            &row_meta_bytes,
+            chunks,
+        )?;
 
-    let padding = layout.vector_stride_bytes - encoded_vector_bytes;
-    for chunk in chunks {
-        for value in chunk.vector.iter() {
-            let encoded = quantize_i8(*value, quant_scale, quant_zero_point);
-            file.write_all(&encoded.to_le_bytes())
-                .map_err(|e| DripstoneError::storage_with_source("mmap v2 write int8 vector", e))?;
+        let padding = layout.vector_stride_bytes - encoded_vector_bytes;
+        for chunk in chunks {
+            for value in chunk.vector.iter() {
+                let encoded = quantize_i8(*value, quant_scale, quant_zero_point);
+                file.write_all(&encoded.to_le_bytes()).map_err(|e| {
+                    DripstoneError::storage_with_source("mmap v2 write int8 vector", e)
+                })?;
+            }
+            write_zero_padding(file, padding)?;
         }
-        write_zero_padding(&mut file, padding)?;
-    }
-
-    file.sync_all()
-        .map_err(|e| DripstoneError::storage_with_source("mmap v2 sync", e))?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Write a new mmap index using the aligned v1 format with an explicit encoding.

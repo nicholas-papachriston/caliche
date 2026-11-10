@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,11 +19,16 @@ use crate::errors::DripstoneError;
 use super::{ActiveMmapData, MmapBackend, MmapBackendConfig};
 
 impl MmapBackend {
-    /// Opens a memory-mapped `Dripstone` index file (read-only) or creates an empty file (read-write truncate).
+    /// Opens a memory-mapped `Dripstone` index file.
+    ///
+    /// Read-only mode maps the file. Read-write mode loads every chunk of an existing file
+    /// into memory and never truncates it; a missing or empty file starts an empty index.
+    /// Flushes replace the file atomically (see [`super::write_dripstone_mmap_v1`]).
     ///
     /// # Errors
     ///
-    /// Fails if the file exists but does not start with a supported `Dripstone` mmap magic or fails validation.
+    /// Fails if the file is missing in read-only mode, or if an existing non-empty file does
+    /// not start with a supported `Dripstone` mmap magic or fails validation.
     pub fn new(config: MmapBackendConfig) -> Result<Self, DripstoneError> {
         let path = Path::new(&config.file_path);
 
@@ -34,65 +39,84 @@ impl MmapBackend {
                     config.file_path
                 )));
             }
-
-            let file = File::open(path)
-                .map_err(|e| DripstoneError::storage_with_source("failed to open mmap file", e))?;
-
-            let mmap = unsafe {
-                Mmap::map(&file).map_err(|e| {
-                    DripstoneError::storage_with_source("failed to create memory map", e)
-                })?
-            };
-
-            let data = if is_rkyv_mmap_v1(&mmap) {
-                let header = Self::validate_v1(&mmap, config.dimension)?;
-                ActiveMmapData::AlignedV1 { mmap, header }
-            } else if is_rkyv_mmap_v2(&mmap) {
-                let header = Self::validate_v2(&mmap, config.dimension)?;
-                ActiveMmapData::AlignedV2 { mmap, header }
-            } else {
-                return Err(DripstoneError::storage(format!(
-                    "mmap file is not a supported Dripstone index (expected magic DRIPST01 or DRIPST02): {}",
-                    config.file_path
-                )));
-            };
-
-            Ok(Self {
+            let (file, data) = Self::map_file(path, &config)?;
+            return Ok(Self {
                 config,
                 data,
                 _file: Some(file),
                 writable: None,
                 snapshot_bytes: AtomicU64::new(0),
-            })
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(path)
-                .map_err(|e| {
-                    DripstoneError::storage_with_source("failed to create mmap file", e)
-                })?;
-            drop(file);
-
-            let flush_every = config.flush_every_ops;
-            let path_str = config.file_path.clone();
-            let dim = config.dimension;
-            let vector_encoding = config.vector_encoding;
-            Ok(Self {
-                config,
-                data: ActiveMmapData::Empty,
-                _file: None,
-                writable: Some(Arc::new(RwLock::new(WritableStore::new(
-                    path_str,
-                    dim,
-                    flush_every,
-                    vector_encoding,
-                )))),
-                snapshot_bytes: AtomicU64::new(0),
-            })
+            });
         }
+
+        let existing = Self::load_existing(path, &config)?;
+        let mut store = WritableStore::new(
+            config.file_path.clone(),
+            config.dimension,
+            config.flush_every_ops,
+            config.vector_encoding,
+        );
+        store.load(existing);
+        Ok(Self {
+            config,
+            data: ActiveMmapData::Empty,
+            _file: None,
+            writable: Some(Arc::new(RwLock::new(store))),
+            snapshot_bytes: AtomicU64::new(0),
+        })
+    }
+
+    /// Map and validate an existing index file.
+    fn map_file(
+        path: &Path,
+        config: &MmapBackendConfig,
+    ) -> Result<(File, ActiveMmapData), DripstoneError> {
+        let file = File::open(path)
+            .map_err(|e| DripstoneError::storage_with_source("failed to open mmap file", e))?;
+
+        // SAFETY: `Mmap::map` is unsafe because the bytes change if the file is modified
+        // while mapped. The writers in this module never modify an existing file: they write
+        // a new file and rename it over the path, so this mapping keeps the old file's bytes.
+        // Modifying the file by other means while it is mapped is outside this backend's
+        // contract.
+        let mmap = unsafe { Mmap::map(&file) }
+            .map_err(|e| DripstoneError::storage_with_source("failed to create memory map", e))?;
+
+        let data = if is_rkyv_mmap_v1(&mmap) {
+            let header = Self::validate_v1(&mmap, config.dimension)?;
+            ActiveMmapData::AlignedV1 { mmap, header }
+        } else if is_rkyv_mmap_v2(&mmap) {
+            let header = Self::validate_v2(&mmap, config.dimension)?;
+            ActiveMmapData::AlignedV2 { mmap, header }
+        } else {
+            return Err(DripstoneError::storage(format!(
+                "mmap file is not a supported Dripstone index (expected magic DRIPST01 or DRIPST02): {}",
+                config.file_path
+            )));
+        };
+        Ok((file, data))
+    }
+
+    /// Chunks of an existing index for read-write mode; empty when the file is missing or empty.
+    fn load_existing(
+        path: &Path,
+        config: &MmapBackendConfig,
+    ) -> Result<Vec<Chunk>, DripstoneError> {
+        let len = match std::fs::metadata(path) {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(DripstoneError::storage_with_source(
+                    "failed to stat mmap file",
+                    e,
+                ));
+            }
+        };
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let (_file, data) = Self::map_file(path, config)?;
+        Self::list_mapped(&data, None, None)
     }
 
     /// Byte length of the on-disk snapshot after the last flush (read-write mode only).
@@ -207,9 +231,9 @@ impl MmapBackend {
         header: &ParsedMmapHeaderV1,
     ) -> &'a ArchivedMmapIdIndexV1 {
         let slice = &mmap[header.index_offset..header.index_offset + header.index_len];
-        // SAFETY: the slice offsets come from a header that `validate_v1` checked with
-        // `rkyv::access` when the map was opened, and the mapping is read-only, so the
-        // archive bytes have not changed.
+        // SAFETY: `validate_v1` checked these header offsets with `rkyv::access` when the
+        // map was opened. The bytes have not changed since: the mapping is read-only and this
+        // module's writers replace files by rename instead of writing them (see `map_file`).
         unsafe { rkyv::access_unchecked(slice) }
     }
 
@@ -218,9 +242,9 @@ impl MmapBackend {
         header: &ParsedMmapHeaderV1,
     ) -> &'a ArchivedMmapRowMetaTableV1 {
         let slice = &mmap[header.row_meta_offset..header.row_meta_offset + header.row_meta_len];
-        // SAFETY: the slice offsets come from a header that `validate_v1` checked with
-        // `rkyv::access` when the map was opened, and the mapping is read-only, so the
-        // archive bytes have not changed.
+        // SAFETY: `validate_v1` checked these header offsets with `rkyv::access` when the
+        // map was opened. The bytes have not changed since: the mapping is read-only and this
+        // module's writers replace files by rename instead of writing them (see `map_file`).
         unsafe { rkyv::access_unchecked(slice) }
     }
 
@@ -229,9 +253,9 @@ impl MmapBackend {
         header: &ParsedMmapHeaderV2,
     ) -> &'a ArchivedMmapIdIndexV1 {
         let slice = &mmap[header.index_offset..header.index_offset + header.index_len];
-        // SAFETY: the slice offsets come from a header that `validate_v2` checked with
-        // `rkyv::access` when the map was opened, and the mapping is read-only, so the
-        // archive bytes have not changed.
+        // SAFETY: `validate_v2` checked these header offsets with `rkyv::access` when the
+        // map was opened. The bytes have not changed since: the mapping is read-only and this
+        // module's writers replace files by rename instead of writing them (see `map_file`).
         unsafe { rkyv::access_unchecked(slice) }
     }
 
@@ -240,9 +264,9 @@ impl MmapBackend {
         header: &ParsedMmapHeaderV2,
     ) -> &'a ArchivedMmapRowMetaTableV1 {
         let slice = &mmap[header.row_meta_offset..header.row_meta_offset + header.row_meta_len];
-        // SAFETY: the slice offsets come from a header that `validate_v2` checked with
-        // `rkyv::access` when the map was opened, and the mapping is read-only, so the
-        // archive bytes have not changed.
+        // SAFETY: `validate_v2` checked these header offsets with `rkyv::access` when the
+        // map was opened. The bytes have not changed since: the mapping is read-only and this
+        // module's writers replace files by rename instead of writing them (see `map_file`).
         unsafe { rkyv::access_unchecked(slice) }
     }
 
@@ -426,5 +450,52 @@ impl MmapBackend {
         }
 
         Self::materialize_v2_chunk(mmap, header, row_meta, row_index, None, true, true).map(Some)
+    }
+
+    /// Chunks in a mapped index, in row order, filtered by namespace and capped at `limit`.
+    pub(super) fn list_mapped(
+        data: &ActiveMmapData,
+        namespace: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Chunk>, DripstoneError> {
+        match data {
+            ActiveMmapData::Empty => Err(Self::not_ready()),
+            ActiveMmapData::AlignedV1 { mmap, header } => {
+                let row_meta_table = Self::rkyv_row_meta_v1_unchecked(mmap, header);
+                let mut out = Vec::new();
+                for (row_index, row_meta) in row_meta_table.rows.iter().enumerate() {
+                    if !Self::namespace_matches_v1(row_meta, namespace) {
+                        continue;
+                    }
+                    out.push(Self::materialize_v1_chunk(
+                        mmap, header, row_meta, row_index, None, true, true,
+                    )?);
+                    if let Some(limit) = limit
+                        && out.len() >= limit
+                    {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+            ActiveMmapData::AlignedV2 { mmap, header } => {
+                let row_meta_table = Self::rkyv_row_meta_v2_unchecked(mmap, header);
+                let mut out = Vec::new();
+                for (row_index, row_meta) in row_meta_table.rows.iter().enumerate() {
+                    if !Self::namespace_matches_v1(row_meta, namespace) {
+                        continue;
+                    }
+                    out.push(Self::materialize_v2_chunk(
+                        mmap, header, row_meta, row_index, None, true, true,
+                    )?);
+                    if let Some(limit) = limit
+                        && out.len() >= limit
+                    {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+        }
     }
 }

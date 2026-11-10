@@ -40,6 +40,14 @@ impl WritableStore {
         }
     }
 
+    /// Add chunks read from an existing snapshot. They count as already flushed.
+    pub fn load(&mut self, chunks: Vec<Chunk>) {
+        for c in chunks {
+            let k = build_composite_key(c.namespace.as_deref(), &c.id);
+            self.chunks.insert(k, c);
+        }
+    }
+
     /// Last snapshot size on disk after flush, or `None` if never flushed.
     pub fn flush_snapshot(path: &Path) -> Result<u64, DripstoneError> {
         let meta = std::fs::metadata(path)
