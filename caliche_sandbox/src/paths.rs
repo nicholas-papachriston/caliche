@@ -820,4 +820,50 @@ mod swap_tests {
             b"made"
         );
     }
+
+    #[test]
+    fn write_refuses_a_dir_swapped_above_the_root() {
+        let outer = tempfile::tempdir().expect("outer");
+        let out = tempfile::tempdir().expect("outside");
+        let outer_path = outer.path().canonicalize().expect("canonical outer");
+        let workspace = outer_path.join("x/ws");
+        std::fs::create_dir_all(&workspace).expect("x/ws");
+        std::fs::create_dir(out.path().join("ws")).expect("outside ws");
+        let config = config_for(&workspace);
+
+        let x = outer_path.join("x");
+        let outside = out.path().to_path_buf();
+        set_hook(move |_resolved: &Path| {
+            std::fs::rename(&x, x.with_file_name("x.moved")).expect("move x");
+            std::os::unix::fs::symlink(&outside, &x).expect("symlink x");
+        });
+
+        let err = write_validated_file(&workspace, &config, "f.txt", b"evil")
+            .expect_err("a directory swapped above the root must be refused");
+        assert!(
+            err.to_string().contains("symlink"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!out.path().join("ws/f.txt").exists());
+    }
+
+    #[test]
+    fn write_refuses_a_hard_link_and_leaves_the_linked_file() {
+        let (_ws, out, workspace) = fixture();
+        let config = config_for(&workspace);
+        let outside_file = out.path().join("file.txt");
+        std::fs::hard_link(&outside_file, workspace.join("linked.txt")).expect("hard link");
+
+        let err = write_validated_file(&workspace, &config, "linked.txt", b"evil")
+            .expect_err("a hard-linked file must not be written");
+        assert!(
+            err.to_string().contains("hard link"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(std::fs::read(&outside_file).expect("read"), b"orig");
+        assert_eq!(
+            read_validated_file(&workspace, &config, "linked.txt").expect("reads are allowed"),
+            b"orig"
+        );
+    }
 }

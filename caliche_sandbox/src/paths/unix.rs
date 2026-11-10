@@ -28,22 +28,19 @@ pub(super) enum Access {
 const DIR_FLAGS: libc::c_int =
     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 // `O_NONBLOCK` keeps a FIFO from blocking the open; `require_regular_file`
-// then refuses it and clears the flag on a regular file.
+// then refuses it and clears the flag on a regular file. Writes open without
+// `O_TRUNC` and truncate only after the file passed those checks.
 const READ_FLAGS: libc::c_int =
     libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
-const WRITE_FLAGS: libc::c_int = libc::O_WRONLY
-    | libc::O_CREAT
-    | libc::O_TRUNC
-    | libc::O_NOFOLLOW
-    | libc::O_CLOEXEC
-    | libc::O_NONBLOCK;
+const WRITE_FLAGS: libc::c_int =
+    libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
 
 /// Open `target`, a canonical absolute path strictly below the canonical `root`.
 ///
 /// No component of `target`, from `/` down, may be a symlink, so the root
 /// cannot be swapped for one either. Writes create missing directories on the
 /// way, including a configured root that does not exist yet. The target must
-/// be a regular file.
+/// be a regular file, and a write target must have a single link.
 pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Result<File> {
     if components_below(root, target)?.is_empty() {
         return Err(invalid_input(format!(
@@ -72,7 +69,30 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
         Access::Write => openat(&dir, &name, WRITE_FLAGS),
     }
     .map_err(|err| describe(err, &dir, file_name, target))?;
-    require_regular_file(File::from(file), target)
+    let file = require_regular_file(File::from(file), target)?;
+    if access == Access::Write {
+        refuse_hard_links(&file, target)?;
+        file.set_len(0)?;
+    }
+    Ok(file)
+}
+
+/// Refuse a write to a file with more than one link.
+///
+/// A hard link inside the root to a file outside it is not a symlink, so the
+/// walk cannot see it. Writing through it would change the outside file.
+fn refuse_hard_links(file: &File, target: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if file.metadata()?.nlink() > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to write '{}': it has more than one hard link",
+                target.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The names of every component of the absolute path `target`, below `/`.
