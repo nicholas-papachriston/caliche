@@ -517,3 +517,25 @@ fn mmap_failed_replace_leaves_no_temp_file() {
     assert_eq!(file_names(dir.path()), vec!["idx.vf1".to_string()]);
     assert_eq!(std::fs::read(path.join("keep.txt")).expect("read"), b"keep");
 }
+
+#[test]
+fn mmap_read_write_open_reports_the_loaded_file_length() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("idx.vf1");
+    write_dripstone_mmap_with_encoding(
+        &path,
+        &test_chunks(Some("ns1".to_string())),
+        MmapVectorEncoding::F32,
+    )
+    .expect("write");
+    let on_disk = std::fs::metadata(&path).expect("stat").len();
+    assert!(on_disk > 0);
+
+    let backend = MmapBackend::new(
+        MmapBackendConfig::new(path.to_string_lossy(), 3)
+            .with_read_write(true)
+            .with_flush_every(0),
+    )
+    .expect("open rw");
+    assert_eq!(backend.last_snapshot_len(), on_disk);
+}
