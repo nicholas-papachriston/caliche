@@ -4,7 +4,7 @@ use caliche_sandbox::{
     NamedPolicy, SandboxBackendType, policy_to_config, resolve_sandbox_path, tmp_writable_roots,
     validate_read_path, validate_write_path,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use caliche_sandbox::{read_validated_file, write_validated_file};
 use std::fs;
 use tempfile::TempDir;
@@ -416,4 +416,33 @@ fn writes_into_the_workspace_git_dir_are_refused() {
     for path in [".gitignore", ".github/ci.yml", "src/git/mod.rs"] {
         validate_write_path(&workspace, &config, path).expect(path);
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn write_refuses_a_hard_link_and_leaves_the_linked_file() {
+    let dir = TempDir::new().expect("tempdir");
+    let workspace = dir.path().canonicalize().expect("canonical workspace");
+    let outside = outside_tempdir();
+    let outside_file = outside.path().join("file.txt");
+    fs::write(&outside_file, b"orig").expect("outside file");
+    fs::hard_link(&outside_file, workspace.join("linked.txt")).expect("hard link");
+    let config = policy_to_config(
+        NamedPolicy::WorkspaceWrite,
+        &workspace,
+        None,
+        SandboxBackendType::Noop,
+    );
+
+    let err = write_validated_file(&workspace, &config, "linked.txt", b"evil")
+        .expect_err("a hard-linked file must not be written");
+    assert!(
+        err.to_string().contains("hard link"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(fs::read(&outside_file).expect("read"), b"orig");
+    assert_eq!(
+        read_validated_file(&workspace, &config, "linked.txt").expect("reads are allowed"),
+        b"orig"
+    );
 }

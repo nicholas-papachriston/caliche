@@ -26,8 +26,9 @@ use windows_sys::Win32::Foundation::{
     GENERIC_READ, GENERIC_WRITE, HANDLE, RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+    SYNCHRONIZE,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
@@ -71,6 +72,7 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
     let file = open_file_child(&parent, file_name, access)?;
     refuse_reparse_point(&file, root, target)?;
     if access == Access::Write {
+        refuse_hard_links(&file, target)?;
         file.set_len(0)?;
     }
     drop(ancestors);
@@ -214,6 +216,38 @@ fn refuse_reparse_point(opened: &File, root: &Path, target: &Path) -> io::Result
             target.display()
         ),
     ))
+}
+
+/// Refuse a write to a file with more than one link.
+///
+/// An NTFS hard link inside the root to a file outside it is not a reparse
+/// point, so the walk cannot see it. Writing through it would change the
+/// outside file.
+fn refuse_hard_links(file: &File, target: &Path) -> io::Result<()> {
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: `file` owns an open handle for the whole call and `info` points
+    // to writable memory of the right size.
+    #[expect(unsafe_code, reason = "GetFileInformationByHandle on an owned handle")]
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: GetFileInformationByHandle returned nonzero, so it filled `info`.
+    #[expect(
+        unsafe_code,
+        reason = "read the buffer GetFileInformationByHandle filled in"
+    )]
+    let info = unsafe { info.assume_init() };
+    if info.nNumberOfLinks > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to write '{}': it has more than one hard link",
+                target.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn invalid_input(message: impl Into<String>) -> io::Error {
