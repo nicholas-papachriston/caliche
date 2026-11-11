@@ -210,11 +210,63 @@ mod tests {
         assert!(status.success(), "git {args:?}");
     }
 
+    /// Trimmed stdout of `git args` in `dir`: a path as git reports it
+    /// (`C:/...` on Windows).
+    fn git_reports(dir: &Path, args: &[&str]) -> String {
+        let mut command = Command::new("git");
+        let output = clear_git_config(&mut command)
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    }
+
+    /// The work tree and git dir git reports for `dir`.
+    fn reported_top_and_git_dir(dir: &Path) -> (PathBuf, PathBuf) {
+        (
+            PathBuf::from(git_reports(dir, &["rev-parse", "--show-toplevel"])),
+            PathBuf::from(git_reports(
+                dir,
+                &["rev-parse", "--path-format=absolute", "--git-dir"],
+            )),
+        )
+    }
+
+    /// The canonical temp dir in the form git accepts (not `\\?\` on
+    /// Windows).
+    fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        caliche_sandbox::external_tool_path(&dir.path().canonicalize().expect("canonical"))
+    }
+
+    /// `path` for a `sh` command line: forward slashes, single-quoted.
+    fn sh_path(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Copy the directory tree `from` to `to`.
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir(to).expect("copy dir");
+        for entry in std::fs::read_dir(from).expect("read dir") {
+            let entry = entry.expect("entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy file");
+            }
+        }
+    }
+
     /// A superproject `top` with a submodule at `sub`, and a marker path a
     /// planted fsmonitor would create.
     fn superproject() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         std::fs::create_dir(root.join("lib")).expect("lib");
         git(&root.join("lib"), &["init", "-q"]);
         git(
@@ -242,7 +294,7 @@ mod tests {
                 "--file",
                 config.to_str().expect("utf-8"),
                 FSMONITOR_KEY,
-                &format!("touch {}; false", marker.display()),
+                &format!("touch {}; false", sh_path(marker)),
             ],
         );
     }
@@ -251,13 +303,7 @@ mod tests {
     /// the work tree, plant fsmonitor there, and point `sub/.git` at it.
     fn plant_gitfile_outside_modules(top: &Path, marker: &Path) {
         let evil = top.join("sub/.evil");
-        let status = Command::new("cp")
-            .arg("-R")
-            .arg(top.join(GIT_DIR_NAME).join(MODULES_DIR).join("sub"))
-            .arg(&evil)
-            .status()
-            .expect("cp");
-        assert!(status.success());
+        copy_dir(&top.join(GIT_DIR_NAME).join(MODULES_DIR).join("sub"), &evil);
         let config = evil.join(CONFIG_FILE);
         git(
             marker.parent().expect("marker dir"),
@@ -287,6 +333,7 @@ mod tests {
     #[tokio::test]
     async fn commit_refuses_a_submodule_gitfile_outside_git_modules() {
         let (_dir, top, marker) = superproject();
+        let (git_top, git_dir) = reported_top_and_git_dir(&top);
         plant_gitfile_outside_modules(&top, &marker);
 
         let err = status(&top).await.expect_err("foreign gitdir");
@@ -295,9 +342,9 @@ mod tests {
             err.to_string(),
             outside_modules(
                 "sub",
-                &top.join("sub").join(GIT_DIR_NAME),
-                &top.join("sub").join(".evil"),
-                &top.join(GIT_DIR_NAME).join(MODULES_DIR)
+                &git_top.join("sub").join(GIT_DIR_NAME),
+                &git_top.join("sub").join(".evil"),
+                &git_dir.join(MODULES_DIR)
             )
         );
         assert!(!marker.exists(), "planted fsmonitor ran");
@@ -323,6 +370,7 @@ mod tests {
     #[tokio::test]
     async fn a_submodule_git_dir_in_the_work_tree_is_refused() {
         let (_dir, top, _marker) = superproject();
+        let (git_top, git_dir) = reported_top_and_git_dir(&top);
         std::fs::remove_file(top.join("sub").join(GIT_DIR_NAME)).expect("gitfile");
         std::fs::create_dir(top.join("sub").join(GIT_DIR_NAME)).expect("git dir");
 
@@ -332,8 +380,8 @@ mod tests {
             err.to_string(),
             not_a_gitfile(
                 "sub",
-                &top.join("sub").join(GIT_DIR_NAME),
-                &top.join(GIT_DIR_NAME).join(MODULES_DIR)
+                &git_top.join("sub").join(GIT_DIR_NAME),
+                &git_dir.join(MODULES_DIR)
             ),
         );
     }
@@ -362,14 +410,14 @@ mod tests {
         );
         let marker = root.join("PWNED");
         let script = root.join("ext.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display()))
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", sh_path(&marker)))
             .expect("script");
-        let status = Command::new("chmod")
-            .arg("+x")
-            .arg(&script)
-            .status()
-            .expect("chmod");
-        assert!(status.success());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
         let config = at.join(CONFIG_FILE);
         git(
             root,
@@ -378,7 +426,7 @@ mod tests {
                 "--file",
                 config.to_str().expect("utf-8"),
                 "diff.external",
-                script.to_str().expect("utf-8"),
+                &sh_path(&script),
             ],
         );
         marker
@@ -419,18 +467,19 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         let bare = root.join("bare");
         planted_bare_repository(&root, &bare);
         let ws = bare.join("ws");
         std::fs::create_dir(&ws).expect("ws");
 
+        let allow_bare = format!("{SAFE_BARE_REPOSITORY_KEY}=all");
+        let bare_git_dir =
+            git_reports(&ws, &["-c", &allow_bare, "rev-parse", "--absolute-git-dir"]);
+
         let err = HostGit::open(&ws).await.err().expect("refused");
 
-        assert_eq!(
-            err.to_string(),
-            no_work_tree(&ws, bare.to_str().expect("utf-8"))
-        );
+        assert_eq!(err.to_string(), no_work_tree(&ws, &bare_git_dir));
     }
 
     /// A bare repository is refused although `explicit` hides it from
@@ -441,16 +490,19 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         let bare = root.join("bare");
         planted_bare_repository(&root, &bare);
 
+        let allow_bare = format!("{SAFE_BARE_REPOSITORY_KEY}=all");
+        let bare_git_dir = git_reports(
+            &bare,
+            &["-c", &allow_bare, "rev-parse", "--absolute-git-dir"],
+        );
+
         let err = HostGit::open(&bare).await.err().expect("refused");
 
-        assert_eq!(
-            err.to_string(),
-            no_work_tree(&bare, bare.to_str().expect("utf-8"))
-        );
+        assert_eq!(err.to_string(), no_work_tree(&bare, &bare_git_dir));
     }
 
     /// A repository whose `core.worktree` names another directory has a
@@ -464,7 +516,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         let repo = root.join("repo");
         let work = root.join("work");
         std::fs::create_dir(&repo).expect("repo");
@@ -474,13 +526,13 @@ mod tests {
             &repo,
             &["config", "core.worktree", work.to_str().expect("utf-8")],
         );
-        let git_dir = repo.join(GIT_DIR_NAME);
+        let (git_top, git_dir) = reported_top_and_git_dir(&repo);
 
         let err = HostGit::open(&repo).await.err().expect("refused");
 
         assert_eq!(
             err.to_string(),
-            foreign_git_dir(&repo, git_dir.to_str().expect("utf-8"), &work)
+            foreign_git_dir(&repo, &git_dir.to_string_lossy(), &git_top)
         );
     }
 
@@ -494,7 +546,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         let bare = root.join("bare");
         let marker = planted_bare_repository(&root, &bare);
         let ws = bare.join("ws");
@@ -538,7 +590,7 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = temp_root(&dir);
         git(&root, &["init", "-q"]);
         std::fs::rename(root.join(GIT_DIR_NAME), root.join("real-git")).expect("rename");
         std::os::unix::fs::symlink("real-git", root.join(GIT_DIR_NAME)).expect("symlink");

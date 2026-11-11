@@ -466,6 +466,127 @@ pub fn create_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> 
 /// `refusing to write '<path>': ` followed by this text.
 pub const HARD_LINK_REFUSAL: &str = "it has more than one hard link";
 
+/// `path` in the form to hand to an external tool such as `git`.
+///
+/// `canonicalize` on Windows returns a verbatim path (`\\?\C:\...`).
+/// Git for Windows reads that as an ssh host in `clone`, and it cannot create
+/// or lock files under it. This returns the plain form (`C:\...`, or
+/// `\\server\share\...` for `\\?\UNC\`) when that form names the same
+/// file, and `path` unchanged when it does not: a component that is `.`,
+/// `..`, empty, a reserved device name, ends in a dot or space, or holds a
+/// character a plain path reads differently, or a result of 260 characters
+/// or more. On other platforms it returns `path` unchanged.
+#[must_use]
+pub fn external_tool_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(plain) = path.to_str().and_then(plain_from_verbatim) {
+            return PathBuf::from(plain);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// The plain Windows form of the verbatim path `verbatim`, if it names the
+/// same file. See [`external_tool_path`].
+#[cfg_attr(
+    not(any(windows, test)),
+    expect(dead_code, reason = "used on Windows and in tests")
+)]
+fn plain_from_verbatim(verbatim: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    let rest = verbatim.strip_prefix(r"\\?\")?;
+    let (plain, components) = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        let mut parts = unc.splitn(3, '\\');
+        let (server, share) = (parts.next()?, parts.next()?);
+        if !plain_component(server) || !plain_component(share) {
+            return None;
+        }
+        (format!(r"\\{unc}"), parts.next().unwrap_or(""))
+    } else {
+        let drive = rest.as_bytes().first()?;
+        let tail = rest.get(1..)?.strip_prefix(r":\")?;
+        if !drive.is_ascii_alphabetic() {
+            return None;
+        }
+        (rest.to_string(), tail)
+    };
+    let components = components.strip_suffix('\\').unwrap_or(components);
+    let plain_tail = components.is_empty() || components.split('\\').all(plain_component);
+    (plain_tail && plain.len() < MAX_PATH).then_some(plain)
+}
+
+/// Whether `name` reads the same in a plain Windows path as in a verbatim one.
+fn plain_component(name: &str) -> bool {
+    const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    let device = RESERVED.contains(&upper.as_str())
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes().get(3).is_some_and(u8::is_ascii_digit));
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.ends_with(['.', ' '])
+        && !device
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+}
+
+#[cfg(test)]
+mod plain_path_tests {
+    use super::plain_from_verbatim;
+
+    #[test]
+    fn a_verbatim_drive_path_becomes_plain() {
+        assert_eq!(
+            plain_from_verbatim(r"\\?\C:\Users\nicho\AppData\Local\Temp\.tmpAB\work"),
+            Some(r"C:\Users\nicho\AppData\Local\Temp\.tmpAB\work".to_string())
+        );
+        assert_eq!(plain_from_verbatim(r"\\?\D:\"), Some(r"D:\".to_string()));
+    }
+
+    #[test]
+    fn a_verbatim_unc_path_becomes_plain() {
+        assert_eq!(
+            plain_from_verbatim(r"\\?\UNC\server\share\repo"),
+            Some(r"\\server\share\repo".to_string())
+        );
+    }
+
+    #[test]
+    fn a_path_that_reads_differently_when_plain_is_kept() {
+        for verbatim in [
+            r"\\?\C:\a\CON",
+            r"\\?\C:\a\nul.txt",
+            r"\\?\C:\a\COM1",
+            r"\\?\C:\a\name.",
+            r"\\?\C:\a\name ",
+            r"\\?\C:\a\..\b",
+            r"\\?\C:\a\.\b",
+            r"\\?\C:\a\\b",
+            r"\\?\C:\a/b",
+            r"\\?\C:\a\b:c",
+            r"\\?\GLOBALROOT\Device\X",
+            r"\\?\Volume{0}\x",
+            r"\\?\UNC\server",
+            r"C:\already\plain",
+        ] {
+            assert_eq!(plain_from_verbatim(verbatim), None, "{verbatim}");
+        }
+    }
+
+    #[test]
+    fn a_path_of_260_characters_or_more_is_kept() {
+        let long = format!(r"\\?\C:\{}", "a".repeat(257));
+        assert_eq!(plain_from_verbatim(&long), None);
+        let fits = format!(r"\\?\C:\{}", "a".repeat(256));
+        assert_eq!(plain_from_verbatim(&fits).map(|p| p.len()), Some(259));
+    }
+}
+
 /// What a listed directory entry is, read without following it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {

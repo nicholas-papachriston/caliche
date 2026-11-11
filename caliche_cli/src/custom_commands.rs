@@ -169,6 +169,7 @@ impl CommandRegistry {
         if let Some(cwd) = std::env::current_dir()
             .ok()
             .and_then(|cwd| cwd.canonicalize().ok())
+            .map(|cwd| caliche_sandbox::external_tool_path(&cwd))
         {
             let commands = tokio::task::spawn_blocking(move || load_project_commands(&cwd))
                 .await

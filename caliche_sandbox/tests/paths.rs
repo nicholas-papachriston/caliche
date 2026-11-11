@@ -447,3 +447,25 @@ fn write_refuses_a_hard_link_and_leaves_the_linked_file() {
         b"orig"
     );
 }
+
+/// A canonical Windows path is verbatim; the form for external tools is
+/// plain and names the same directory.
+#[cfg(windows)]
+#[test]
+fn a_canonical_windows_path_is_plain_for_external_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let canonical = dir.path().canonicalize().expect("canonical");
+    assert!(
+        canonical.to_string_lossy().starts_with(r"\\?\"),
+        "{canonical:?}"
+    );
+
+    let plain = caliche_sandbox::external_tool_path(&canonical);
+
+    assert!(!plain.to_string_lossy().starts_with(r"\\?\"), "{plain:?}");
+    assert_eq!(
+        plain.to_string_lossy(),
+        canonical.to_string_lossy().trim_start_matches(r"\\?\")
+    );
+    assert_eq!(plain.canonicalize().expect("plain resolves"), canonical);
+}

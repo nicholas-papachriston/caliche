@@ -201,9 +201,10 @@ fn env_is_true(name: &str) -> bool {
 
 pub fn discover_all(options: &DiscoveryOptions) -> DiscoverySnapshot {
     // Canonical, so the no-link walk below the workspace starts from a path
-    // with no link of its own (macOS `/tmp` is one).
+    // with no link of its own (macOS `/tmp` is one). Plain, not verbatim, on
+    // Windows: discovered paths reach the model and the tools it runs.
     let cwd = match std::env::current_dir().and_then(|cwd| cwd.canonicalize()) {
-        Ok(v) => v,
+        Ok(v) => caliche_sandbox::external_tool_path(&v),
         Err(_) => return DiscoverySnapshot::default(),
     };
     let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
