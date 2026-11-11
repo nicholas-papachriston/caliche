@@ -118,7 +118,7 @@ CALICHE_WITH_UI=1 ./caliche build-dev  # debug build with the UI and an embedded
 ./caliche test           # Rust, Python, and JavaScript tests (builds the SDK debug bindings first)
 ./caliche rust test      # root crate, CLI, server, sandbox, embedded UI smoke test, and Dripstone
 ./caliche rust test-lib  # root crate library tests only: cargo test --lib --features full (needs ONNX Runtime)
-./caliche rust test-features  # root crate tests with ROOT_TEST_FEATURES from scripts/caliche/rust (macOS; no CUDA; no ONNX Runtime download)
+./caliche rust test-features  # root crate tests with ROOT_TEST_FEATURES from scripts/caliche/rust, then dripstone --lib with postgres-backend (macOS; no CUDA; no ONNX Runtime download)
 ./caliche py test        # Python tests with uv and pytest
 ./caliche js test        # JavaScript tests with Bun
 ./caliche web wasm       # build the Dioxus UI into caliche_web/dist

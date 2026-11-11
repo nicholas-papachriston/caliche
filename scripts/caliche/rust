@@ -22,7 +22,7 @@ Usage: ./caliche rust <subcommand>
   test               Root, CLI, server, sandbox, embedded web smoke, and dripstone
   test-embedded-ui   GET / is HTML when the embedded-ui feature is on
   test-lib           Root crate only: cargo test --lib --features full (needs ONNX)
-  test-features      Root crate tests with --features ${ROOT_TEST_FEATURES} (macOS; no CUDA; no ONNX runtime download)
+  test-features      Root crate tests with --features ${ROOT_TEST_FEATURES}, then dripstone --lib with postgres-backend (macOS; no CUDA; no ONNX runtime download)
   bench              dripstone wall-clock benchmarks: release, ignored tests, one thread
   check              cargo check on root, ACP client, CLI, and server
   clippy             Clippy with -D warnings on root, ACP client, CLI, server, sandbox, and dripstone
@@ -295,6 +295,10 @@ EOF
   test-features)
     step "Running root crate tests (macOS; no CUDA; no ONNX runtime download)"
     cargo test -p caliche --offline --no-fail-fast --features "$ROOT_TEST_FEATURES"
+    # The SQL filter builder is behind postgres-backend; its unit tests need no
+    # running Postgres.
+    step "Running dripstone library tests with postgres-backend"
+    cargo test -p dripstone --offline --no-fail-fast --lib --features postgres-backend
     ok "Root crate feature tests complete"
     ;;
   check)
