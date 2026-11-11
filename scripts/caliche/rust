@@ -24,6 +24,7 @@ Usage: ./caliche rust <subcommand>
   test-linux         Linux-only tests in the pinned Rust image (needs Docker)
   windows-check      Refuse when Windows code changed and HEAD has no green Windows run
   windows-record     Record a Windows test report: windows-record <sha> <report>
+  test-windows       The Windows run: whole crates, no filter (Windows host, Git Bash)
   test-lib           Root crate only: cargo test --lib --features full (needs ONNX)
   test-features      Root crate tests with --features ${ROOT_TEST_FEATURES}, then dripstone --lib with postgres-backend (macOS; no CUDA; no ONNX runtime download)
   bench              dripstone wall-clock benchmarks: release, ignored tests, one thread
@@ -242,6 +243,35 @@ run_linux_tests() {
 WINDOWS_RUNS_DIR="${CALICHE_WINDOWS_RUNS:-${XDG_STATE_HOME:-$HOME/.local/state}/caliche/windows-runs}"
 WINDOWS_CFG_PATTERN='cfg(_attr)?\(.*(\bwindows\b|target_os *= *"windows")'
 
+# The Windows run: every crate with Windows code, whole, with no test filter.
+WINDOWS_TEST_COMMANDS=(
+  "cargo test --locked -p caliche_sandbox --features sandbox-windows"
+  "cargo test --locked -p caliche_cli --lib"
+  "cargo test --locked -p caliche_cli --test windows_server_registry"
+  "cargo test --locked -p dripstone --lib"
+  "cargo test --locked -p caliche --lib"
+)
+
+# Run WINDOWS_TEST_COMMANDS on a Windows host (Git Bash). The output is the
+# report windows-record reads: a commit line, then each command between a
+# run line and its exit line.
+run_windows_tests() {
+  local command status failed=0 words
+  [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]] ||
+    die "test-windows runs on a Windows host, in Git Bash"
+  echo "== commit $(git rev-parse HEAD)"
+  for command in "${WINDOWS_TEST_COMMANDS[@]}"; do
+    echo "== run ${command}"
+    read -ra words <<<"$command"
+    status=0
+    "${words[@]}" || status=$?
+    echo "== exit ${status}"
+    ((status == 0)) || failed=1
+  done
+  ((failed == 0)) || die "a Windows test command failed"
+  ok "Windows tests passed"
+}
+
 windows_touching_files() {
   local base="$1" path
   git diff --name-only "$base" HEAD -- '*.rs' |
@@ -272,18 +302,25 @@ check_windows_run() {
   die "these files touch Windows code and ${head} has no green Windows run in ${WINDOWS_RUNS_DIR}; run the Windows tests on that commit, then ./caliche rust windows-record ${head} <report>"
 }
 
-# Record a Windows test report for a commit. The report is the output of the
-# commands in AGENTS.md; it is green when no test failed and every cargo test
-# run passed.
+# Record a Windows test report for a commit. The report is the output of
+# `./caliche rust test-windows` on that commit. It is refused when it is for
+# another commit or leaves out a command. It is green when every command
+# exited 0, no test failed, and no test was filtered out.
 record_windows_run() {
-  local sha report verdict
+  local sha report text command exit_line verdict=green
   sha="$(git rev-parse --verify "${1:?usage: ./caliche rust windows-record <sha> <report>}^{commit}")"
   report="${2:?usage: ./caliche rust windows-record <sha> <report>}"
   [[ -f "$report" ]] || die "no report at ${report}"
-  if grep -q "test result: ok" "$report" && ! grep -Eq "test result: FAILED|^error" "$report"; then
-    verdict="green"
-  else
-    verdict="red"
+  text="$(tr -d '\r' <"$report")"
+  grep -qxF "== commit ${sha}" <<<"$text" || die "${report} is not a test-windows report for ${sha}"
+  for command in "${WINDOWS_TEST_COMMANDS[@]}"; do
+    exit_line="$(awk -v run="== run ${command}" \
+      '$0 == run { found = 1; next } found && /^== exit / { print; exit }' <<<"$text")"
+    [[ -n "$exit_line" ]] || die "${report} does not cover: ${command}"
+    [[ "$exit_line" == "== exit 0" ]] || verdict=red
+  done
+  if grep -Eq 'test result: FAILED|[1-9][0-9]* filtered out' <<<"$text"; then
+    verdict=red
   fi
   mkdir -p "$WINDOWS_RUNS_DIR"
   { echo "$verdict"; cat "$report"; } >"$WINDOWS_RUNS_DIR/$sha"
@@ -419,6 +456,9 @@ EOF
     ;;
   windows-record)
     record_windows_run "$@"
+    ;;
+  test-windows)
+    run_windows_tests
     ;;
   test-lib)
     step "Running Rust library tests"
