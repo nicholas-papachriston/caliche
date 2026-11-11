@@ -436,9 +436,10 @@ fn write_refuses_a_hard_link_and_leaves_the_linked_file() {
 
     let err = write_validated_file(&workspace, &config, "linked.txt", b"evil")
         .expect_err("a hard-linked file must not be written");
+    let message = format!("{err:#}");
     assert!(
-        err.to_string().contains("hard link"),
-        "unexpected error: {err:#}"
+        message.ends_with("it has more than one hard link"),
+        "unexpected error: {message}"
     );
     assert_eq!(fs::read(&outside_file).expect("read"), b"orig");
     assert_eq!(
