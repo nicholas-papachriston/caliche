@@ -644,3 +644,46 @@ async fn context_window_is_posted_once_on_the_next_turn() {
         .collect();
     assert_eq!(windows, [None, Some(16_384), None]);
 }
+
+#[test]
+fn thin_client_turn_end_and_limit_events_update_the_turn() {
+    let mut renderer = StatusLog::new(OutputVerbosity::Normal);
+    let mut turn = super::ThinClientTurnState::default();
+    let events = [
+        (sse_name::SESSION_UPDATED, json!({})),
+        (
+            sse_name::TURN_COMPLETE,
+            envelope(
+                sse_name::TURN_COMPLETE,
+                json!({"response": "first", "duration_ms": 7}),
+            ),
+        ),
+        ("done", json!({"final_response": "second"})),
+        (
+            "limit_reached",
+            envelope("limit_reached", json!({"max_iterations": 5})),
+        ),
+    ];
+    for (name, data) in &events {
+        super::apply_thin_client_sse_event(&mut renderer, &mut turn, name, data);
+    }
+    assert_eq!(renderer.lines, vec!["session.updated".to_string()]);
+    assert_eq!(turn.response, "first");
+    assert_eq!(turn.duration_ms, 7);
+    assert!(turn.limit_reached);
+    assert_eq!(turn.max_iterations, Some(5));
+}
+
+#[test]
+fn thin_client_done_sets_the_response_when_none_streamed() {
+    let mut renderer = StatusLog::new(OutputVerbosity::Normal);
+    let mut turn = super::ThinClientTurnState::default();
+    super::apply_thin_client_sse_event(
+        &mut renderer,
+        &mut turn,
+        "done",
+        &json!({"final_response": "only"}),
+    );
+    assert_eq!(turn.response, "only");
+    assert_eq!(turn.duration_ms, 0);
+}

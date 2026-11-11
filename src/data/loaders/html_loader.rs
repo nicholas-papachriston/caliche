@@ -163,6 +163,20 @@ fn read_head_metadata(html: &str) -> HashMap<String, String> {
     tokenizer.sink.state.into_inner().into_metadata()
 }
 
+/// How the tokenizer reads the text after an HTML start tag named `name`.
+#[cfg(feature = "document-loaders")]
+fn html_text_mode(name: &str) -> TokenSinkResult<()> {
+    match name {
+        "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+        "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" => {
+            TokenSinkResult::RawData(RawKind::Rawtext)
+        }
+        "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+        "plaintext" => TokenSinkResult::Plaintext,
+        _ => TokenSinkResult::Continue,
+    }
+}
+
 #[cfg(feature = "document-loaders")]
 #[derive(Default)]
 struct HeadMetadataSink {
@@ -198,16 +212,7 @@ impl HeadMetadata {
     fn start_tag(&mut self, tag: &Tag) -> TokenSinkResult<()> {
         let name = &*tag.name;
         if self.in_select {
-            match name {
-                "select" => self.in_select = false,
-                "input" | "keygen" | "textarea" => {
-                    self.in_select = false;
-                    return self.start_tag(tag);
-                }
-                "script" => return TokenSinkResult::RawData(RawKind::ScriptData),
-                _ => {}
-            }
-            return TokenSinkResult::Continue;
+            return self.start_tag_in_select(tag);
         }
         let in_foreign_title = self.foreign_depth > 0 && self.open_title.is_some();
         if self.foreign_depth > 0 && !in_foreign_title && breaks_out_of_foreign_content(tag) {
@@ -224,15 +229,21 @@ impl HeadMetadata {
         if !html_rules {
             return TokenSinkResult::Continue;
         }
-        match name {
-            "script" => TokenSinkResult::RawData(RawKind::ScriptData),
-            "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" => {
-                TokenSinkResult::RawData(RawKind::Rawtext)
+        html_text_mode(name)
+    }
+
+    /// Inside `<select>`, only a few tags change the state.
+    fn start_tag_in_select(&mut self, tag: &Tag) -> TokenSinkResult<()> {
+        match &*tag.name {
+            "select" => self.in_select = false,
+            "input" | "keygen" | "textarea" => {
+                self.in_select = false;
+                return self.start_tag(tag);
             }
-            "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
-            "plaintext" => TokenSinkResult::Plaintext,
-            _ => TokenSinkResult::Continue,
+            "script" => return TokenSinkResult::RawData(RawKind::ScriptData),
+            _ => {}
         }
+        TokenSinkResult::Continue
     }
 
     fn start_title(&mut self, tag: &Tag) -> TokenSinkResult<()> {

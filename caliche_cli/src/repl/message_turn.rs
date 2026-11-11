@@ -215,84 +215,101 @@ fn apply_thin_client_sse_event<R: OutputRenderer>(
         }
         return;
     }
-    if std::mem::take(&mut turn.status_line) {
-        // The model answered: the status line goes back to the indicator
-        // that the existing events clear.
-        if turn.streamed_any {
-            renderer.clear_thinking_indicator();
-        } else {
-            renderer.show_waiting_status(crate::repl::renderer::THINKING_INDICATOR);
-        }
-    }
+    settle_status_line(renderer, turn);
     match event_name {
         sse_name::AGENT_THINKING | "text_chunk" | "code_block" => {
-            if let Some(content) = thin_client_streamed_text(event_name, data) {
-                if event_name == sse_name::AGENT_THINKING {
-                    record_thin_client_thinking(renderer, turn, body, content);
-                } else {
-                    close_open_thinking(renderer, turn);
-                    if !turn.streamed_any {
-                        renderer.clear_thinking_indicator();
-                    }
-                    turn.streamed_any = true;
-                    renderer.render_chunk(content);
-                }
-            }
+            apply_streamed_text(renderer, turn, event_name, data, body);
         }
-        sse_name::TOOL_START => {
+        sse_name::TOOL_START | sse_name::TOOL_END | "tool_error" => {
             close_open_thinking(renderer, turn);
-            let name = body
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            let action_id = traced_action_id(body);
-            renderer.show_status(&format!(
-                "tool.start {} {name}",
-                display_action_id(&action_id)
-            ));
-        }
-        sse_name::TOOL_END | "tool_error" => {
-            close_open_thinking(renderer, turn);
-            let name = body
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
-            let ok = event_name != "tool_error"
-                && body.get("success").and_then(Value::as_bool).unwrap_or(true);
-            let action_id = traced_action_id(body);
-            renderer.show_status(&format!(
-                "tool.end {} {name} ok={ok}",
-                display_action_id(&action_id)
-            ));
+            renderer.show_status(&tool_status_line(event_name, body));
         }
         sse_name::SESSION_UPDATED => {
             renderer.show_status("session.updated");
         }
         sse_name::TURN_COMPLETE | "done" => {
             close_open_thinking(renderer, turn);
-            if let Some(text) = thin_client_final_response(event_name, data)
-                && !(event_name == "done" && !turn.response.trim().is_empty())
-            {
-                turn.response = text.to_string();
-            }
-            if event_name == sse_name::TURN_COMPLETE {
-                if let Some(u) = body.get("usage") {
-                    turn.usage = parse_token_usage_value(u);
-                }
-                turn.duration_ms = body.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
-            }
+            apply_turn_end(turn, event_name, data, body);
         }
-        "limit_reached" => {
-            turn.limit_reached = true;
-            turn.max_iterations = body
-                .get("max_iterations")
-                .and_then(Value::as_u64)
-                .map(|n| n as usize);
-            if let Some(u) = body.get("usage") {
-                turn.usage = parse_token_usage_value(u);
-            }
-        }
+        "limit_reached" => apply_limit_reached(turn, body),
         _ => {}
+    }
+}
+
+/// Once the model answers, the status line goes back to the indicator that
+/// the existing events clear.
+fn settle_status_line<R: OutputRenderer>(renderer: &mut R, turn: &mut ThinClientTurnState) {
+    if !std::mem::take(&mut turn.status_line) {
+        return;
+    }
+    if turn.streamed_any {
+        renderer.clear_thinking_indicator();
+    } else {
+        renderer.show_waiting_status(crate::repl::renderer::THINKING_INDICATOR);
+    }
+}
+
+/// Thinking text goes to the thinking block; answer text is rendered.
+fn apply_streamed_text<R: OutputRenderer>(
+    renderer: &mut R,
+    turn: &mut ThinClientTurnState,
+    event_name: &str,
+    data: &Value,
+    body: &Value,
+) {
+    let Some(content) = thin_client_streamed_text(event_name, data) else {
+        return;
+    };
+    if event_name == sse_name::AGENT_THINKING {
+        record_thin_client_thinking(renderer, turn, body, content);
+        return;
+    }
+    close_open_thinking(renderer, turn);
+    if !turn.streamed_any {
+        renderer.clear_thinking_indicator();
+    }
+    turn.streamed_any = true;
+    renderer.render_chunk(content);
+}
+
+/// `tool.start <id> <name>` or `tool.end <id> <name> ok=<bool>`.
+fn tool_status_line(event_name: &str, body: &Value) -> String {
+    let name = body
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    let action_id = display_action_id(&traced_action_id(body));
+    if event_name == sse_name::TOOL_START {
+        return format!("tool.start {action_id} {name}");
+    }
+    let ok =
+        event_name != "tool_error" && body.get("success").and_then(Value::as_bool).unwrap_or(true);
+    format!("tool.end {action_id} {name} ok={ok}")
+}
+
+/// Record the final response, and on `turn_complete` the usage and duration.
+fn apply_turn_end(turn: &mut ThinClientTurnState, event_name: &str, data: &Value, body: &Value) {
+    if let Some(text) = thin_client_final_response(event_name, data)
+        && !(event_name == "done" && !turn.response.trim().is_empty())
+    {
+        turn.response = text.to_string();
+    }
+    if event_name == sse_name::TURN_COMPLETE {
+        if let Some(u) = body.get("usage") {
+            turn.usage = parse_token_usage_value(u);
+        }
+        turn.duration_ms = body.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
+    }
+}
+
+fn apply_limit_reached(turn: &mut ThinClientTurnState, body: &Value) {
+    turn.limit_reached = true;
+    turn.max_iterations = body
+        .get("max_iterations")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+    if let Some(u) = body.get("usage") {
+        turn.usage = parse_token_usage_value(u);
     }
 }
 

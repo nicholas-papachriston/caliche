@@ -372,47 +372,53 @@ fn validate_one_step(
 /// Extract step names referenced in `{{steps.X...}}` from a template string.
 /// Used to check that referenced steps appear earlier in the pipeline.
 pub fn extract_step_refs_from_template(template: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut i = 0;
+    let mut names: Vec<String> = Vec::new();
     let bytes = template.as_bytes();
+    let mut i = 0;
     while i + 2 <= bytes.len() {
-        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            i += 2;
-            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-                i += 1;
-            }
-            if bytes[i..].starts_with(b"steps.") {
-                i += 6;
-                let start = i;
-                while i < bytes.len() {
-                    let b = bytes[i];
-                    if b == b'.' || b == b'[' || b == b'}' || b == b' ' || b == b'\t' {
-                        break;
-                    }
-                    if (b == b'_') || b.is_ascii_alphanumeric() {
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if i > start {
-                    let name = template[start..i].to_string();
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
-                }
-            }
-            while i < bytes.len() && bytes[i] != b'}' {
-                i += 1;
-            }
-            if i + 2 <= bytes.len() && bytes[i] == b'}' && bytes[i + 1] == b'}' {
-                i += 2;
-            }
+        if !bytes[i..].starts_with(b"{{") {
+            i += 1;
             continue;
         }
-        i += 1;
+        i = skip_blanks(bytes, i + 2);
+        if bytes[i..].starts_with(b"steps.") {
+            let start = i + 6;
+            i = step_name_end(bytes, start);
+            let name = &template[start..i];
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name.to_string());
+            }
+        }
+        i = skip_past_close(bytes, i);
     }
     names
+}
+
+/// The index of the first byte at or after `i` that is not a space or tab.
+fn skip_blanks(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    i
+}
+
+/// The end of the step name that starts at `i`: ASCII letters, digits and `_`.
+fn step_name_end(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+        i += 1;
+    }
+    i
+}
+
+/// Skip to the next `}`, then past `}}` when it is there.
+fn skip_past_close(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'}' {
+        i += 1;
+    }
+    if bytes[i..].starts_with(b"}}") {
+        i += 2;
+    }
+    i
 }
 
 #[cfg(test)]
@@ -428,6 +434,32 @@ mod tests {
             extract_step_refs_from_template("{{aaaaa東}} {{steps.fetch.out}}"),
             vec!["fetch".to_string()]
         );
+    }
+
+    #[test]
+    fn step_refs_follow_the_template_scan() {
+        let cases: &[(&str, &[&str])] = &[
+            ("no refs here", &[]),
+            ("{{steps.a.out}} and {{ steps.b }}", &["a", "b"]),
+            ("{{\tsteps.tab[0]}}", &["tab"]),
+            (
+                "{{steps.dup}} {{steps.dup.x}} {{steps.other}}",
+                &["dup", "other"],
+            ),
+            ("{{steps.}} {{steps..x}}", &[]),
+            ("{{steps.my-step}}", &["my"]),
+            ("{{steps.open", &["open"]),
+            ("{steps.single} {{inputs.x}}", &[]),
+            ("{{x}}{{steps.after_close}}", &["after_close"]),
+            ("{{steps.a}x}} {{steps.b}}", &["a", "b"]),
+        ];
+        for (template, expected) in cases {
+            assert_eq!(
+                extract_step_refs_from_template(template),
+                expected.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "template: {template}"
+            );
+        }
     }
 
     #[test]

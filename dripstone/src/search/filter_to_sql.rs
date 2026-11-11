@@ -60,49 +60,11 @@ fn convert_filter_inner(
     params: &mut Vec<Value>,
 ) -> Option<String> {
     match filter {
-        Filter::Equal { field, value } => {
-            if !is_safe_field(field) {
-                return None;
-            }
-            let ph = next_param(idx);
-            let obj = json_object_for_field(field, value.clone());
-            params.push(obj);
-            Some(format!(" AND metadata @> {ph}::jsonb"))
-        }
-        Filter::NotEqual { field, value } => {
-            if !is_safe_field(field) {
-                return None;
-            }
-            let ph = next_param(idx);
-            let obj = json_object_for_field(field, value.clone());
-            params.push(obj);
-            Some(format!(" AND NOT (metadata @> {ph}::jsonb)"))
-        }
-        Filter::In { field, values } => {
-            if !is_safe_field(field) || values.is_empty() {
-                return None;
-            }
-            let mut clauses = Vec::new();
-            for v in values {
-                let ph = next_param(idx);
-                let obj = json_object_for_field(field, v.clone());
-                params.push(obj);
-                clauses.push(format!("metadata @> {ph}::jsonb"));
-            }
-            Some(format!(" AND ({})", clauses.join(" OR ")))
-        }
+        Filter::Equal { field, value } => containment(field, value, idx, params, false),
+        Filter::NotEqual { field, value } => containment(field, value, idx, params, true),
+        Filter::In { field, values } => containment_any_or_none(field, values, idx, params, false),
         Filter::NotIn { field, values } => {
-            if !is_safe_field(field) || values.is_empty() {
-                return None;
-            }
-            let mut clauses = Vec::new();
-            for v in values {
-                let ph = next_param(idx);
-                let obj = json_object_for_field(field, v.clone());
-                params.push(obj);
-                clauses.push(format!("NOT (metadata @> {ph}::jsonb)"));
-            }
-            Some(format!(" AND ({})", clauses.join(" AND ")))
+            containment_any_or_none(field, values, idx, params, true)
         }
         Filter::GreaterThan { field, value } => numeric_comparison(field, value, idx, params, ">"),
         Filter::LessThan { field, value } => numeric_comparison(field, value, idx, params, "<"),
@@ -129,6 +91,57 @@ fn convert_filter_inner(
             let i_trimmed = i.strip_prefix(" AND ").unwrap_or(&i);
             Some(format!(" AND NOT ({i_trimmed})"))
         }
+    }
+}
+
+/// `metadata @> {field: value}`, or its negation, as one AND clause.
+fn containment(
+    field: &str,
+    value: &Value,
+    idx: &mut usize,
+    params: &mut Vec<Value>,
+    negate: bool,
+) -> Option<String> {
+    if !is_safe_field(field) {
+        return None;
+    }
+    let clause = containment_param(field, value, idx, params, negate);
+    Some(format!(" AND {clause}"))
+}
+
+/// Any of `values` (`In`), or none of them (`NotIn` with `negate`), as one AND clause.
+fn containment_any_or_none(
+    field: &str,
+    values: &[Value],
+    idx: &mut usize,
+    params: &mut Vec<Value>,
+    negate: bool,
+) -> Option<String> {
+    if !is_safe_field(field) || values.is_empty() {
+        return None;
+    }
+    let clauses: Vec<String> = values
+        .iter()
+        .map(|value| containment_param(field, value, idx, params, negate))
+        .collect();
+    let joiner = if negate { " AND " } else { " OR " };
+    Some(format!(" AND ({})", clauses.join(joiner)))
+}
+
+/// Push `{field: value}` as the next parameter and return its containment test.
+fn containment_param(
+    field: &str,
+    value: &Value,
+    idx: &mut usize,
+    params: &mut Vec<Value>,
+    negate: bool,
+) -> String {
+    let ph = next_param(idx);
+    params.push(json_object_for_field(field, value.clone()));
+    if negate {
+        format!("NOT (metadata @> {ph}::jsonb)")
+    } else {
+        format!("metadata @> {ph}::jsonb")
     }
 }
 
@@ -247,6 +260,85 @@ mod tests {
         let result = filter_to_sql(&filter, 4).unwrap();
         assert!(result.clause.contains("OR"));
         assert_eq!(result.params.len(), 2);
+    }
+
+    #[test]
+    fn containment_clauses_are_exact() {
+        let not_equal = Filter::NotEqual {
+            field: "category".to_string(),
+            value: json!("A"),
+        };
+        let result = filter_to_sql(&not_equal, 3).expect("not equal");
+        assert_eq!(result.clause, " AND NOT (metadata @> $3::jsonb)");
+        assert_eq!(result.params, vec![json!({"category": "A"})]);
+
+        let any = Filter::In {
+            field: "tag".to_string(),
+            values: vec![json!("x"), json!("y")],
+        };
+        let result = filter_to_sql(&any, 1).expect("in");
+        assert_eq!(
+            result.clause,
+            " AND (metadata @> $1::jsonb OR metadata @> $2::jsonb)"
+        );
+        assert_eq!(
+            result.params,
+            vec![json!({"tag": "x"}), json!({"tag": "y"})]
+        );
+
+        let none = Filter::NotIn {
+            field: "tag".to_string(),
+            values: vec![json!("x"), json!("y")],
+        };
+        let result = filter_to_sql(&none, 5).expect("not in");
+        assert_eq!(
+            result.clause,
+            " AND (NOT (metadata @> $5::jsonb) AND NOT (metadata @> $6::jsonb))"
+        );
+        assert_eq!(
+            result.params,
+            vec![json!({"tag": "x"}), json!({"tag": "y"})]
+        );
+
+        let equal_then_in = Filter::And {
+            left: Box::new(Filter::Equal {
+                field: "a".to_string(),
+                value: json!(1),
+            }),
+            right: Box::new(Filter::In {
+                field: "b".to_string(),
+                values: vec![json!(2)],
+            }),
+        };
+        let result = filter_to_sql(&equal_then_in, 1).expect("and");
+        assert_eq!(
+            result.clause,
+            " AND metadata @> $1::jsonb AND (metadata @> $2::jsonb)"
+        );
+    }
+
+    #[test]
+    fn empty_or_unsafe_sets_are_rejected() {
+        for filter in [
+            Filter::In {
+                field: "tag".to_string(),
+                values: vec![],
+            },
+            Filter::NotIn {
+                field: "tag".to_string(),
+                values: vec![],
+            },
+            Filter::NotEqual {
+                field: String::new(),
+                value: json!(1),
+            },
+            Filter::In {
+                field: String::new(),
+                values: vec![json!(1)],
+            },
+        ] {
+            assert!(filter_to_sql(&filter, 1).is_none(), "{filter:?}");
+        }
     }
 
     #[test]

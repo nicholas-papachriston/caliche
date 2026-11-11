@@ -150,6 +150,21 @@ const CASES: &[(&str, &str, &[(&str, &str)])] = &[
         &[],
     ),
     (
+        "input closes select",
+        "<body><select><input><title>After</title></body>",
+        &[("title", "After")],
+    ),
+    (
+        "textarea closes select",
+        "<body><select><textarea><title>T</title></textarea><title>Real</title></body>",
+        &[("title", "Real")],
+    ),
+    (
+        "script in select",
+        "<body><select><script></select><title>S</title></script></select><title>Real</title></body>",
+        &[("title", "Real")],
+    ),
+    (
         "title in table",
         "<body><table><title>Tbl</title></table></body>",
         &[("title", "Tbl")],
