@@ -381,22 +381,6 @@ pub mod search;
 pub mod simd;
 pub mod sparse;
 pub mod storage;
-#[cfg(all(
-    test,
-    any(
-        feature = "embedding-candle",
-        feature = "embedding-ort",
-        feature = "embedding-mlx",
-        feature = "inference-candle",
-        feature = "inference-ort",
-        feature = "inference-mlx",
-        feature = "model-download",
-        feature = "local-candle",
-        feature = "local-ort",
-        feature = "local-mlx"
-    )
-))]
-mod test_env;
 pub mod utils;
 
 // Re-exports

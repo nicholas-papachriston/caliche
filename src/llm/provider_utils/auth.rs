@@ -83,7 +83,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn resolve_api_key_rejects_empty_provided_and_falls_back_to_env() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_TEST_RESOLVE_API_KEY", "from-env");
         let key = resolve_api_key(
             Some("   ".into()),
@@ -97,7 +99,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn resolve_api_key_errors_when_provided_and_env_are_empty() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_TEST_RESOLVE_API_KEY_EMPTY", "  ");
         let err = resolve_api_key(
             Some(String::new()),
@@ -111,7 +115,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn read_base_url_ignores_empty_env() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_TEST_BASE_URL_EMPTY", "");
         assert_eq!(
             read_base_url_from_env("CALICHE_TEST_BASE_URL_EMPTY", "http://localhost:11434"),
@@ -122,7 +128,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn read_model_from_env_ignores_whitespace_provided() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("CALICHE_TEST_MODEL_ENV");
         assert_eq!(
             read_model_from_env(

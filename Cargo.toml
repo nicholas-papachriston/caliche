@@ -12,6 +12,7 @@ members = [
     "crates/caliche_orchestration",
     "crates/caliche_mcp",
     "crates/caliche_policy",
+    "crates/caliche_test_env",
     ".",
 ]
 resolver = "2"
@@ -94,6 +95,8 @@ std_instead_of_core = "allow"
 std_instead_of_alloc = "allow"
 
 [workspace.dependencies]
+# The one process environment guard for tests (dev-dependency only).
+caliche_test_env = { path = "crates/caliche_test_env" }
 # Core
 anyhow = "1.0"
 arc-swap = "1.9"
@@ -675,6 +678,7 @@ cron = { version = "0.15", optional = true }
 
 [dev-dependencies]
 beef.workspace = true
+caliche_test_env.workspace = true
 # Native sandbox backends for tool isolation tests (feature "sandbox")
 caliche_sandbox = { path = "caliche_sandbox", features = ["sandbox-macos", "sandbox-linux", "sandbox-windows"] }
 dotenvy.workspace = true

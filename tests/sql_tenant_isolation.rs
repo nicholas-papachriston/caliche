@@ -65,23 +65,15 @@ fn enabled(strategy: IsolationStrategy) -> TenantFilterConfig {
 }
 
 /// Loads the config the way the SQL tools do, with filtering enabled.
-#[expect(
-    unsafe_code,
-    clippy::disallowed_methods,
-    reason = "the test sets the variables that the config loader reads"
-)]
-fn enabled_config_from_env(strategy: &str) -> TenantFilterConfig {
-    // SAFETY: every test in this file is serial, so nothing reads the environment meanwhile.
-    unsafe {
-        std::env::set_var("SQL_TENANT_FILTERING_ENABLED", "true");
-        std::env::set_var("SQL_TENANT_ISOLATION_STRATEGY", strategy);
-    }
+fn enabled_config_from_env(
+    env: &mut caliche_test_env::EnvGuard,
+    strategy: &str,
+) -> TenantFilterConfig {
+    env.set("SQL_TENANT_FILTERING_ENABLED", "true");
+    env.set("SQL_TENANT_ISOLATION_STRATEGY", strategy);
     let config = TenantFilterConfig::from_env();
-    // SAFETY: as above.
-    unsafe {
-        std::env::remove_var("SQL_TENANT_FILTERING_ENABLED");
-        std::env::remove_var("SQL_TENANT_ISOLATION_STRATEGY");
-    }
+    env.remove("SQL_TENANT_FILTERING_ENABLED");
+    env.remove("SQL_TENANT_ISOLATION_STRATEGY");
     config
 }
 
@@ -206,7 +198,10 @@ async fn policy_without_context_refuses_when_enabled() {
 #[tokio::test]
 #[serial_test::serial]
 async fn unknown_strategy_from_env_refuses() {
-    let (executor, tool) = tool(enabled_config_from_env("rowlevel"));
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    let (executor, tool) = tool(enabled_config_from_env(&mut env, "rowlevel"));
     assert_eq!(
         run(&tool, "SELECT * FROM t", Some(&acme())).await,
         Some(

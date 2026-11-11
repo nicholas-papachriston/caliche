@@ -276,7 +276,9 @@ Content-Length: 4096\r\n";
     #[test]
     #[serial_test::serial(env)]
     fn reserve_free_bytes_from_env_honors_override() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set(DISK_RESERVE_ENV, "12345");
         assert_eq!(reserve_free_bytes_from_env(), 12_345);
         env.set(DISK_RESERVE_ENV, "not-a-number");
@@ -290,7 +292,9 @@ Content-Length: 4096\r\n";
     fn cache_root_uses_dripstone_and_env_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let override_path = temp.path().join("custom-cache");
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set(CACHE_DIR_ENV, &override_path);
         assert_eq!(cache_root(), override_path);
         let fallback = temp.path().join("fallback-cache");

@@ -85,8 +85,6 @@ pub mod startup_prompts;
 pub mod templates;
 pub mod test;
 
-#[cfg(test)]
-mod test_env;
 pub mod utils;
 
 pub mod repl;

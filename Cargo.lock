@@ -1985,6 +1985,7 @@ dependencies = [
  "caliche_orchestration",
  "caliche_policy",
  "caliche_sandbox",
+ "caliche_test_env",
  "candle-core",
  "candle-transformers",
  "chrono",
@@ -2091,6 +2092,7 @@ dependencies = [
  "caliche_contracts",
  "caliche_sandbox",
  "caliche_server",
+ "caliche_test_env",
  "chrono",
  "clap",
  "clap_complete",
@@ -2264,6 +2266,7 @@ dependencies = [
  "caliche",
  "caliche_contracts",
  "caliche_sandbox",
+ "caliche_test_env",
  "chrono",
  "clap",
  "dashmap",
@@ -2297,6 +2300,10 @@ dependencies = [
  "url",
  "uuid",
 ]
+
+[[package]]
+name = "caliche_test_env"
+version = "0.1.0"
 
 [[package]]
 name = "caliche_web"
@@ -4622,6 +4629,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "beef",
  "bytes",
+ "caliche_test_env",
  "candle-core",
  "candle-nn",
  "candle-transformers",

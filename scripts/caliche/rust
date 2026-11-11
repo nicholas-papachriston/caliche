@@ -331,6 +331,8 @@ EOF
     cargo clippy --all-targets --features "$ROOT_GATE_FEATURES" -- -D warnings
     step "Running Clippy on ACP client crate"
     cargo clippy -p caliche_acp_client --all-targets -- -D warnings
+    step "Running Clippy on the test env crate"
+    cargo clippy -p caliche_test_env --all-targets -- -D warnings
     step "Running Clippy on CLI crate"
     (
       cd "$CLI_DIR"

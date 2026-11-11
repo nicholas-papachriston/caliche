@@ -238,7 +238,9 @@ mod tests {
     #[test]
     #[serial]
     fn fake_env_provider_is_rejected() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("AGENT_PROVIDER", "not-a-provider");
         env.remove("DEFAULT_PROVIDER");
         let err = validate_env_providers().expect_err("env provider");
@@ -248,7 +250,9 @@ mod tests {
     #[test]
     #[serial]
     fn default_provider_env_alias_is_validated() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("AGENT_PROVIDER");
         env.set("DEFAULT_PROVIDER", "not-a-provider");
         let err = validate_env_providers().expect_err("default provider env");

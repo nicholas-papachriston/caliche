@@ -156,4 +156,5 @@ linux-keyutils-keyring-store = "1.0.0"
 # Do not enable `full` here. That feature links ONNX Runtime.
 caliche_cli = { path = ".", features = ["test-utils", "lsp", "scheduling"] }
 serial_test.workspace = true
+caliche_test_env.workspace = true
 tempfile.workspace = true

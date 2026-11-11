@@ -45,10 +45,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn failed_turn_publishes_redacted_terminal_event() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-turn-error");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-turn-error");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -82,15 +82,6 @@ mod tests {
                 );
             }
             other => panic!("expected turn.error, got {other:?}"),
-        }
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
         }
     }
 }

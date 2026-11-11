@@ -783,28 +783,13 @@ mod title_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn restore_openrouter_key(previous: Option<String>) {
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
-    }
-
     #[tokio::test]
     #[serial_test::serial]
-    #[expect(
-        unsafe_code,
-        reason = "tests set OPENROUTER_API_KEY for harness construction"
-    )]
     async fn optional_title_is_listed_and_overlong_title_is_rejected() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-session-title");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-session-title");
 
         let adapter = Arc::new(ApiAdapter::with_session_ttl(
             HarnessConfig::default(),
@@ -856,8 +841,6 @@ mod title_tests {
         .expect_err("overlong title");
         assert_eq!(rejected.0, StatusCode::BAD_REQUEST);
         assert!(rejected.1.contains("80"));
-
-        restore_openrouter_key(previous);
     }
 }
 
@@ -872,17 +855,6 @@ mod resume_history_tests {
     use caliche::messages::Message;
     use std::sync::Arc;
     use std::time::Duration;
-
-    fn restore_openrouter_key(previous: Option<String>) {
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
-    }
 
     async fn session_memory_text(adapter: &ApiAdapter, session_id: &str) -> String {
         let session = adapter.get_session(session_id).await.expect("live session");
@@ -901,15 +873,11 @@ mod resume_history_tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    #[expect(
-        unsafe_code,
-        reason = "tests set OPENROUTER_API_KEY for harness construction"
-    )]
     async fn restore_history_handler_writes_request_body() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-resume-history");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-resume-history");
 
         let adapter = Arc::new(ApiAdapter::with_session_ttl(
             HarnessConfig::default(),
@@ -945,7 +913,5 @@ mod resume_history_tests {
             memory.contains("Renamed parser.rs with the fs tool"),
             "handler did not write the posted assistant turn: {memory}"
         );
-
-        restore_openrouter_key(previous);
     }
 }

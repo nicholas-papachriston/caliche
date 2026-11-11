@@ -167,7 +167,9 @@ mod deferred_ann_tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn disk_workspace_wraps_sqlite_with_deferred_ann_when_enabled() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         env.set("VECTOR_BACKEND_DIMENSION", "4");
 

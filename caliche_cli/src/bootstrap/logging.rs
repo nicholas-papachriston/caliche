@@ -246,8 +246,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn quiet_filter_does_not_follow_rust_log() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("RUST_LOG", "debug,sqlx=debug");
         let args = Args::parse_from(["caliche", "-q"]);
         let config = LogConfig::from_args(&args);

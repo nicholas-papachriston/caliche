@@ -599,7 +599,7 @@ fn is_port_available(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_env::EnvGuard;
+    use caliche_test_env::EnvGuard;
     use std::collections::HashSet;
     use std::env::VarError;
     use std::ffi::OsStr;
@@ -637,7 +637,9 @@ mod tests {
     #[serial_test::serial(env)]
     async fn gateway_child_gets_a_stored_key_and_the_parent_env_stays_unset() {
         let home = tempfile::tempdir().expect("tempdir");
-        let mut env = EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { EnvGuard::acquire() };
         env.set("HOME", home.path());
         env.remove("CALICHE_NO_KEYRING");
         env.set("CALICHE_USE_KEYRING", "1");

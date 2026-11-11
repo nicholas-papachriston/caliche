@@ -1159,7 +1159,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn test_jev_client_from_env() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("TYPESAFE_API_KEY");
         env.remove("CALICHE_JEV_API_KEY");
         assert!(JevHttpClient::from_env().is_none());

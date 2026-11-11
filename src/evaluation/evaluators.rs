@@ -395,30 +395,18 @@ mod tests {
         String::from_utf8_lossy(&data).into_owned()
     }
 
-    #[expect(
-        unsafe_code,
-        clippy::disallowed_methods,
-        reason = "the test points the LM Studio provider at the fake server"
-    )]
-    fn set_lmstudio_base_url(url: Option<&str>) {
-        // SAFETY: the tests that call this are serial, so nothing reads the environment meanwhile.
-        unsafe {
-            match url {
-                Some(url) => std::env::set_var("LMSTUDIO_BASE_URL", url),
-                None => std::env::remove_var("LMSTUDIO_BASE_URL"),
-            }
-        }
-    }
-
     /// Grades through a fake LM Studio server that answers with `reply`.
     async fn grade(reply: &str) -> Result<(f64, bool), String> {
-        set_lmstudio_base_url(Some(&fake_chat_server(reply)));
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: the tests that call this are serial, and the fake server
+        // thread only answers one request; it does not read the environment.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("LMSTUDIO_BASE_URL", fake_chat_server(reply));
         let result = LLMEvaluator::new("Check if output is correct")
             .with_provider(crate::llm::ProviderType::LMStudio)
             .with_model("fake")
             .evaluate("Hello", "Hello", None)
             .await;
-        set_lmstudio_base_url(None);
         result
             .map(|r| (r.score, r.passed))
             .map_err(|e| e.to_string())

@@ -79,58 +79,31 @@ fn path_requires_auth_for_chat_stream_when_require_auth() {
 #[test]
 #[serial]
 fn path_requires_auth_for_metrics_when_require_auth_set() {
-    let previous_require = std::env::var("CALICHE_REQUIRE_AUTH").ok();
-    let previous_jwt_enabled = std::env::var("JWT_ENABLED").ok();
-    let previous_jwt_key = std::env::var("JWT_PUBLIC_KEY").ok();
-    let previous_jwt_alg = std::env::var("JWT_ALGORITHM").ok();
-    unsafe {
-        std::env::set_var("CALICHE_REQUIRE_AUTH", "true");
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "HS256");
-        std::env::set_var("JWT_PUBLIC_KEY", "metrics-test-secret");
-        std::env::set_var("JWT_AUDIENCE", "caliche");
-        std::env::set_var("JWT_ISSUER", "caliche");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_REQUIRE_AUTH", "true");
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "HS256");
+    env.set("JWT_PUBLIC_KEY", "metrics-test-secret");
+    env.set("JWT_AUDIENCE", "caliche");
+    env.set("JWT_ISSUER", "caliche");
     let policy = SecurityPolicy::from_env().expect("policy");
     assert!(policy.path_requires_auth("/metrics", &Method::GET));
-    unsafe {
-        for key in [
-            "CALICHE_REQUIRE_AUTH",
-            "JWT_ENABLED",
-            "JWT_ALGORITHM",
-            "JWT_PUBLIC_KEY",
-            "JWT_AUDIENCE",
-            "JWT_ISSUER",
-        ] {
-            std::env::remove_var(key);
-        }
-        if let Some(value) = previous_require {
-            std::env::set_var("CALICHE_REQUIRE_AUTH", value);
-        }
-        if let Some(value) = previous_jwt_enabled {
-            std::env::set_var("JWT_ENABLED", value);
-        }
-        if let Some(value) = previous_jwt_key {
-            std::env::set_var("JWT_PUBLIC_KEY", value);
-        }
-        if let Some(value) = previous_jwt_alg {
-            std::env::set_var("JWT_ALGORITHM", value);
-        }
-    }
 }
 
 #[tokio::test]
 #[serial]
 async fn require_jwt_middleware_rejects_protected_route_without_state() {
-    let previous = std::env::var("CALICHE_REQUIRE_AUTH").ok();
-    unsafe {
-        std::env::set_var("CALICHE_REQUIRE_AUTH", "true");
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "HS256");
-        std::env::set_var("JWT_PUBLIC_KEY", "middleware-test-secret");
-        std::env::set_var("JWT_AUDIENCE", "caliche");
-        std::env::set_var("JWT_ISSUER", "caliche");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_REQUIRE_AUTH", "true");
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "HS256");
+    env.set("JWT_PUBLIC_KEY", "middleware-test-secret");
+    env.set("JWT_AUDIENCE", "caliche");
+    env.set("JWT_ISSUER", "caliche");
 
     let policy = Arc::new(SecurityPolicy::from_env().expect("policy"));
 
@@ -146,22 +119,6 @@ async fn require_jwt_middleware_rejects_protected_route_without_state() {
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    unsafe {
-        for key in [
-            "CALICHE_REQUIRE_AUTH",
-            "JWT_ENABLED",
-            "JWT_ALGORITHM",
-            "JWT_PUBLIC_KEY",
-            "JWT_AUDIENCE",
-            "JWT_ISSUER",
-        ] {
-            std::env::remove_var(key);
-        }
-        if let Some(value) = previous {
-            std::env::set_var("CALICHE_REQUIRE_AUTH", value);
-        }
-    }
 }
 
 #[tokio::test]
@@ -437,59 +394,31 @@ fn orchestration_paths_are_recognized() {
 #[test]
 #[serial]
 fn production_profile_ignores_the_unauth_orchestration_opt_in() {
-    let previous_env = std::env::var("CALICHE_ENV").ok();
-    let previous_opt_in = std::env::var("CALICHE_ALLOW_UNAUTH_ORCHESTRATION").ok();
-    let previous_insecure = std::env::var("CALICHE_ALLOW_INSECURE_PRODUCTION").ok();
-    unsafe {
-        std::env::set_var("CALICHE_ENV", "production");
-        std::env::set_var("CALICHE_ALLOW_UNAUTH_ORCHESTRATION", "true");
-        std::env::set_var("CALICHE_ALLOW_INSECURE_PRODUCTION", "true");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_ENV", "production");
+    env.set("CALICHE_ALLOW_UNAUTH_ORCHESTRATION", "true");
+    env.set("CALICHE_ALLOW_INSECURE_PRODUCTION", "true");
 
     let policy = SecurityPolicy::from_env().expect("policy");
     assert!(!policy.allow_unauth_orchestration);
     assert!(policy.orchestration_requires_auth("/api/orchestration/multi-agent"));
-
-    unsafe {
-        std::env::remove_var("CALICHE_ENV");
-        std::env::remove_var("CALICHE_ALLOW_UNAUTH_ORCHESTRATION");
-        std::env::remove_var("CALICHE_ALLOW_INSECURE_PRODUCTION");
-        if let Some(value) = previous_env {
-            std::env::set_var("CALICHE_ENV", value);
-        }
-        if let Some(value) = previous_opt_in {
-            std::env::set_var("CALICHE_ALLOW_UNAUTH_ORCHESTRATION", value);
-        }
-        if let Some(value) = previous_insecure {
-            std::env::set_var("CALICHE_ALLOW_INSECURE_PRODUCTION", value);
-        }
-    }
 }
 
 #[test]
 #[serial]
 fn production_without_jwt_fails_closed() {
-    let previous_env = std::env::var("CALICHE_ENV").ok();
-    let previous_insecure = std::env::var("CALICHE_ALLOW_INSECURE_PRODUCTION").ok();
-    unsafe {
-        std::env::set_var("CALICHE_ENV", "production");
-        std::env::remove_var("CALICHE_ALLOW_INSECURE_PRODUCTION");
-        std::env::remove_var("JWT_ENABLED");
-        std::env::remove_var("CALICHE_REQUIRE_AUTH");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_ENV", "production");
+    env.remove("CALICHE_ALLOW_INSECURE_PRODUCTION");
+    env.remove("JWT_ENABLED");
+    env.remove("CALICHE_REQUIRE_AUTH");
 
     let err = SecurityPolicy::from_env().expect_err("production without JWT");
     assert!(err.to_string().contains("JWT_ENABLED"));
-
-    unsafe {
-        std::env::remove_var("CALICHE_ENV");
-        if let Some(value) = previous_env {
-            std::env::set_var("CALICHE_ENV", value);
-        }
-        if let Some(value) = previous_insecure {
-            std::env::set_var("CALICHE_ALLOW_INSECURE_PRODUCTION", value);
-        }
-    }
 }
 
 #[test]

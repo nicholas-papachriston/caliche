@@ -286,20 +286,12 @@ fn result_frame(buf: &Arc<Mutex<Vec<u8>>>, id: u64) -> Value {
 #[tokio::test]
 #[serial_test::serial]
 async fn session_list_load_reads_http_session_cache() {
-    let previous = std::env::var("OPENROUTER_API_KEY").ok();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     // Harness construction checks for a provider key. This stub is never sent.
-    unsafe {
-        std::env::set_var("OPENROUTER_API_KEY", "test-key-for-acp-catalog");
-    }
+    env.set("OPENROUTER_API_KEY", "test-key-for-acp-catalog");
     let outcome = http_cache_catalog().await;
-    match previous {
-        Some(value) => unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", value);
-        },
-        None => unsafe {
-            std::env::remove_var("OPENROUTER_API_KEY");
-        },
-    }
     outcome.expect("http session cache");
 }
 

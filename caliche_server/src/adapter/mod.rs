@@ -291,10 +291,10 @@ mod runtime_registration_tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn create_and_delete_session_keeps_runtime_in_sync() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-runtime");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-runtime");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -311,15 +311,6 @@ mod runtime_registration_tests {
         assert!(adapter.delete_session(&session_id).await);
         assert!(!adapter.runtime().contains(&session_id));
         assert_eq!(adapter.runtime().session_count(), 0);
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
     }
 }
 
@@ -332,10 +323,10 @@ mod share_tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn share_get_returns_redacted_transcript_payload() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-share");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-share");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -362,15 +353,6 @@ mod share_tests {
 
         assert!(adapter.delete_session_share(&session_id));
         assert!(adapter.get_share(&record.slug).is_none());
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
     }
 
     #[tokio::test]
@@ -404,10 +386,10 @@ mod share_tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn list_sessions_includes_active_cache_entries() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-list-sessions");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-list-sessions");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -422,24 +404,15 @@ mod share_tests {
             listed.iter().any(|id| id == &session_id),
             "expected {session_id} in {listed:?}"
         );
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn share_session_replaces_previous_slug() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-share-replace");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-share-replace");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -459,15 +432,6 @@ mod share_tests {
         assert_ne!(first.slug, second.slug);
         assert!(adapter.get_share(&first.slug).is_none());
         assert!(adapter.get_share(&second.slug).is_some());
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
     }
 
     #[tokio::test]
@@ -487,10 +451,10 @@ mod share_tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn delete_session_removes_share_records() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-share-delete");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-share-delete");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -510,15 +474,6 @@ mod share_tests {
 
         assert!(adapter.delete_session(&session_id).await);
         assert!(adapter.get_share(&record.slug).is_none());
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
     }
 }
 
@@ -527,17 +482,6 @@ mod process_session_tests {
     use super::{ApiAdapter, ApiAdapterError, SessionOwner};
     use caliche::harness::HarnessConfig;
     use std::time::Duration;
-
-    fn restore_openrouter_key(previous: Option<String>) {
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("OPENROUTER_API_KEY", value);
-            },
-            None => unsafe {
-                std::env::remove_var("OPENROUTER_API_KEY");
-            },
-        }
-    }
 
     #[tokio::test]
     async fn list_process_sessions_is_empty_array_source() {
@@ -548,15 +492,11 @@ mod process_session_tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    #[expect(
-        unsafe_code,
-        reason = "tests set OPENROUTER_API_KEY for harness construction"
-    )]
     async fn list_process_sessions_includes_every_live_owner() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-process-list");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-process-list");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -604,21 +544,15 @@ mod process_session_tests {
             .find(|info| info.session_id == bot_a)
             .expect("bot-a row");
         assert!(untitled.title.is_none());
-
-        restore_openrouter_key(previous);
     }
 
     #[tokio::test]
     #[serial_test::serial]
-    #[expect(
-        unsafe_code,
-        reason = "tests set OPENROUTER_API_KEY for harness construction"
-    )]
     async fn cancel_while_turn_lock_is_held_then_turn_is_missing() {
-        let previous = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", "test-key-for-process-cancel");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("OPENROUTER_API_KEY", "test-key-for-process-cancel");
 
         let adapter =
             ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None);
@@ -671,7 +605,5 @@ mod process_session_tests {
                 .all(|info| info.session_id != session_id)
         );
         assert!(!adapter.cancel_session(&session_id).await);
-
-        restore_openrouter_key(previous);
     }
 }

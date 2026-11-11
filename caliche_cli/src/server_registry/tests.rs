@@ -791,7 +791,9 @@ fn bom_record_is_listed_and_a_bad_record_is_skipped() {
 #[serial_test::serial]
 fn config_dir_override_redirects_lock_registry_plugins_and_config() {
     let dir = tempdir().unwrap();
-    let mut env = crate::test_env::EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     env.remove(caliche_server::paths::CONFIG_DIR_ENV);
     let unset_lock = crate::client::ServerLock::default_path();
     env.set(caliche_server::paths::CONFIG_DIR_ENV, dir.path());

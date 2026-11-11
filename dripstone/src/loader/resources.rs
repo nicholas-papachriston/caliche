@@ -434,7 +434,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn reserve_ram_from_env_ignores_invalid_and_honors_zero() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set(RESERVE_RAM_ENV, "not-a-number");
         assert_eq!(reserve_ram_bytes_from_env(), DEFAULT_RESERVE_RAM_BYTES);
         env.set(RESERVE_RAM_ENV, "0");

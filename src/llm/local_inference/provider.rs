@@ -967,7 +967,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn fit_options_from_env_maps_caliche_reserve() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_LOCAL_INFERENCE_RESERVE_RAM_BYTES", "4242");
         let options = LocalInferenceProvider::fit_options_from_env();
         assert_eq!(options.reserve_ram_bytes, Some(4242));

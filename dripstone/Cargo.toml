@@ -289,6 +289,7 @@ llama-cpp-2 = { version = "0.1.154", optional = true, default-features = true }
 
 [dev-dependencies]
 async-trait = "0.1"
+caliche_test_env = { path = "../crates/caliche_test_env" }
 bytes = "1.11"
 serial_test = "3.0"
 tempfile = "3.27"

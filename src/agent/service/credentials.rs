@@ -351,35 +351,15 @@ mod tests {
 
     #[test]
     #[serial]
-    #[expect(
-        unsafe_code,
-        clippy::disallowed_methods,
-        reason = "test sets and restores process env vars"
-    )]
     fn resolve_provider_reads_default_provider_env() {
-        let previous_agent = std::env::var("AGENT_PROVIDER").ok();
-        let previous_default = std::env::var("DEFAULT_PROVIDER").ok();
-        unsafe {
-            std::env::remove_var("AGENT_PROVIDER");
-            std::env::set_var("DEFAULT_PROVIDER", "anthropic");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("AGENT_PROVIDER");
+        env.set("DEFAULT_PROVIDER", "anthropic");
         assert_eq!(resolve_provider(None), ProviderType::Anthropic);
-        unsafe {
-            std::env::set_var("AGENT_PROVIDER", "openai");
-        }
+        env.set("AGENT_PROVIDER", "openai");
         assert_eq!(resolve_provider(None), ProviderType::OpenAI);
-        unsafe {
-            if let Some(value) = previous_agent {
-                std::env::set_var("AGENT_PROVIDER", value);
-            } else {
-                std::env::remove_var("AGENT_PROVIDER");
-            }
-            if let Some(value) = previous_default {
-                std::env::set_var("DEFAULT_PROVIDER", value);
-            } else {
-                std::env::remove_var("DEFAULT_PROVIDER");
-            }
-        }
     }
 
     #[test]
@@ -420,31 +400,13 @@ mod tests {
 
     #[test]
     #[serial]
-    #[expect(
-        unsafe_code,
-        clippy::disallowed_methods,
-        reason = "test sets and restores process env vars"
-    )]
     fn resolve_model_for_provider_falls_back_to_provider_defaults() {
-        let openai_model = std::env::var("OPENAI_MODEL").ok();
-        let agent_model = std::env::var("AGENT_MODEL").ok();
-        // SAFETY: test-only env mutation guarded by serial_test.
-        unsafe {
-            std::env::remove_var("OPENAI_MODEL");
-            std::env::remove_var("AGENT_MODEL");
-        }
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("OPENAI_MODEL");
+        env.remove("AGENT_MODEL");
         let model = resolve_model_for_provider(ProviderType::OpenAI, None);
         assert_eq!(model, crate::llm::defaults::OPENAI);
-        // SAFETY: restore prior test environment.
-        unsafe {
-            match openai_model {
-                Some(v) => std::env::set_var("OPENAI_MODEL", v),
-                None => std::env::remove_var("OPENAI_MODEL"),
-            }
-            match agent_model {
-                Some(v) => std::env::set_var("AGENT_MODEL", v),
-                None => std::env::remove_var("AGENT_MODEL"),
-            }
-        }
     }
 }

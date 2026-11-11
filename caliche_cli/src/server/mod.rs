@@ -655,7 +655,9 @@ mod tests {
     #[serial_test::serial]
     async fn unwritable_registry_aborts_start_server_and_removes_the_lock() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set(caliche_server::paths::CONFIG_DIR_ENV, dir.path());
         std::fs::write(dir.path().join("servers"), "not a directory").expect("blocker");
         let shared = Arc::new(RwLock::new(deferred_openrouter_without_key().await));

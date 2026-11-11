@@ -14,6 +14,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use caliche_server::middleware::jwt_auth::{JwtAuthConfig, JwtAuthState};
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_middleware_auth_disabled_allows_request() {
     let config = JwtAuthConfig {
         enabled: false,
@@ -33,6 +34,7 @@ async fn test_middleware_auth_disabled_allows_request() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_middleware_auth_enabled_requires_token() {
     let config = JwtAuthConfig {
         enabled: true,
@@ -53,6 +55,7 @@ async fn test_middleware_auth_enabled_requires_token() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_middleware_context_extraction_success() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use serde_json::json;
@@ -109,6 +112,7 @@ async fn test_middleware_context_extraction_success() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_middleware_error_propagation() {
     let config = JwtAuthConfig {
         enabled: true,
@@ -135,6 +139,7 @@ async fn test_middleware_error_propagation() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_middleware_optional_user_context() {
     // Test that OptionalUserContext extractor would work
     // This is tested through the actual API handlers in integration tests
@@ -159,15 +164,15 @@ async fn test_middleware_optional_user_context() {
 #[tokio::test]
 #[serial_test::serial]
 async fn json_rpc_only_blocks_rest_when_enabled() {
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     let _config = harness::hold();
-    // SAFETY: test uses serial_test::serial to isolate env var mutation.
-    unsafe {
-        std::env::set_var("CALICHE_JSON_RPC_ONLY", "true");
-    }
+    env.set("CALICHE_JSON_RPC_ONLY", "true");
 
     let app = harness::mock_router().await;
 
@@ -237,24 +242,21 @@ async fn json_rpc_only_blocks_rest_when_enabled() {
         .expect("request should succeed");
     assert_eq!(stream_response.status(), StatusCode::OK);
 
-    // SAFETY: clean up env var under serial lock.
-    unsafe {
-        std::env::remove_var("CALICHE_JSON_RPC_ONLY");
-    }
+    env.remove("CALICHE_JSON_RPC_ONLY");
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn prometheus_exposes_app_metrics() {
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     let _config = harness::hold();
-    // SAFETY: test uses serial_test::serial to isolate env var mutation.
-    unsafe {
-        std::env::remove_var("CALICHE_JSON_RPC_ONLY");
-    }
+    env.remove("CALICHE_JSON_RPC_ONLY");
 
     let app = harness::mock_router().await;
 
@@ -293,15 +295,15 @@ async fn prometheus_exposes_app_metrics() {
 #[tokio::test]
 #[serial_test::serial]
 async fn chat_stream_mounted_by_default() {
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     let _config = harness::hold();
-    // SAFETY: test uses serial_test::serial to isolate env var mutation.
-    unsafe {
-        std::env::remove_var("CALICHE_JSON_RPC_ONLY");
-    }
+    env.remove("CALICHE_JSON_RPC_ONLY");
 
     let app = harness::mock_router().await;
 

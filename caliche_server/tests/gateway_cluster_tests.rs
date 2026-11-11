@@ -6,20 +6,20 @@ use caliche_server::handlers::gateway_validation::{
 };
 use serial_test::serial;
 
-fn clear_env() {
-    // SAFETY: test uses serial_test::serial to isolate env var mutation.
-    unsafe {
-        std::env::remove_var("CALICHE_CLUSTER_HOST_ALLOWLIST");
-        std::env::remove_var("CALICHE_CLUSTER_ALLOW_HTTP");
-        std::env::remove_var("CALICHE_CLUSTER_ALLOW_PRIVATE");
-        std::env::remove_var("CALICHE_CLUSTER_REGISTER_TOKEN");
-    }
+fn clear_env(env: &mut caliche_test_env::EnvGuard) {
+    env.remove("CALICHE_CLUSTER_HOST_ALLOWLIST");
+    env.remove("CALICHE_CLUSTER_ALLOW_HTTP");
+    env.remove("CALICHE_CLUSTER_ALLOW_PRIVATE");
+    env.remove("CALICHE_CLUSTER_REGISTER_TOKEN");
 }
 
 #[test]
 #[serial]
 fn rejects_registration_without_token_or_role() {
-    clear_env();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
     let headers = HeaderMap::new();
     assert!(authorize_cluster_register(&headers, None).is_err());
 }
@@ -27,11 +27,11 @@ fn rejects_registration_without_token_or_role() {
 #[test]
 #[serial]
 fn accepts_valid_register_token() {
-    clear_env();
-    // SAFETY: serial test controls env.
-    unsafe {
-        std::env::set_var("CALICHE_CLUSTER_REGISTER_TOKEN", "super-s3cret");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
+    env.set("CALICHE_CLUSTER_REGISTER_TOKEN", "super-s3cret");
     let mut headers = HeaderMap::new();
     headers.insert(
         CLUSTER_REGISTER_HEADER,
@@ -43,11 +43,11 @@ fn accepts_valid_register_token() {
 #[test]
 #[serial]
 fn rejects_wrong_scheme_without_opt_in() {
-    clear_env();
-    // SAFETY: serial test controls env.
-    unsafe {
-        std::env::set_var("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
+    env.set("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
     let err =
         validate_cluster_base_url("ftp://trusted.example/").expect_err("ftp must be rejected");
     assert!(err.to_string().contains("unsupported scheme"));
@@ -56,12 +56,12 @@ fn rejects_wrong_scheme_without_opt_in() {
 #[test]
 #[serial]
 fn rejects_private_ip_without_opt_in() {
-    clear_env();
-    // SAFETY: serial test controls env.
-    unsafe {
-        std::env::set_var("CALICHE_CLUSTER_HOST_ALLOWLIST", "192.168.1.1");
-        std::env::set_var("CALICHE_CLUSTER_ALLOW_HTTP", "true");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
+    env.set("CALICHE_CLUSTER_HOST_ALLOWLIST", "192.168.1.1");
+    env.set("CALICHE_CLUSTER_ALLOW_HTTP", "true");
     let err = validate_cluster_base_url("http://192.168.1.1:9090/")
         .expect_err("private ip must be rejected");
     assert!(err.to_string().contains("ALLOW_PRIVATE"));
@@ -70,11 +70,11 @@ fn rejects_private_ip_without_opt_in() {
 #[test]
 #[serial]
 fn allows_public_https_in_allowlist() {
-    clear_env();
-    // SAFETY: serial test controls env.
-    unsafe {
-        std::env::set_var("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
+    env.set("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
     validate_cluster_base_url("https://trusted.example:8443/agent")
         .expect("should accept trusted https");
 }
@@ -82,11 +82,11 @@ fn allows_public_https_in_allowlist() {
 #[test]
 #[serial]
 fn rejects_non_allowlisted_host() {
-    clear_env();
-    // SAFETY: serial test controls env.
-    unsafe {
-        std::env::set_var("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
+    env.set("CALICHE_CLUSTER_HOST_ALLOWLIST", "trusted.example");
     let err = validate_cluster_base_url("https://evil.example/")
         .expect_err("non-allowlisted host must be rejected");
     assert!(err.to_string().contains("allowlist"));
@@ -95,7 +95,10 @@ fn rejects_non_allowlisted_host() {
 #[test]
 #[serial]
 fn rejects_registration_when_host_allowlist_unset() {
-    clear_env();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_env(&mut env);
     let err = validate_cluster_base_url("https://anything.example/")
         .expect_err("empty allowlist must reject");
     assert!(err.to_string().contains("HOST_ALLOWLIST"));

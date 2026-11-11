@@ -167,7 +167,9 @@ mod tests {
             "fitted body still contains the dropped marker"
         );
 
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("OPENROUTER_API_KEY", "test-key-for-resume-post");
         let adapter = Arc::new(caliche_server::ApiAdapter::with_session_ttl(
             caliche::harness::HarnessConfig::default(),

@@ -846,7 +846,9 @@ mod tests {
         use caliche_sandbox::handle::SandboxHandle;
         use caliche_sandbox::traits::SandboxBackend;
 
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_BASH_FORWARD_PROBE", "round5_marker");
 
         let workspace = tempfile::tempdir().expect("workspace");

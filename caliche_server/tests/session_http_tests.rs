@@ -138,15 +138,11 @@ async fn root_with_embedded_ui_serves_html() {
 
 #[tokio::test]
 #[serial]
-#[expect(
-    unsafe_code,
-    reason = "tests set OPENROUTER_API_KEY for harness construction"
-)]
 async fn create_list_cancel_then_turn_is_missing() {
-    let previous = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe {
-        std::env::set_var("OPENROUTER_API_KEY", "test-key-for-http-sessions");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("OPENROUTER_API_KEY", "test-key-for-http-sessions");
 
     let app = test_app().await;
     let create = app
@@ -235,13 +231,4 @@ async fn create_list_cancel_then_turn_is_missing() {
         .await
         .expect("stop response");
     assert_eq!(stop_again.status(), StatusCode::NOT_FOUND);
-
-    match previous {
-        Some(value) => unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", value);
-        },
-        None => unsafe {
-            std::env::remove_var("OPENROUTER_API_KEY");
-        },
-    }
 }

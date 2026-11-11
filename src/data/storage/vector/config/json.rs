@@ -659,7 +659,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn builds_indexed_backend_from_json_with_deferred_env() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         let cfg = VectorBackendConfig::from_json_value(&json!({
             "type": "indexed",

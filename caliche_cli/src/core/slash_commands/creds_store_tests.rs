@@ -6,9 +6,9 @@
 
 use super::{SlashCommandExecutor, SlashCommandResult};
 use crate::storage::SecureCredentialManager;
-use crate::test_env::EnvGuard;
 use caliche::traits::credentials::{CredentialProvider, EnvironmentCredentialProvider};
 use caliche_contracts::credential_env;
+use caliche_test_env::EnvGuard;
 use std::collections::HashSet;
 use std::env::VarError;
 
@@ -27,7 +27,9 @@ fn isolated_keychain(env: &mut EnvGuard, home: &std::path::Path) {
 #[serial_test::serial(env)]
 async fn creds_set_key_resolves_for_the_provider_and_env_stays_unset() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     env.remove("COHERE_API_KEY");
     env.remove("API_KEY");
@@ -62,7 +64,9 @@ async fn creds_set_key_resolves_for_the_provider_and_env_stays_unset() {
 #[serial_test::serial(env)]
 async fn gateway_twilio_values_resolve_and_env_stays_unset() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     for key in [
         "TWILIO_ACCOUNT_SID",
@@ -115,7 +119,9 @@ async fn gateway_twilio_values_resolve_and_env_stays_unset() {
 #[serial_test::serial(env)]
 async fn shell_value_beats_the_keychain_at_startup() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     env.set("PERPLEXITY_API_KEY", "shell-perplexity");
     let manager = SecureCredentialManager::new_with_scope(None)
@@ -145,7 +151,9 @@ async fn shell_value_beats_the_keychain_at_startup() {
 async fn directory_scope_beats_global_keychain_at_startup() {
     let home = tempfile::tempdir().expect("tempdir");
     let project = tempfile::tempdir().expect("project dir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     env.remove("TELEGRAM_BOT_TOKEN");
     let manager = SecureCredentialManager::new_with_scope(Some(project.path()))
@@ -177,7 +185,9 @@ async fn directory_scope_beats_global_keychain_at_startup() {
 #[serial_test::serial(env)]
 async fn keychain_replaces_an_env_file_value_at_startup() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     // In the process env but not in the shell snapshot: it came from --env-file.
     env.set("AZURE_OPENAI_API_KEY", "env-file-azure");
@@ -205,7 +215,9 @@ async fn keychain_replaces_an_env_file_value_at_startup() {
 #[serial_test::serial(env)]
 async fn creds_set_keeps_a_value_already_in_the_environment() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_keychain(&mut env, home.path());
     env.set("DISCORD_BOT_TOKEN", "shell-discord");
 

@@ -307,7 +307,9 @@ mod tests {
     #[serial_test::serial(env)]
     async fn export_keeps_keys_for_providers_this_build_left_out() {
         let home = tempfile::tempdir().expect("temp home");
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("HOME", home.path());
         env.set("CALICHE_NO_KEYRING", "1");
         env.set("AWS_ACCESS_KEY_ID", "fake-aws-key");

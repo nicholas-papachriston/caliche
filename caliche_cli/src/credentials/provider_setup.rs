@@ -466,7 +466,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn cloudflare_prompt_values_resolve_and_env_stays_unset() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         for key in [
             "CLOUDFLARE_ACCOUNT_ID",
             "CLOUDFLARE_AIG_GATEWAY_ID",

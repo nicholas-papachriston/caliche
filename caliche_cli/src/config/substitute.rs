@@ -224,7 +224,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn untrusted_policy_skips_file_and_env() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_SUBST_TEST_SECRET", "leaked");
         let got = substitute_variables_in_string_with(
             "a={file:/etc/passwd} b={env:CALICHE_SUBST_TEST_SECRET}",

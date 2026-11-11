@@ -943,64 +943,13 @@ mod tests {
             .expect("build mock service")
     }
 
-    struct RestoreDispatchEnv(Option<String>);
-
-    impl RestoreDispatchEnv {
-        fn capture() -> Self {
-            Self(std::env::var("CALICHE_OPERATION_DISPATCH").ok())
-        }
-
-        #[expect(
-            unsafe_code,
-            clippy::disallowed_methods,
-            reason = "test sets and restores process env vars"
-        )]
-        fn unset() -> Self {
-            let guard = Self::capture();
-            // SAFETY: tests that construct this are `#[serial]`.
-            unsafe {
-                std::env::remove_var("CALICHE_OPERATION_DISPATCH");
-            }
-            guard
-        }
-
-        #[expect(
-            unsafe_code,
-            clippy::disallowed_methods,
-            reason = "test sets and restores process env vars"
-        )]
-        fn set(value: &str) -> Self {
-            let guard = Self::capture();
-            // SAFETY: tests that construct this are `#[serial]`.
-            unsafe {
-                std::env::set_var("CALICHE_OPERATION_DISPATCH", value);
-            }
-            guard
-        }
-    }
-
-    impl Drop for RestoreDispatchEnv {
-        #[expect(
-            unsafe_code,
-            clippy::disallowed_methods,
-            reason = "test sets and restores process env vars"
-        )]
-        fn drop(&mut self) {
-            // SAFETY: tests that construct this are `#[serial]`.
-            unsafe {
-                if let Some(ref value) = self.0 {
-                    std::env::set_var("CALICHE_OPERATION_DISPATCH", value);
-                } else {
-                    std::env::remove_var("CALICHE_OPERATION_DISPATCH");
-                }
-            }
-        }
-    }
-
     #[tokio::test]
     #[serial_test::serial]
     async fn default_build_leaves_operation_manager_unset() {
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let service = Box::pin(mock_service(AgentBuilder::new())).await;
         assert!(
             !service.agent().operation_dispatch_enabled(),
@@ -1011,7 +960,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn enable_operation_dispatch_installs_local_manager() {
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let service = Box::pin(mock_service(
             AgentBuilder::new().enable_operation_dispatch(),
         ))
@@ -1022,7 +974,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn with_operation_manager_installs_supplied_manager() {
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let manager = Arc::new(crate::agent::operations::LocalOperationManager::new());
         let service = Box::pin(mock_service(
             AgentBuilder::new().with_operation_manager(manager),
@@ -1034,7 +989,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn env_operation_dispatch_installs_local_manager() {
-        let _env = RestoreDispatchEnv::set("1");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_OPERATION_DISPATCH", "1");
         let result = Box::pin(mock_service(AgentBuilder::new())).await;
         assert!(result.agent().operation_dispatch_enabled());
     }
@@ -1049,7 +1007,10 @@ mod tests {
         use caliche_sandbox::handle::SandboxHandle;
         use caliche_sandbox::traits::SandboxBackend;
 
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let mut service = Box::pin(mock_service(AgentBuilder::new())).await;
         let workspace = tempfile::tempdir().expect("workspace");
         let config = policy_to_config(
@@ -1108,7 +1069,10 @@ mod tests {
     async fn install_refuses_isolating_remote_bound_to_other_sandbox() {
         use crate::agent::operations::{RemoteOperationManager, SandboxOperationTransport};
 
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let mut service = Box::pin(mock_service(AgentBuilder::new())).await;
         let configured = noop_sandbox_handle().await;
         let other = noop_sandbox_handle().await;
@@ -1134,7 +1098,10 @@ mod tests {
     async fn install_accepts_isolating_remote_bound_to_agent_sandbox() {
         use crate::agent::operations::{RemoteOperationManager, SandboxOperationTransport};
 
-        let _env = RestoreDispatchEnv::unset();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.remove("CALICHE_OPERATION_DISPATCH");
         let mut service = Box::pin(mock_service(AgentBuilder::new())).await;
         let handle = noop_sandbox_handle().await;
         service.agent_mut().set_sandbox(Arc::clone(&handle));

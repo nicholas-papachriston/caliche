@@ -38,7 +38,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn env_nonempty_trims_and_rejects_blank() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_TEST_ENV_NONEMPTY", "  padded  ");
         assert_eq!(
             env_nonempty("CALICHE_TEST_ENV_NONEMPTY").as_deref(),
@@ -51,7 +53,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn env_flag_accepts_truthy_aliases() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         for value in ["1", "true", "TRUE", " yes ", "On"] {
             env.set("CALICHE_TEST_FLAG_TRUTHY", value);
             assert!(
@@ -71,7 +75,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn env_var_nonempty_errors_on_whitespace() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_TEST_VAR_WS", " \t ");
         assert!(matches!(
             env_var_nonempty("CALICHE_TEST_VAR_WS"),

@@ -552,19 +552,11 @@ async fn empty_tool_call_id_does_not_run_the_tool() {
 #[tokio::test]
 #[serial_test::serial]
 async fn installing_the_resolver_keeps_the_permission_mode() {
-    let previous = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe {
-        std::env::set_var("OPENROUTER_API_KEY", "test-key-for-acp-permission");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("OPENROUTER_API_KEY", "test-key-for-acp-permission");
     let outcome = resolver_does_not_force_interactive().await;
-    match previous {
-        Some(value) => unsafe {
-            std::env::set_var("OPENROUTER_API_KEY", value);
-        },
-        None => unsafe {
-            std::env::remove_var("OPENROUTER_API_KEY");
-        },
-    }
     outcome.expect("resolver install");
 }
 

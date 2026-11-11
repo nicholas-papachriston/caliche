@@ -582,7 +582,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn window_flush_drains_deferred_ann_queue() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         env.set("VECTOR_BACKEND_DIMENSION", "8");
 

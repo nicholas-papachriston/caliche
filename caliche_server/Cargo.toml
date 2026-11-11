@@ -116,5 +116,6 @@ url.workspace = true
 rust-embed = { workspace = true, optional = true }
 
 [dev-dependencies]
+caliche_test_env.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true

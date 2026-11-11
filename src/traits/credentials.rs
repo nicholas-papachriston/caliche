@@ -539,7 +539,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn environment_provider_treats_local_backends_as_credentialless() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("API_KEY", "should-not-apply-to-local");
         let provider = EnvironmentCredentialProvider::new();
         for name in [
@@ -563,7 +565,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn environment_provider_maps_gemini_alias_to_google_vars() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("GOOGLE_API_KEY", "google-test-key");
         env.remove("GEMINI_API_KEY");
         env.remove("API_KEY");
@@ -578,7 +582,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn environment_provider_accepts_gemini_api_key_for_gemini_alias() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("GOOGLE_API_KEY");
         env.remove("API_KEY");
         env.set("GEMINI_API_KEY", "gemini-only-key");

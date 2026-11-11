@@ -112,10 +112,10 @@ async fn authorize_session_not_found_when_enforced() {
 #[tokio::test]
 #[serial_test::serial]
 async fn authorize_session_rejects_idor_for_existing_session() {
-    let previous = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe {
-        std::env::set_var("OPENROUTER_API_KEY", "test-key-for-session-auth");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("OPENROUTER_API_KEY", "test-key-for-session-auth");
 
     let adapter =
         ApiAdapter::with_session_ttl(HarnessConfig::default(), Duration::from_secs(60), None)
@@ -148,11 +148,4 @@ async fn authorize_session_rejects_idor_for_existing_session() {
     authorize_session_access(&adapter, &session_id, &legitimate, &enforced_policy())
         .await
         .expect("owner should be allowed");
-
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var("OPENROUTER_API_KEY", value),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
-        }
-    }
 }

@@ -1208,7 +1208,9 @@ mod tests {
             "CALICHE_ENV_FILE_TEST_SHELL=file-value\nCALICHE_ENV_FILE_TEST_NEW=file-new\n",
         )
         .expect("write env file");
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_ENV_FILE_TEST_SHELL", "shell-value");
         env.remove("CALICHE_ENV_FILE_TEST_NEW");
         let path = path.to_string_lossy().into_owned();

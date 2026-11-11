@@ -2,8 +2,9 @@
 //!
 //! `hold` points `CALICHE_CONFIG_DIR` at one temp directory for this test
 //! process. The directory stays for the process lifetime, so a later test
-//! cannot fall back to the real user data directory. The mutex stops parallel
-//! tests in this binary from racing the first write of that variable.
+//! cannot fall back to the real user data directory. Every test in a binary
+//! that includes this module must be `#[serial]`: the first `hold` changes
+//! the process environment.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -29,13 +30,12 @@ pub fn hold() -> ConfigDirGuard {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     CONFIG_DIR.get_or_init(|| {
         let dir = tempfile::tempdir().expect("CALICHE_CONFIG_DIR temp directory");
-        #[expect(
-            unsafe_code,
-            clippy::disallowed_methods,
-            reason = "server tests must not write the real user data directory"
-        )]
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: every test in each binary that includes this harness is
+        // `#[serial]`, so no other test thread reads or writes the
+        // environment during this call.
         unsafe {
-            std::env::set_var(caliche_server::paths::CONFIG_DIR_ENV, dir.path());
+            caliche_test_env::set_for_process(caliche_server::paths::CONFIG_DIR_ENV, dir.path());
         }
         InstalledConfigDir { _dir: dir }
     });

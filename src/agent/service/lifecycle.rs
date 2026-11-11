@@ -863,7 +863,9 @@ mod service_embedding_tests {
             .await
             .expect("bind");
         let base_url = format!("http://{}/v1", listener.local_addr().expect("addr"));
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("OLLAMA_BASE_URL", &base_url);
         env.remove("OLLAMA_EMBEDDING_MODEL");
         let server = tokio::spawn(capture_embedding_request(listener));

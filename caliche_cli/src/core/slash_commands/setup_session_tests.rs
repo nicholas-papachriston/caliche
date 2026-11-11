@@ -10,9 +10,9 @@ use super::{SlashCommandExecutor, SlashCommandResult};
 use crate::core::state::InteractiveState;
 use crate::session::CliSession;
 use crate::storage::{Database, SecureCredentialManager, session_credential_provider};
-use crate::test_env::EnvGuard;
 use caliche::llm::{ProviderType, defaults};
 use caliche::{AgentService, AgentServiceConfig};
+use caliche_test_env::EnvGuard;
 use std::collections::HashSet;
 
 /// Point the databases, `settings.json`, and the (mock) keychain at `home`.
@@ -57,7 +57,9 @@ async fn ollama_session() -> (InteractiveState, AgentService) {
 #[serial_test::serial(env)]
 async fn a_default_chosen_in_setup_is_the_selection_after_a_restart() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_home(&mut env, home.path());
     let database = Database::open().await.expect("database");
     // The last session ended on an auto-detected ollama.
@@ -100,7 +102,9 @@ async fn a_default_chosen_in_setup_is_the_selection_after_a_restart() {
 #[serial_test::serial(env)]
 async fn a_key_entered_in_setup_is_used_by_provider_in_the_same_session() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_home(&mut env, home.path());
     env.remove("OPENROUTER_API_KEY");
     env.remove("OPENROUTER_MODEL");
@@ -136,7 +140,9 @@ async fn a_key_entered_in_setup_is_used_by_provider_in_the_same_session() {
 #[serial_test::serial(env)]
 async fn a_failed_provider_switch_keeps_the_old_provider() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_home(&mut env, home.path());
     env.remove("ANTHROPIC_API_KEY");
     let (mut state, mut service) = ollama_session().await;
@@ -164,7 +170,9 @@ async fn a_failed_provider_switch_keeps_the_old_provider() {
 #[serial_test::serial(env)]
 async fn a_provider_left_out_of_the_build_says_how_to_rebuild() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_home(&mut env, home.path());
     let (mut state, mut service) = ollama_session().await;
 
@@ -191,7 +199,9 @@ async fn a_provider_left_out_of_the_build_says_how_to_rebuild() {
 #[serial_test::serial(env)]
 async fn a_cloud_provider_left_out_of_the_build_says_how_to_rebuild() {
     let home = tempfile::tempdir().expect("tempdir");
-    let mut env = EnvGuard::acquire();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { EnvGuard::acquire() };
     isolated_home(&mut env, home.path());
     let (mut state, mut service) = ollama_session().await;
 

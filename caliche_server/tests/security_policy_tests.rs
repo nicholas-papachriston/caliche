@@ -13,53 +13,53 @@ use tracing::field::Visit;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Metadata, Subscriber};
 
-fn clear_security_env() {
-    unsafe {
-        for key in [
-            "JWT_ENABLED",
-            "JWT_ALGORITHM",
-            "JWT_PUBLIC_KEY",
-            "JWT_PUBLIC_KEY_PATH",
-            "JWT_JWKS_URL",
-            "JWT_AUDIENCE",
-            "JWT_ISSUER",
-            "CALICHE_REQUIRE_AUTH",
-            "CALICHE_ENV",
-            "CALICHE_ALLOW_INSECURE_PRODUCTION",
-            "CALICHE_TRUSTED_PROXY",
-            "CALICHE_TRUSTED_PROXY_CIDRS",
-            "CORS_PERMISSIVE",
-            "API_HOST",
-            "BIND_ADDRESS",
-            "RUST_ENV",
-        ] {
-            std::env::remove_var(key);
-        }
+fn clear_security_env(env: &mut caliche_test_env::EnvGuard) {
+    for key in [
+        "JWT_ENABLED",
+        "JWT_ALGORITHM",
+        "JWT_PUBLIC_KEY",
+        "JWT_PUBLIC_KEY_PATH",
+        "JWT_JWKS_URL",
+        "JWT_AUDIENCE",
+        "JWT_ISSUER",
+        "CALICHE_REQUIRE_AUTH",
+        "CALICHE_ENV",
+        "CALICHE_ALLOW_INSECURE_PRODUCTION",
+        "CALICHE_TRUSTED_PROXY",
+        "CALICHE_TRUSTED_PROXY_CIDRS",
+        "CORS_PERMISSIVE",
+        "API_HOST",
+        "BIND_ADDRESS",
+        "RUST_ENV",
+    ] {
+        env.remove(key);
     }
 }
 
 #[test]
 #[serial]
 fn env_bool_parses_truthy_values() {
-    unsafe {
-        std::env::set_var("CALICHE_TEST_BOOL", "true");
-        assert!(env_bool("CALICHE_TEST_BOOL"));
-        std::env::set_var("CALICHE_TEST_BOOL", "YES");
-        assert!(env_bool("CALICHE_TEST_BOOL"));
-        std::env::set_var("CALICHE_TEST_BOOL", "0");
-        assert!(!env_bool("CALICHE_TEST_BOOL"));
-        std::env::remove_var("CALICHE_TEST_BOOL");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_TEST_BOOL", "true");
+    assert!(env_bool("CALICHE_TEST_BOOL"));
+    env.set("CALICHE_TEST_BOOL", "YES");
+    assert!(env_bool("CALICHE_TEST_BOOL"));
+    env.set("CALICHE_TEST_BOOL", "0");
+    assert!(!env_bool("CALICHE_TEST_BOOL"));
+    env.remove("CALICHE_TEST_BOOL");
     assert!(!env_bool("CALICHE_TEST_BOOL_MISSING"));
 }
 
 #[test]
 #[serial]
 fn require_auth_without_jwt_fails_closed() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("CALICHE_REQUIRE_AUTH", "true");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("CALICHE_REQUIRE_AUTH", "true");
 
     let err = SecurityPolicy::from_env().expect_err("require_auth without JWT should fail");
     assert!(
@@ -71,12 +71,13 @@ fn require_auth_without_jwt_fails_closed() {
 #[test]
 #[serial]
 fn jwt_enabled_without_audience_fails_closed() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "HS256");
-        std::env::set_var("JWT_PUBLIC_KEY", "test-secret-key");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "HS256");
+    env.set("JWT_PUBLIC_KEY", "test-secret-key");
 
     let err = SecurityPolicy::from_env().expect_err("JWT without audience should fail");
     assert!(err.to_string().contains("JWT_AUDIENCE"));
@@ -85,10 +86,11 @@ fn jwt_enabled_without_audience_fails_closed() {
 #[test]
 #[serial]
 fn jwt_enabled_without_key_source_fails_closed() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("JWT_ENABLED", "true");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("JWT_ENABLED", "true");
 
     let err = SecurityPolicy::from_env().expect_err("JWT without keys should fail");
     assert!(err.to_string().contains("no key source provided"));
@@ -97,14 +99,15 @@ fn jwt_enabled_without_key_source_fails_closed() {
 #[test]
 #[serial]
 fn jwt_enabled_with_secret_initializes() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "HS256");
-        std::env::set_var("JWT_PUBLIC_KEY", "test-secret-key");
-        std::env::set_var("JWT_AUDIENCE", "caliche");
-        std::env::set_var("JWT_ISSUER", "caliche");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "HS256");
+    env.set("JWT_PUBLIC_KEY", "test-secret-key");
+    env.set("JWT_AUDIENCE", "caliche");
+    env.set("JWT_ISSUER", "caliche");
 
     let policy = SecurityPolicy::from_env().expect("JWT with inline secret should initialize");
     assert!(policy.jwt_enabled);
@@ -116,18 +119,19 @@ fn jwt_enabled_with_secret_initializes() {
 #[test]
 #[serial]
 fn jwt_init_failure_surfaces_as_policy_error() {
-    clear_security_env();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
     let key_dir = tempfile::tempdir().expect("temp key dir");
-    unsafe {
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "RS256");
-        std::env::set_var(
-            "JWT_PUBLIC_KEY_PATH",
-            key_dir.path().to_string_lossy().to_string(),
-        );
-        std::env::set_var("JWT_AUDIENCE", "caliche");
-        std::env::set_var("JWT_ISSUER", "caliche");
-    }
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "RS256");
+    env.set(
+        "JWT_PUBLIC_KEY_PATH",
+        key_dir.path().to_string_lossy().to_string(),
+    );
+    env.set("JWT_AUDIENCE", "caliche");
+    env.set("JWT_ISSUER", "caliche");
 
     let err = SecurityPolicy::from_env().expect_err("directory key path should fail closed");
     assert!(
@@ -139,20 +143,21 @@ fn jwt_init_failure_surfaces_as_policy_error() {
 #[test]
 #[serial]
 fn session_auth_required_when_require_auth_set() {
-    clear_security_env();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
     let key_file = NamedTempFile::new().expect("temp key file");
     fs::write(key_file.path(), "test-secret-key").expect("write key file");
-    unsafe {
-        std::env::set_var("JWT_ENABLED", "true");
-        std::env::set_var("JWT_ALGORITHM", "HS256");
-        std::env::set_var(
-            "JWT_PUBLIC_KEY_PATH",
-            key_file.path().to_string_lossy().to_string(),
-        );
-        std::env::set_var("CALICHE_REQUIRE_AUTH", "true");
-        std::env::set_var("JWT_AUDIENCE", "caliche");
-        std::env::set_var("JWT_ISSUER", "caliche");
-    }
+    env.set("JWT_ENABLED", "true");
+    env.set("JWT_ALGORITHM", "HS256");
+    env.set(
+        "JWT_PUBLIC_KEY_PATH",
+        key_file.path().to_string_lossy().to_string(),
+    );
+    env.set("CALICHE_REQUIRE_AUTH", "true");
+    env.set("JWT_AUDIENCE", "caliche");
+    env.set("JWT_ISSUER", "caliche");
 
     let policy = SecurityPolicy::from_env().expect("policy should initialize");
     assert!(policy.require_auth);
@@ -162,10 +167,11 @@ fn session_auth_required_when_require_auth_set() {
 #[test]
 #[serial]
 fn trusted_proxy_without_cidrs_fails_closed() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("CALICHE_TRUSTED_PROXY", "true");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("CALICHE_TRUSTED_PROXY", "true");
     let err = SecurityPolicy::from_env().expect_err("trusted proxy without CIDRs");
     assert!(err.to_string().contains("TRUSTED_PROXY_CIDRS"));
 }
@@ -173,12 +179,13 @@ fn trusted_proxy_without_cidrs_fails_closed() {
 #[test]
 #[serial]
 fn cors_permissive_fails_closed_in_production() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("CALICHE_ENV", "production");
-        std::env::set_var("CORS_PERMISSIVE", "true");
-        std::env::remove_var("CALICHE_ALLOW_INSECURE_PRODUCTION");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("CALICHE_ENV", "production");
+    env.set("CORS_PERMISSIVE", "true");
+    env.remove("CALICHE_ALLOW_INSECURE_PRODUCTION");
     let err = caliche_server::security::cors_permissive_from_env()
         .expect_err("permissive CORS in production");
     assert!(err.to_string().contains("CORS_PERMISSIVE"));
@@ -222,10 +229,11 @@ fn open_unspecified_bind_warns_only_without_production_or_require_auth() {
 #[test]
 #[serial]
 fn unspecified_api_host_warns_and_still_starts() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("API_HOST", "0.0.0.0");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("API_HOST", "0.0.0.0");
 
     let hit = capture_unspecified_bind_warn(|| {
         let policy = SecurityPolicy::from_env().expect("open defaults still start");
@@ -238,10 +246,11 @@ fn unspecified_api_host_warns_and_still_starts() {
 #[test]
 #[serial]
 fn unspecified_ipv6_bind_address_warns() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("BIND_ADDRESS", "::");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("BIND_ADDRESS", "::");
 
     let hit = capture_unspecified_bind_warn(|| {
         SecurityPolicy::from_env().expect("open defaults still start");
@@ -252,10 +261,11 @@ fn unspecified_ipv6_bind_address_warns() {
 #[test]
 #[serial]
 fn loopback_api_host_does_not_warn() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("API_HOST", "127.0.0.1");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("API_HOST", "127.0.0.1");
 
     let hit = capture_unspecified_bind_warn(|| {
         SecurityPolicy::from_env().expect("loopback open API still starts");
@@ -266,24 +276,24 @@ fn loopback_api_host_does_not_warn() {
 #[test]
 #[serial]
 fn rust_env_does_not_select_the_production_profile() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("RUST_ENV", "production");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("RUST_ENV", "production");
     SecurityPolicy::from_env().expect("production profile reads CALICHE_ENV");
-    unsafe {
-        std::env::remove_var("RUST_ENV");
-    }
+    env.remove("RUST_ENV");
 }
 
 #[test]
 #[serial]
 fn production_profile_still_fails_closed_when_api_host_is_unspecified() {
-    clear_security_env();
-    unsafe {
-        std::env::set_var("CALICHE_ENV", "production");
-        std::env::set_var("API_HOST", "0.0.0.0");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    clear_security_env(&mut env);
+    env.set("CALICHE_ENV", "production");
+    env.set("API_HOST", "0.0.0.0");
 
     let hit = capture_unspecified_bind_warn(|| {
         let err = SecurityPolicy::from_env().expect_err("production without JWT");

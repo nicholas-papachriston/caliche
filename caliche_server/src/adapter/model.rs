@@ -76,47 +76,10 @@ mod tests {
     const STARTED_MODEL: &str = "claude-sonnet-4";
     const SWITCHED_MODEL: &str = "z-ai/glm-5.3";
 
-    struct Keys {
-        anthropic: Option<String>,
-        openrouter: Option<String>,
-    }
-
-    impl Keys {
-        #[expect(
-            unsafe_code,
-            reason = "tests set provider API keys so model retarget does not dial a live provider"
-        )]
-        fn install() -> Self {
-            let saved = Self {
-                anthropic: std::env::var("ANTHROPIC_API_KEY").ok(),
-                openrouter: std::env::var("OPENROUTER_API_KEY").ok(),
-            };
-            unsafe {
-                std::env::set_var("ANTHROPIC_API_KEY", "test-key-for-model-switch");
-                std::env::set_var("OPENROUTER_API_KEY", "test-key-for-model-switch");
-            }
-            saved
-        }
-    }
-
-    impl Drop for Keys {
-        fn drop(&mut self) {
-            restore("ANTHROPIC_API_KEY", self.anthropic.take());
-            restore("OPENROUTER_API_KEY", self.openrouter.take());
-        }
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "tests restore provider API keys after model retarget"
-    )]
-    fn restore(name: &str, previous: Option<String>) {
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
+    /// Placeholder provider keys, so a model retarget never dials a live provider.
+    fn install_keys(env: &mut caliche_test_env::EnvGuard) {
+        env.set("ANTHROPIC_API_KEY", "test-key-for-model-switch");
+        env.set("OPENROUTER_API_KEY", "test-key-for-model-switch");
     }
 
     async fn session_on_claude() -> (Arc<ApiAdapter>, String) {
@@ -153,7 +116,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn turn_body_model_retargets_the_same_session() {
-        let _keys = Keys::install();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        install_keys(&mut env);
         let (adapter, session_id) = session_on_claude().await;
         let request: ExecuteTurnRequest = serde_json::from_str(
             r#"{"input":"who are you?","provider":"openrouter","model":"z-ai/glm-5.3"}"#,
@@ -186,7 +152,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn turn_body_without_model_keeps_the_remote_model() {
-        let _keys = Keys::install();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        install_keys(&mut env);
         let (adapter, session_id) = session_on_claude().await;
         let request: ExecuteTurnRequest =
             serde_json::from_str(r#"{"input":"who are you?"}"#).expect("bare turn json");
@@ -218,7 +187,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn turn_body_context_window_sets_the_session_window() {
-        let _keys = Keys::install();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        install_keys(&mut env);
         let (adapter, session_id) = session_on_claude().await;
         let request: ExecuteTurnRequest =
             serde_json::from_str(r#"{"input":"who are you?","context_window":16384}"#)

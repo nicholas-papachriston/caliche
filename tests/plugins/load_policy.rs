@@ -8,48 +8,32 @@ fn default_is_warn() {
 
 #[test]
 #[serial]
-#[expect(
-    unsafe_code,
-    clippy::disallowed_methods,
-    reason = "test sets and restores process env vars"
-)]
 fn from_env_defaults_to_warn_when_unset() {
-    unsafe {
-        std::env::remove_var("CALICHE_PLUGIN_LOAD_POLICY");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.remove("CALICHE_PLUGIN_LOAD_POLICY");
     assert_eq!(PluginLoadPolicy::from_env(), PluginLoadPolicy::Warn);
 }
 
 #[test]
 #[serial]
-#[expect(
-    unsafe_code,
-    clippy::disallowed_methods,
-    reason = "test sets and restores process env vars"
-)]
 fn from_env_parses_fail() {
-    unsafe {
-        std::env::set_var("CALICHE_PLUGIN_LOAD_POLICY", "fail");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_PLUGIN_LOAD_POLICY", "fail");
     assert_eq!(PluginLoadPolicy::from_env(), PluginLoadPolicy::Fail);
-    unsafe {
-        std::env::remove_var("CALICHE_PLUGIN_LOAD_POLICY");
-    }
+    env.remove("CALICHE_PLUGIN_LOAD_POLICY");
 }
 
 #[test]
 #[serial]
-#[expect(
-    unsafe_code,
-    clippy::disallowed_methods,
-    reason = "test sets and restores process env vars"
-)]
 fn from_env_unknown_values_default_to_warn() {
-    unsafe {
-        std::env::set_var("CALICHE_PLUGIN_LOAD_POLICY", "invalid");
-    }
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_PLUGIN_LOAD_POLICY", "invalid");
     assert_eq!(PluginLoadPolicy::from_env(), PluginLoadPolicy::Warn);
-    unsafe {
-        std::env::remove_var("CALICHE_PLUGIN_LOAD_POLICY");
-    }
+    env.remove("CALICHE_PLUGIN_LOAD_POLICY");
 }

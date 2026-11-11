@@ -62,7 +62,11 @@ async fn insert_running(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn planted_tools_on_path_never_run() -> anyhow::Result<()> {
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
     let planted = tempfile::tempdir().unwrap();
     let marker = planted.path().join("ran");
     plant(planted.path(), &marker)?;
@@ -71,15 +75,7 @@ async fn planted_tools_on_path_never_run() -> anyhow::Result<()> {
         planted.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    // SAFETY: the only test in this binary, set before any thread reads PATH.
-    #[expect(
-        unsafe_code,
-        clippy::disallowed_methods,
-        reason = "the test needs a planted tool first on PATH"
-    )]
-    unsafe {
-        std::env::set_var("PATH", path);
-    }
+    env.set("PATH", path);
 
     // The plant works: a bare lookup runs it.
     std::process::Command::new("kill")

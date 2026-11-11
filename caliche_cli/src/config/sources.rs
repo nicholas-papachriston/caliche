@@ -665,7 +665,9 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn env_config_source_reads_agent_provider_and_model() -> anyhow::Result<()> {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("AGENT_PROVIDER", "test_provider");
         env.set("AGENT_MODEL", "test_model");
 
@@ -682,7 +684,9 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn env_config_source_reads_default_provider_alias() -> anyhow::Result<()> {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("AGENT_PROVIDER");
         env.set("DEFAULT_PROVIDER", "openai");
         let config = EnvConfigSource::new()
@@ -696,7 +700,9 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn env_config_source_ignores_agent_image_provider() -> anyhow::Result<()> {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("CALICHE_IMAGE_PROVIDER");
         env.set("AGENT_IMAGE_PROVIDER", "openai");
         let loaded = EnvConfigSource::new().load().await;
@@ -963,7 +969,9 @@ extensions = ["rs"]
     #[test]
     #[serial]
     fn explicit_remote_config_url_wins_over_git_origin() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set(
             "CALICHE_REMOTE_CONFIG_URL",
             "https://example.invalid/.well-known/caliche",
@@ -981,7 +989,9 @@ extensions = ["rs"]
     #[test]
     #[serial]
     fn non_http_remote_config_env_disables_inferred_fetch() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_REMOTE_CONFIG_URL", "off");
         let url = RemoteConfigSource::remote_config_url();
         drop(env);
@@ -991,7 +1001,9 @@ extensions = ["rs"]
     #[tokio::test]
     #[serial]
     async fn inferred_git_origin_does_not_block_remote_config_load() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("CALICHE_REMOTE_CONFIG_URL");
         let started = std::time::Instant::now();
         let loaded = RemoteConfigSource::new()

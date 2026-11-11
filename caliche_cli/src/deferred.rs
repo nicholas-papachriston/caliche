@@ -291,64 +291,76 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test]
     #[serial_test::serial(env)]
-    async fn polling_never_waits_on_the_embedding_provider() {
+    fn polling_never_waits_on_the_embedding_provider() {
         let home = tempfile::tempdir().expect("home");
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(workspace.path().join("notes.md"), "# Notes\n").expect("file");
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial, and it changes the environment before
+        // the runtime starts its worker threads and restores it after they stop.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("HOME", home.path());
         env.set(
             caliche_server::paths::CONFIG_DIR_ENV,
             home.path().join("config"),
         );
-        let mut service = caliche::AgentService::from_config(
-            caliche::AgentServiceConfig::new()
-                .with_provider(
-                    Some(caliche::llm::ProviderType::Ollama),
-                    Some("gpt-oss:20b".to_string()),
-                )
-                .with_base_url(Some("http://127.0.0.1:9/v1".to_string()))
-                .with_tool_names(Vec::new()),
-        )
-        .await
-        .expect("service");
-        service.set_embedding_selection(
-            Some(std::sync::Arc::new(SlowEmbedding {
-                delay: Duration::from_secs(2),
-            })),
-            Some("slow".to_string()),
-            None,
-        );
-        // Disk persistence, the default: building the store probes the provider.
-        let mut deferred = DeferredWorkspaceRag::spawn_without_discovery(
-            WorkspaceIndexerConfig::new(workspace.path().to_path_buf()),
-        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let mut service = caliche::AgentService::from_config(
+                caliche::AgentServiceConfig::new()
+                    .with_provider(
+                        Some(caliche::llm::ProviderType::Ollama),
+                        Some("gpt-oss:20b".to_string()),
+                    )
+                    .with_base_url(Some("http://127.0.0.1:9/v1".to_string()))
+                    .with_tool_names(Vec::new()),
+            )
+            .await
+            .expect("service");
+            service.set_embedding_selection(
+                Some(std::sync::Arc::new(SlowEmbedding {
+                    delay: Duration::from_secs(2),
+                })),
+                Some("slow".to_string()),
+                None,
+            );
+            // Disk persistence, the default: building the store probes the provider.
+            let mut deferred = DeferredWorkspaceRag::spawn_without_discovery(
+                WorkspaceIndexerConfig::new(workspace.path().to_path_buf()),
+            );
 
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut polls = Vec::new();
-        let status = loop {
-            let started = Instant::now();
-            let status = deferred.poll_apply(&mut service).await;
-            polls.push(started.elapsed());
-            if let Some(status) = status {
-                break status;
-            }
-            assert!(Instant::now() < deadline, "workspace RAG never attached");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut polls = Vec::new();
+            let status = loop {
+                let started = Instant::now();
+                let status = deferred.poll_apply(&mut service).await;
+                polls.push(started.elapsed());
+                if let Some(status) = status {
+                    break status;
+                }
+                assert!(Instant::now() < deadline, "workspace RAG never attached");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
 
-        let slowest = polls.iter().max().copied().unwrap_or_default();
-        assert!(
-            slowest < Duration::from_secs(1),
-            "a poll waited {slowest:?} on the embedding provider"
-        );
-        assert!(
-            polls.len() > 1,
-            "the first poll attached: it waited for the probe"
-        );
-        assert_eq!(status, "Indexing workspace in background.");
-        assert!(service.has_workspace_rag());
+            let slowest = polls.iter().max().copied().unwrap_or_default();
+            assert!(
+                slowest < Duration::from_secs(1),
+                "a poll waited {slowest:?} on the embedding provider"
+            );
+            assert!(
+                polls.len() > 1,
+                "the first poll attached: it waited for the probe"
+            );
+            assert_eq!(status, "Indexing workspace in background.");
+            assert!(service.has_workspace_rag());
+        });
+        // Stop the worker threads before the guard restores the environment.
+        drop(runtime);
+        drop(env);
     }
 }

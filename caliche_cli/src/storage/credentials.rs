@@ -1336,7 +1336,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn no_keyring_env_disables_prompts() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_NO_KEYRING", "1");
         env.remove("CALICHE_USE_KEYRING");
         assert!(!keyring_prompts_allowed());
@@ -1346,7 +1348,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn use_keyring_env_forces_prompts_on() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("CALICHE_NO_KEYRING");
         env.set("CALICHE_USE_KEYRING", "1");
         assert!(keyring_prompts_allowed());

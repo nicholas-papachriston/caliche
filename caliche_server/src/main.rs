@@ -417,44 +417,26 @@ mod bind_default_tests {
 mod env_file_tests {
     use super::{Args, PersistedBoot, load_env_before_runtime, select_boot_from_env};
     use clap::Parser;
-    use std::ffi::OsString;
 
     const NAMES: [&str; 2] = ["DEFAULT_PROVIDER", "OLLAMA_BASE_URL"];
     const FILE: &str = "DEFAULT_PROVIDER=ollama\nOLLAMA_BASE_URL=http://file.invalid:11434\n";
 
-    /// Clears [`NAMES`] and `AGENT_PROVIDER`, and puts back their values and
-    /// the working directory on drop.
+    /// Clears [`NAMES`] and `AGENT_PROVIDER` through the guard, which puts
+    /// back their values (also the ones the env file loader sets) on drop,
+    /// and puts back the working directory.
     struct EnvScope {
-        saved: Vec<(&'static str, Option<OsString>)>,
+        env: caliche_test_env::EnvGuard,
         cwd: std::path::PathBuf,
     }
 
     impl EnvScope {
-        fn new() -> Self {
-            let mut scope = Self {
-                saved: Vec::new(),
-                cwd: std::env::current_dir().expect("cwd"),
-            };
+        fn new(mut env: caliche_test_env::EnvGuard) -> Self {
             for name in NAMES.into_iter().chain(["AGENT_PROVIDER"]) {
-                scope.saved.push((name, std::env::var_os(name)));
-                scope.write(name, None);
+                env.remove(name);
             }
-            scope
-        }
-
-        fn write(&self, name: &str, value: Option<&str>) {
-            // SAFETY: every test in this binary that touches the environment
-            // is `serial(env)`, and the other tests do not read it.
-            #[expect(
-                unsafe_code,
-                clippy::disallowed_methods,
-                reason = "env-file tests set and restore process env under serial(env)"
-            )]
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
+            Self {
+                env,
+                cwd: std::env::current_dir().expect("cwd"),
             }
         }
     }
@@ -462,20 +444,6 @@ mod env_file_tests {
     impl Drop for EnvScope {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.cwd);
-            for (name, value) in std::mem::take(&mut self.saved) {
-                // SAFETY: as in `write`.
-                #[expect(
-                    unsafe_code,
-                    clippy::disallowed_methods,
-                    reason = "env-file tests set and restore process env under serial(env)"
-                )]
-                unsafe {
-                    match value {
-                        Some(value) => std::env::set_var(name, value),
-                        None => std::env::remove_var(name),
-                    }
-                }
-            }
         }
     }
 
@@ -489,7 +457,10 @@ mod env_file_tests {
     #[test]
     #[serial_test::serial(env)]
     fn dotenv_in_the_working_directory_is_ignored() {
-        let _scope = EnvScope::new();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial(env), like every test in this binary
+        // that touches the environment, and it starts no thread.
+        let _scope = EnvScope::new(unsafe { caliche_test_env::EnvGuard::acquire() });
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join(".env"), FILE).expect("write .env");
         std::env::set_current_dir(dir.path()).expect("chdir");
@@ -504,7 +475,10 @@ mod env_file_tests {
     #[test]
     #[serial_test::serial(env)]
     fn env_file_flag_is_applied() {
-        let _scope = EnvScope::new();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial(env), like every test in this binary
+        // that touches the environment, and it starts no thread.
+        let _scope = EnvScope::new(unsafe { caliche_test_env::EnvGuard::acquire() });
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("server.env");
         std::fs::write(&path, FILE).expect("write env file");
@@ -523,9 +497,14 @@ mod env_file_tests {
     #[test]
     #[serial_test::serial(env)]
     fn shell_value_beats_the_env_file() {
-        let scope = EnvScope::new();
-        scope.write("DEFAULT_PROVIDER", Some("anthropic"));
-        scope.write("OLLAMA_BASE_URL", Some("http://shell.invalid:11434"));
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial(env), like every test in this binary
+        // that touches the environment, and it starts no thread.
+        let mut scope = EnvScope::new(unsafe { caliche_test_env::EnvGuard::acquire() });
+        scope.env.set("DEFAULT_PROVIDER", "anthropic");
+        scope
+            .env
+            .set("OLLAMA_BASE_URL", "http://shell.invalid:11434");
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("server.env");
         std::fs::write(&path, FILE).expect("write env file");

@@ -133,7 +133,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn deferred_env_parses_truthy_values() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         assert!(deferred_ann_index_enabled_from_env());
         let config = indexed_backend_config_from_env();
@@ -144,7 +146,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn deferred_env_reads_search_flush_and_tail_cap() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         env.set("CALICHE_DEFERRED_SEARCH_FLUSH_THRESHOLD", "512");
         env.set("CALICHE_DEFERRED_FLUSH_THRESHOLD", "64");
@@ -158,7 +162,9 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn resolve_dimension_uses_probe_then_env_default() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         env.set("VECTOR_BACKEND_DIMENSION", "384");
         assert_eq!(resolve_ann_index_dimension(Some(768)), Some(768));
@@ -168,7 +174,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn wrap_is_noop_when_env_disabled() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.remove("CALICHE_DEFERRED_ANN_INDEX");
         let inner: Arc<dyn Backend + Send + Sync> = Arc::new(MemoryBackend::new());
         let wrapped = wrap_with_deferred_ann_index(inner, 8, None).expect("wrap");
@@ -178,7 +186,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env)]
     async fn wrap_adds_deferred_index_layer_when_enabled() {
-        let mut env = crate::test_env::EnvGuard::acquire();
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
         env.set("CALICHE_DEFERRED_ANN_INDEX", "true");
         let inner: Arc<dyn Backend + Send + Sync> = Arc::new(MemoryBackend::new());
         let wrapped = wrap_with_deferred_ann_index(inner, 4, None).expect("wrap");
