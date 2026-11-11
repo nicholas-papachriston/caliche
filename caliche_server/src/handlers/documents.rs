@@ -559,7 +559,7 @@ async fn load_csv_documents(
     content_column: Option<String>,
     metadata_columns: Option<Vec<String>>,
 ) -> Result<Vec<Document>, (StatusCode, String)> {
-    let content = get_content_from_location(location)?;
+    let content = get_content_from_location(location).await?;
     let temp_file = write_temp_upload(&content, "csv")?;
     let mut loader = CsvLoader::new(temp_file_path_str(&temp_file)?);
     if let Some(col) = content_column {
@@ -578,7 +578,7 @@ async fn load_json_documents(
     location: DocumentLocation,
     content_key: Option<String>,
 ) -> Result<Vec<Document>, (StatusCode, String)> {
-    let content = get_content_from_location(location)?;
+    let content = get_content_from_location(location).await?;
     let temp_file = write_temp_upload(&content, "json")?;
     let mut loader = JsonLoader::new(temp_file_path_str(&temp_file)?);
     if let Some(key) = content_key {
@@ -593,7 +593,7 @@ async fn load_json_documents(
 async fn load_markdown_documents(
     location: DocumentLocation,
 ) -> Result<Vec<Document>, (StatusCode, String)> {
-    let content = get_content_from_location(location)?;
+    let content = get_content_from_location(location).await?;
     let temp_file = write_temp_upload(&content, "md")?;
     let loader = MarkdownLoader::new(temp_file_path_str(&temp_file)?);
     let docs = loader
@@ -608,7 +608,7 @@ async fn load_markdown_documents(
 async fn load_html_documents(
     location: DocumentLocation,
 ) -> Result<Vec<Document>, (StatusCode, String)> {
-    let content = get_content_from_location(location)?;
+    let content = get_content_from_location(location).await?;
     let temp_file = write_temp_upload(&content, "html")?;
     let loader = HtmlLoader::new(temp_file_path_str(&temp_file)?);
     let docs = loader.load().await.map_err(|e| map_load_err("HTML", e))?;
@@ -617,19 +617,135 @@ async fn load_html_documents(
 }
 
 #[cfg(feature = "document-loaders")]
-fn get_content_from_location(location: DocumentLocation) -> Result<String, (StatusCode, String)> {
+async fn get_content_from_location(
+    location: DocumentLocation,
+) -> Result<String, (StatusCode, String)> {
     match location {
         DocumentLocation::Path { path } => {
-            let safe_path =
-                crate::handlers::files::validate_workspace_path(std::path::Path::new(&path))
-                    .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
-            std::fs::read_to_string(&safe_path).map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Failed to read file {}: {}", safe_path.display(), e),
-                )
+            let workspace = crate::handlers::files::get_workspace_root();
+            tokio::task::spawn_blocking(move || {
+                read_document_text(&workspace, std::path::Path::new(&path))
+            })
+            .await
+            .unwrap_or_else(|join| {
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Document read task failed: {join}"),
+                ))
             })
         }
         DocumentLocation::Content { content } => Ok(content),
+    }
+}
+
+/// Read a document inside `workspace` as UTF-8 text (blocking).
+///
+/// The read is the file browser's: no link below the workspace is followed,
+/// a FIFO or other special file is refused without blocking, and the size is
+/// capped.
+#[cfg(feature = "document-loaders")]
+fn read_document_text(
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<String, (StatusCode, String)> {
+    let (target, bytes) = crate::handlers::files::read_workspace_bytes(workspace, path)?;
+    String::from_utf8(bytes).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to read file {}: {e}", target.display()),
+        )
+    })
+}
+
+#[cfg(all(test, feature = "document-loaders"))]
+mod tests {
+    use super::read_document_text;
+    use axum::http::StatusCode;
+    use std::path::{Path, PathBuf};
+
+    fn workspace() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("workspace");
+        let root = dir.path().canonicalize().expect("canonical workspace");
+        (dir, root)
+    }
+
+    #[test]
+    fn a_document_in_the_workspace_is_read() {
+        let (_dir, root) = workspace();
+        std::fs::write(root.join("doc.md"), "# Title\n").expect("doc");
+
+        assert_eq!(
+            read_document_text(&root, Path::new("doc.md")),
+            Ok("# Title\n".to_string())
+        );
+    }
+
+    #[test]
+    fn a_document_over_the_limit_is_400_too_large() {
+        let (_dir, root) = workspace();
+        std::fs::write(root.join("big.md"), vec![b'a'; 1024 * 1024 + 1]).expect("big");
+
+        assert_eq!(
+            read_document_text(&root, Path::new("big.md")),
+            Err((
+                StatusCode::BAD_REQUEST,
+                "File is too large (over 1048576 bytes). Maximum is 1048576 bytes.".to_string()
+            ))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let (_dir, root) = workspace();
+        let made = std::process::Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .expect("mkfifo");
+        assert!(made.success(), "mkfifo failed");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let ws = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(read_document_text(&ws, Path::new("pipe")));
+        });
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO must be refused, not read until a writer appears");
+
+        assert_eq!(
+            result,
+            Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parent_swapped_for_a_symlink_is_403() {
+        let (_dir, root) = workspace();
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("doc.md"), "secret").expect("outside doc");
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        std::fs::write(root.join("sub/doc.md"), "inside").expect("inside doc");
+
+        let ws = root.clone();
+        let target = outside.path().to_path_buf();
+        crate::handlers::files::AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(move |_validated: &Path| {
+                std::fs::rename(ws.join("sub"), ws.join("sub.moved")).expect("move sub");
+                std::os::unix::fs::symlink(&target, ws.join("sub")).expect("symlink");
+            }));
+        });
+
+        assert_eq!(
+            read_document_text(&root, Path::new("sub/doc.md")),
+            Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "Failed to open file: refusing to follow symlink at 'sub' in '{}'",
+                    root.join("sub/doc.md").display()
+                )
+            ))
+        );
     }
 }

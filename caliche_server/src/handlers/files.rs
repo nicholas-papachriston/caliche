@@ -81,16 +81,10 @@ fn is_file_browsing_enabled() -> bool {
 }
 
 /// Get the base path for file browsing (workspace root)
-fn get_workspace_root() -> PathBuf {
+pub(crate) fn get_workspace_root() -> PathBuf {
     std::env::var("CALICHE_WORKSPACE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
-
-/// Validate that a path is within the workspace.
-#[cfg(feature = "document-loaders")]
-pub(crate) fn validate_workspace_path(path: &Path) -> Result<PathBuf> {
-    resolve_in_workspace(&get_workspace_root(), path).map(|(_, target)| target)
 }
 
 /// The canonical workspace and the canonical `path` inside it.
@@ -291,15 +285,54 @@ pub async fn read_file_handler(
 
 /// Read a file inside `workspace` for the file browser.
 ///
-/// The path is validated, then opened below the canonical workspace without
-/// following any link, so a directory swapped for a symlink after validation
-/// is refused with 403. At most `MAX_FILE_SIZE + 1` bytes are read, so a file
-/// over the limit (or one that grew after a size check) is refused with 400.
+/// The bytes come from [`read_workspace_bytes`]; this adds the UTF-8 check
+/// and the line limit.
 fn read_workspace_file(
     workspace: &Path,
     path: &Path,
     max_lines: usize,
 ) -> std::result::Result<ReadFileResponse, (StatusCode, String)> {
+    let (target, bytes) = read_workspace_bytes(workspace, path)?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let content = String::from_utf8(bytes).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read file (may be binary): {e}"),
+        )
+    })?;
+
+    // Apply line limit
+    let lines: Vec<&str> = content.lines().collect();
+    let line_count = lines.len();
+    let truncated = line_count > max_lines;
+
+    let final_content = if truncated {
+        lines[..max_lines].join("\n")
+    } else {
+        content
+    };
+
+    Ok(ReadFileResponse {
+        path: target.to_string_lossy().to_string(),
+        content: final_content,
+        size,
+        truncated,
+        line_count,
+    })
+}
+
+/// Read a regular file inside `workspace`, at most `MAX_FILE_SIZE` bytes.
+///
+/// The path is validated, then opened below the canonical workspace without
+/// following any link, so a directory swapped for a symlink after validation
+/// is refused with 403. A FIFO or other special file is refused with 400
+/// without blocking. At most `MAX_FILE_SIZE + 1` bytes are read, so a file
+/// over the limit (or one that grew after a size check) is refused with 400.
+/// Blocking: call it off the async runtime.
+pub(crate) fn read_workspace_bytes(
+    workspace: &Path,
+    path: &Path,
+) -> std::result::Result<(PathBuf, Vec<u8>), (StatusCode, String)> {
     let (root, target) = resolve_in_workspace(workspace, path)
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     // A by-path check only picks the 400 message for a directory; the open
@@ -336,8 +369,7 @@ fn read_workspace_file(
                 format!("Failed to read file: {e}"),
             )
         })?;
-    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if size > MAX_FILE_SIZE {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE_SIZE {
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -345,37 +377,13 @@ fn read_workspace_file(
             ),
         ));
     }
-    let content = String::from_utf8(bytes).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to read file (may be binary): {e}"),
-        )
-    })?;
-
-    // Apply line limit
-    let lines: Vec<&str> = content.lines().collect();
-    let line_count = lines.len();
-    let truncated = line_count > max_lines;
-
-    let final_content = if truncated {
-        lines[..max_lines].join("\n")
-    } else {
-        content
-    };
-
-    Ok(ReadFileResponse {
-        path: target.to_string_lossy().to_string(),
-        content: final_content,
-        size,
-        truncated,
-        line_count,
-    })
+    Ok((target, bytes))
 }
 
 #[cfg(test)]
 thread_local! {
     /// Test hook that runs between validation and open, to swap a component.
-    static AFTER_VALIDATE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+    pub(crate) static AFTER_VALIDATE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
