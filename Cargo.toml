@@ -406,11 +406,11 @@ session-tools = []
 scheduling = ["dep:cron", "reqwest"]
 
 # Sandbox isolation (noop backend; use sandbox-docker for Docker)
-sandbox = ["dep:caliche_sandbox"]
+sandbox = []
 sandbox-docker = ["sandbox", "caliche_sandbox/docker"]
 
 # AgentFS integration (SQLite-backed agent filesystem, KV, tool audit trail)
-agentfs = ["dep:agentfs-sdk", "dep:caliche_sandbox", "caliche_sandbox/agentfs"]
+agentfs = ["dep:agentfs-sdk", "caliche_sandbox/agentfs"]
 
 # Tool tiers
 tools-core = ["tools-calculator", "tools-file", "tools-data"]
@@ -628,10 +628,11 @@ caliche_contracts = { path = "crates/caliche_contracts" }
 caliche_orchestration = { path = "crates/caliche_orchestration" }
 # Unified policy types (floor, fail-closed parse, shadow-only compare). No engine dependency.
 caliche_policy = { path = "crates/caliche_policy" }
+# In-repo, always on: discovery reads workspace files through its no-link walk.
+caliche_sandbox = { path = "caliche_sandbox" }
 caliche_mcp = { path = "crates/caliche_mcp", default-features = false, optional = true }
 
 # Optional (tools / RAG / parsing)
-caliche_sandbox = { path = "caliche_sandbox", optional = true }
 agentfs-sdk = { version = "0.6.2", optional = true }
 candle-core = { version = "0.9", optional = true }
 candle-transformers = { version = "0.9", optional = true }

@@ -16,7 +16,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Metadata for a custom command (parsed from YAML front matter)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -166,9 +166,15 @@ impl CommandRegistry {
         }
 
         // Load from project directory (overrides user commands with same name)
-        if let Some(project_dir) = Self::project_commands_dir() {
-            if project_dir.exists() {
-                Self::load_from_directory(&mut registry, &project_dir, "project").await?;
+        if let Some(cwd) = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cwd.canonicalize().ok())
+        {
+            let commands = tokio::task::spawn_blocking(move || load_project_commands(&cwd))
+                .await
+                .map_err(|e| anyhow::anyhow!("project command load failed: {e}"))?;
+            for cmd in commands {
+                registry.commands.insert(cmd.name.clone(), cmd);
             }
         }
 
@@ -208,7 +214,11 @@ impl CommandRegistry {
         }
     }
 
-    /// Load commands from a specific directory
+    /// Load commands from a directory under the user's home or config dir.
+    ///
+    /// This follows links: users symlink their own dotfiles there, and the
+    /// sandbox cannot write to it. Project commands go through
+    /// [`load_project_commands`] instead.
     async fn load_from_directory(registry: &mut Self, dir: &PathBuf, prefix: &str) -> Result<()> {
         let mut entries = tokio::fs::read_dir(dir).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -306,6 +316,58 @@ impl CommandRegistry {
     }
 }
 
+/// Load `.caliche/commands/*.md` below the canonical working directory `cwd`
+/// without following any link.
+///
+/// A cloned repository or a sandboxed command can plant a link there that
+/// would pull an outside file into a prompt, so a linked directory or file
+/// is skipped with one warning naming the path and the reason. A missing
+/// directory is skipped quietly.
+fn load_project_commands(cwd: &Path) -> Vec<CustomCommand> {
+    let dir = cwd.join(".caliche").join("commands");
+    let entries = match caliche_sandbox::list_dir_beneath(cwd, &dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), "skipping project commands: {e}");
+            return Vec::new();
+        }
+    };
+    let mut commands = Vec::new();
+    for entry in entries {
+        let path = dir.join(&entry.name);
+        let Some(stem) = path
+            .extension()
+            .filter(|e| *e == "md")
+            .and_then(|_| path.file_stem())
+            .and_then(|s| s.to_str())
+        else {
+            continue;
+        };
+        // Skip files starting with underscore (private commands)
+        if stem.starts_with('_') {
+            continue;
+        }
+        if entry.kind != caliche_sandbox::EntryKind::File {
+            tracing::warn!(path = %path.display(), "skipping project command: it is not a regular file");
+            continue;
+        }
+        let Some(content) = caliche::discovery::auto::read_workspace_text(cwd, &path) else {
+            continue;
+        };
+        match CustomCommand::parse(stem, &content, path.clone()) {
+            Ok(mut cmd) => {
+                cmd.name = format!("project:{stem}");
+                commands.push(cmd);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse custom command {}: {}", path.display(), e);
+            }
+        }
+    }
+    commands
+}
+
 /// Create an example custom command file
 pub async fn create_example_command() -> Result<PathBuf> {
     let commands_dir = CommandRegistry::user_commands_dir()?;
@@ -393,5 +455,62 @@ Do something useful."#;
 
         let rendered = cmd.render_prompt(&["test.rs"]);
         assert_eq!(rendered, "Analyze test.rs and test.rs");
+    }
+}
+
+/// Project commands are read without following links.
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    const OUTSIDE: &str = "OUTSIDE-SECRET-TEXT";
+
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn canonical_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().canonicalize().expect("canonical temp dir");
+        (dir, path)
+    }
+
+    fn names_and_prompts(commands: &[CustomCommand]) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = commands
+            .iter()
+            .map(|c| (c.name.clone(), c.prompt.clone()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_symlinked_project_command_file_is_skipped() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        let dir = ws.join(".caliche/commands");
+        fs::create_dir_all(&dir).expect("commands dir");
+        fs::write(dir.join("ok.md"), "run the tests").expect("ok.md");
+        symlink(outside.join("secret.md"), dir.join("evil.md")).expect("symlink");
+
+        let commands = load_project_commands(&ws);
+
+        assert_eq!(
+            names_and_prompts(&commands),
+            vec![("project:ok".to_string(), "run the tests".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_symlinked_project_commands_dir_is_skipped() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        fs::create_dir_all(ws.join(".caliche")).expect(".caliche");
+        symlink(&outside, ws.join(".caliche/commands")).expect("symlink");
+
+        let commands = load_project_commands(&ws);
+
+        assert_eq!(names_and_prompts(&commands), Vec::new());
     }
 }

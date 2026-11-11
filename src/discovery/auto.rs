@@ -200,12 +200,25 @@ fn env_is_true(name: &str) -> bool {
 }
 
 pub fn discover_all(options: &DiscoveryOptions) -> DiscoverySnapshot {
-    let cwd = match std::env::current_dir() {
+    // Canonical, so the no-link walk below the workspace starts from a path
+    // with no link of its own (macOS `/tmp` is one).
+    let cwd = match std::env::current_dir().and_then(|cwd| cwd.canonicalize()) {
         Ok(v) => v,
         Err(_) => return DiscoverySnapshot::default(),
     };
-    let repo_root = find_git_root(&cwd);
     let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
+    discover_in(&cwd, home_dir.as_deref(), options)
+}
+
+/// Discover from the canonical working directory `cwd`, its repository root,
+/// and `home_dir`.
+fn discover_in(
+    cwd: &Path,
+    home_dir: Option<&Path>,
+    options: &DiscoveryOptions,
+) -> DiscoverySnapshot {
+    let cwd = cwd.to_path_buf();
+    let repo_root = find_git_root(&cwd);
 
     let mut out = DiscoverySnapshot::default();
     if options.rules {
@@ -261,35 +274,107 @@ fn classify_scope(
     SourceScope::SystemDefault
 }
 
+/// A discovered file and the workspace base it must stay below, if any.
+///
+/// Files under the working directory and the repository root are read
+/// without following any link below that base: a cloned repository or a
+/// sandboxed command can plant a link there that would pull an outside file
+/// into the prompt or an MCP config. Files under the home directory keep
+/// following links (`confine` is `None`): users symlink their own dotfiles
+/// and skills there, and the sandbox cannot write to it.
+struct Candidate {
+    path: PathBuf,
+    confine: Option<PathBuf>,
+}
+
 fn collect_candidates<F>(
     cwd: &Path,
     repo_root: Option<&Path>,
     home_dir: Option<&Path>,
     candidates_fn: F,
-) -> Vec<PathBuf>
+) -> Vec<Candidate>
 where
     F: Fn(&Path) -> Vec<PathBuf>,
 {
     let mut candidates = Vec::new();
-    candidates.extend(candidates_fn(cwd));
+    let mut add = |base: &Path, confine: bool| {
+        for path in candidates_fn(base) {
+            candidates.push(Candidate {
+                path,
+                confine: confine.then(|| base.to_path_buf()),
+            });
+        }
+    };
+    add(cwd, true);
     if let Some(root) = repo_root
         && root != cwd
     {
-        candidates.extend(candidates_fn(root));
+        add(root, true);
     }
     if let Some(home) = home_dir {
-        candidates.extend(candidates_fn(home));
+        add(home, false);
     }
     candidates
 }
 
-fn read_file_or_skip(path: &Path, scanned_paths: &mut Vec<PathBuf>) -> Option<String> {
-    scanned_paths.push(path.to_path_buf());
-    let content = std::fs::read_to_string(path).ok()?;
+/// Largest discovered file that is read; a bigger one is skipped.
+const MAX_DISCOVERED_FILE_BYTES: u64 = 1024 * 1024;
+
+fn read_file_or_skip(candidate: &Candidate, scanned_paths: &mut Vec<PathBuf>) -> Option<String> {
+    let path = &candidate.path;
+    scanned_paths.push(path.clone());
+    let content = match &candidate.confine {
+        Some(base) => read_workspace_text(base, path)?,
+        None => std::fs::read_to_string(path).ok()?,
+    };
     if content.trim().is_empty() {
         return None;
     }
     Some(content)
+}
+
+/// Read the text file `path` below the canonical workspace `base`, following
+/// no link.
+///
+/// A missing file is skipped quietly. A file that is a link, sits below a
+/// link, is not a regular file, is over 1 MiB, or is not UTF-8 is skipped
+/// with one warning naming the path and the reason.
+#[must_use]
+pub fn read_workspace_text(base: &Path, path: &Path) -> Option<String> {
+    use std::io::Read;
+    let skip = |reason: String| {
+        tracing::warn!(path = %path.display(), "skipping workspace file: {reason}");
+        None
+    };
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = base;
+        return skip("no-link reads are not supported on this platform".to_string());
+    }
+    #[cfg(any(unix, windows))]
+    let file = match caliche_sandbox::open_file_beneath(base, path) {
+        Ok(file) => file,
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return None;
+        }
+        Err(err) => return skip(err.to_string()),
+    };
+    let mut bytes = Vec::new();
+    if let Err(err) = file
+        .take(MAX_DISCOVERED_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        return skip(err.to_string());
+    }
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_DISCOVERED_FILE_BYTES {
+        return skip(format!("it is over {MAX_DISCOVERED_FILE_BYTES} bytes"));
+    }
+    String::from_utf8(bytes).map_or_else(|_| skip("it is not UTF-8".to_string()), Some)
 }
 
 fn discover_rules(
@@ -300,10 +385,12 @@ fn discover_rules(
 ) {
     let candidates = collect_candidates(cwd, repo_root, home_dir, markdown_rule_candidates);
 
-    for path in candidates {
-        let Some(content) = read_file_or_skip(&path, &mut out.diagnostics.scanned_paths) else {
+    for candidate in candidates {
+        let Some(content) = read_file_or_skip(&candidate, &mut out.diagnostics.scanned_paths)
+        else {
             continue;
         };
+        let path = candidate.path;
         let id = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -344,10 +431,12 @@ fn discover_skills(
 ) {
     let candidates = collect_candidates(cwd, repo_root, home_dir, skill_candidates);
 
-    for path in candidates {
-        let Some(content) = read_file_or_skip(&path, &mut out.diagnostics.scanned_paths) else {
+    for candidate in candidates {
+        let Some(content) = read_file_or_skip(&candidate, &mut out.diagnostics.scanned_paths)
+        else {
             continue;
         };
+        let path = candidate.path;
 
         let (meta, prompt) = split_front_matter(&content);
         let stem = path
@@ -407,10 +496,12 @@ fn discover_commands(
 ) {
     let candidates = collect_candidates(cwd, repo_root, home_dir, command_candidates);
 
-    for path in candidates {
-        let Some(content) = read_file_or_skip(&path, &mut out.diagnostics.scanned_paths) else {
+    for candidate in candidates {
+        let Some(content) = read_file_or_skip(&candidate, &mut out.diagnostics.scanned_paths)
+        else {
             continue;
         };
+        let path = candidate.path;
         let (meta, prompt) = split_front_matter(&content);
         let name = path
             .file_stem()
@@ -448,10 +539,12 @@ fn discover_subagents(
 ) {
     let candidates = collect_candidates(cwd, repo_root, home_dir, subagent_candidates);
 
-    for path in candidates {
-        let Some(content) = read_file_or_skip(&path, &mut out.diagnostics.scanned_paths) else {
+    for candidate in candidates {
+        let Some(content) = read_file_or_skip(&candidate, &mut out.diagnostics.scanned_paths)
+        else {
             continue;
         };
+        let path = candidate.path;
         let (meta, prompt) = split_front_matter(&content);
         let name = meta
             .get("name")
@@ -513,10 +606,12 @@ fn discover_mcp_servers(
 ) {
     let candidates = collect_candidates(cwd, repo_root, home_dir, mcp_candidates);
 
-    for path in candidates {
-        let Some(content) = read_file_or_skip(&path, &mut out.diagnostics.scanned_paths) else {
+    for candidate in candidates {
+        let Some(content) = read_file_or_skip(&candidate, &mut out.diagnostics.scanned_paths)
+        else {
             continue;
         };
+        let path = candidate.path;
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
             parse_mcp_toml(&content, &path, cwd, repo_root, home_dir, out);
         } else {
@@ -1227,5 +1322,111 @@ mod tests {
                 )
             );
         }
+    }
+}
+
+/// Workspace bases are read without following links; the home directory is not.
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    const OUTSIDE: &str = "OUTSIDE-SECRET-TEXT";
+
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn canonical_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().canonicalize().expect("canonical temp dir");
+        (dir, path)
+    }
+
+    fn only(rules: bool, commands: bool, mcp: bool) -> DiscoveryOptions {
+        DiscoveryOptions {
+            rules,
+            skills: false,
+            commands,
+            subagents: false,
+            mcp,
+        }
+    }
+
+    fn command_names(snapshot: &DiscoverySnapshot) -> Vec<&str> {
+        let mut names: Vec<&str> = snapshot.commands.iter().map(|c| c.name.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
+    fn mentions_outside(snapshot: &DiscoverySnapshot) -> bool {
+        snapshot.commands.iter().any(|c| c.prompt.contains(OUTSIDE))
+            || snapshot
+                .mcp_servers
+                .iter()
+                .any(|s| s.name.contains(OUTSIDE))
+    }
+
+    #[test]
+    fn a_symlinked_command_file_under_the_workspace_is_skipped() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        let commands = ws.join(".caliche/commands");
+        fs::create_dir_all(&commands).expect("commands dir");
+        fs::write(commands.join("ok.md"), "run the tests").expect("ok.md");
+        symlink(outside.join("secret.md"), commands.join("evil.md")).expect("symlink");
+
+        let snapshot = discover_in(&ws, None, &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), vec!["ok"]);
+        assert_eq!(snapshot.commands[0].prompt, "run the tests");
+        assert!(!mentions_outside(&snapshot));
+    }
+
+    #[test]
+    fn a_symlinked_commands_dir_under_the_workspace_is_skipped() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        fs::create_dir_all(ws.join(".caliche")).expect(".caliche");
+        symlink(&outside, ws.join(".caliche/commands")).expect("symlink");
+
+        let snapshot = discover_in(&ws, None, &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), Vec::<&str>::new());
+        assert!(!mentions_outside(&snapshot));
+    }
+
+    #[test]
+    fn a_symlinked_mcp_config_under_the_workspace_is_skipped() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(
+            outside.join("mcp.json"),
+            format!(r#"{{"mcpServers":{{"{OUTSIDE}":{{"command":"outside-server"}}}}}}"#),
+        )
+        .expect("outside config");
+        symlink(outside.join("mcp.json"), ws.join(".mcp.json")).expect("symlink");
+
+        let snapshot = discover_in(&ws, None, &only(false, false, true));
+
+        assert_eq!(snapshot.mcp_servers.len(), 0);
+        assert!(!mentions_outside(&snapshot));
+    }
+
+    #[test]
+    fn a_symlinked_command_under_home_is_still_read() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_home_dir, home) = canonical_dir();
+        let (_dot_dir, dotfiles) = canonical_dir();
+        fs::write(dotfiles.join("mine.md"), "my own command").expect("dotfile");
+        let commands = home.join(".claude/commands");
+        fs::create_dir_all(&commands).expect("home commands dir");
+        symlink(dotfiles.join("mine.md"), commands.join("mine.md")).expect("symlink");
+
+        let snapshot = discover_in(&ws, Some(&home), &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), vec!["mine"]);
+        assert_eq!(snapshot.commands[0].prompt, "my own command");
+        assert_eq!(snapshot.commands[0].scope, SourceScope::UserHome);
     }
 }
