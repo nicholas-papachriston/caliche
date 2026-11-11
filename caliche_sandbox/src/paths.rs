@@ -438,6 +438,10 @@ pub fn open_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
     }
 }
 
+/// The reason a write through a hard link is refused. The full message is
+/// `refusing to write '<path>': ` followed by this text.
+pub const HARD_LINK_REFUSAL: &str = "it has more than one hard link";
+
 /// What a listed directory entry is, read without following it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {

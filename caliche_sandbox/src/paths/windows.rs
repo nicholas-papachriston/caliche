@@ -343,8 +343,9 @@ fn refuse_hard_links(file: &File, target: &Path) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "refusing to write '{}': it has more than one hard link",
-                target.display()
+                "refusing to write '{}': {}",
+                target.display(),
+                super::HARD_LINK_REFUSAL
             ),
         ));
     }

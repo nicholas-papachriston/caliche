@@ -38,8 +38,8 @@ pub use handle::SandboxHandle;
 pub use landlock_net::{TcpPlan, tcp_isolation_claimed, tcp_plan};
 pub use ops::SandboxHandleOps;
 pub use paths::{
-    DirEntryBeneath, EntryKind, read_validated_file, resolve_sandbox_path, validate_read_path,
-    validate_write_path, write_validated_file,
+    DirEntryBeneath, EntryKind, HARD_LINK_REFUSAL, read_validated_file, resolve_sandbox_path,
+    validate_read_path, validate_write_path, write_validated_file,
 };
 #[cfg(any(unix, windows))]
 pub use paths::{list_dir_beneath, open_file_beneath};
