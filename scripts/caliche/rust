@@ -21,6 +21,9 @@ Usage: ./caliche rust <subcommand>
   install            wasm UI, then cargo install the CLI with embedded-ui
   test               Root, CLI, server, sandbox, embedded web smoke, and dripstone
   test-embedded-ui   GET / is HTML when the embedded-ui feature is on
+  test-linux         Linux-only tests in the pinned Rust image (needs Docker)
+  windows-check      Refuse when Windows code changed and HEAD has no green Windows run
+  windows-record     Record a Windows test report: windows-record <sha> <report>
   test-lib           Root crate only: cargo test --lib --features full (needs ONNX)
   test-features      Root crate tests with --features ${ROOT_TEST_FEATURES}, then dripstone --lib with postgres-backend (macOS; no CUDA; no ONNX runtime download)
   bench              dripstone wall-clock benchmarks: release, ignored tests, one thread
@@ -155,6 +158,138 @@ run_workspace_tests() {
   ok "Rust tests complete"
 }
 
+# Linux-only tests (Landlock, cgroup, the git guard, /proc parsers) do not
+# compile on macOS. They run in the official Rust image, pinned by digest,
+# as the calling user, with no --privileged and no named volumes. Each run
+# copies the working tree into a fresh directory outside the checkout and
+# builds there with its own target dir, then deletes that directory.
+# --init reaps killed children, so the process-tree tests see them exit.
+LINUX_TEST_IMAGE="rust@sha256:f58923369ba295ae1f60bc49d03f2c955a5c93a0b7d49acfb2b2a65bebaf350d"
+# One test from each Linux-only area: Landlock with TCP rules, the git
+# guard, hardening, fork safety, and the two /proc parsers.
+LINUX_SENTINEL_TESTS=(
+  tcp_connect_is_denied
+  a_directory_nobody_can_list_is_refused
+  exec_cannot_change_the_workspace_git_dir
+  read_only_root_denies_a_write_the_parent_can_make
+  landlock_allows_an_inside_write_and_denies_an_outside_write
+  parses_listen_inodes_and_stat_start_token
+  parse_meminfo_reads_keys
+)
+
+copy_working_tree() {
+  local dest="$1"
+  git ls-files -z --cached --others --exclude-standard |
+    while IFS= read -r -d '' path; do
+      if [[ -e "$path" || -L "$path" ]]; then
+        printf '%s\0' "$path"
+      fi
+    done |
+    tar --null -T - -cf - | tar -xf - -C "$dest"
+}
+
+run_linux_tests() {
+  need_cmd docker
+  local run status
+  run="$(mktemp -d "${TMPDIR:-/tmp}/caliche-linux.XXXXXX")"
+  mkdir -p "$run/src" "$run/home"
+  step "Copying the working tree to ${run}"
+  copy_working_tree "$run/src"
+  step "Running the Linux-only tests in ${LINUX_TEST_IMAGE}"
+  set +e
+  docker run --rm --init \
+    --user "$(id -u):$(id -g)" \
+    -v "$run:/work" \
+    -e HOME=/work/home \
+    -e CARGO_HOME=/work/cargo \
+    -e CARGO_TARGET_DIR=/work/target \
+    -w /work/src \
+    "$LINUX_TEST_IMAGE" \
+    bash -c '
+      set -u
+      export PATH=/usr/local/cargo/bin:$PATH
+      status=0
+      log=/work/test.log
+      : >"$log"
+      run() { "$@" 2>&1 | tee -a "$log"; [[ "${PIPESTATUS[0]}" -eq 0 ]] || status=1; }
+      run cargo test --locked -p caliche_sandbox --no-fail-fast --features "'"$SANDBOX_FEATURES"'"
+      run cargo test --locked -p caliche_cli --lib -- server_registry::tests::
+      run cargo test --locked -p dripstone --lib --features model-download -- loader::resources::tests::
+      # A filter that matches nothing, or a probe that ignores a test,
+      # still exits 0. These must have run and passed.
+      for name in '"${LINUX_SENTINEL_TESTS[*]}"'; do
+        if ! grep -Eq "^test (.*::)?${name} \.\.\. ok$" "$log"; then
+          echo "error: Linux-only test ${name} did not run and pass" >&2
+          status=1
+        fi
+      done
+      exit "$status"
+    '
+  status=$?
+  set -e
+  chmod -R u+w "$run" 2>/dev/null || true
+  rm -rf "$run"
+  if [[ "$status" -ne 0 ]]; then
+    die "Linux-only tests failed"
+  fi
+  ok "Linux-only tests complete"
+}
+
+# A push whose diff touches Windows code needs a green Windows run recorded
+# for the commit being pushed. Windows code is a changed file with
+# `windows` in its path, or whose old or new text has a cfg that names
+# Windows. Records live outside the checkout, one file per commit SHA.
+WINDOWS_RUNS_DIR="${CALICHE_WINDOWS_RUNS:-${XDG_STATE_HOME:-$HOME/.local/state}/caliche/windows-runs}"
+WINDOWS_CFG_PATTERN='cfg(_attr)?\(.*(\bwindows\b|target_os *= *"windows")'
+
+windows_touching_files() {
+  local base="$1" path
+  git diff --name-only "$base" HEAD -- '*.rs' |
+    while IFS= read -r path; do
+      if [[ "$path" == *windows* ]] ||
+        git show "HEAD:$path" 2>/dev/null | grep -Eq "$WINDOWS_CFG_PATTERN" ||
+        git show "$base:$path" 2>/dev/null | grep -Eq "$WINDOWS_CFG_PATTERN"; then
+        printf '%s\n' "$path"
+      fi
+    done
+}
+
+check_windows_run() {
+  local base_ref="${CALICHE_PUSH_BASE:-origin/main}" base head touched
+  base="$(git merge-base "$base_ref" HEAD)" || die "no merge base with ${base_ref}"
+  head="$(git rev-parse HEAD)"
+  step "Checking for Windows code changed since ${base_ref}"
+  touched="$(windows_touching_files "$base")"
+  if [[ -z "$touched" ]]; then
+    ok "no Windows code changed"
+    return 0
+  fi
+  if [[ "$(head -n 1 "$WINDOWS_RUNS_DIR/$head" 2>/dev/null)" == "green" ]]; then
+    ok "green Windows run recorded for ${head}"
+    return 0
+  fi
+  printf '%s\n' "$touched" >&2
+  die "these files touch Windows code and ${head} has no green Windows run in ${WINDOWS_RUNS_DIR}; run the Windows tests on that commit, then ./caliche rust windows-record ${head} <report>"
+}
+
+# Record a Windows test report for a commit. The report is the output of the
+# commands in AGENTS.md; it is green when no test failed and every cargo test
+# run passed.
+record_windows_run() {
+  local sha report verdict
+  sha="$(git rev-parse --verify "${1:?usage: ./caliche rust windows-record <sha> <report>}^{commit}")"
+  report="${2:?usage: ./caliche rust windows-record <sha> <report>}"
+  [[ -f "$report" ]] || die "no report at ${report}"
+  if grep -q "test result: ok" "$report" && ! grep -Eq "test result: FAILED|^error" "$report"; then
+    verdict="green"
+  else
+    verdict="red"
+  fi
+  mkdir -p "$WINDOWS_RUNS_DIR"
+  { echo "$verdict"; cat "$report"; } >"$WINDOWS_RUNS_DIR/$sha"
+  ok "recorded a ${verdict} Windows run for ${sha}"
+}
+
 cmd="${1:-}"
 if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
   usage
@@ -275,6 +410,15 @@ EOF
     ;;
   test)
     run_workspace_tests
+    ;;
+  test-linux)
+    run_linux_tests
+    ;;
+  windows-check)
+    check_windows_run
+    ;;
+  windows-record)
+    record_windows_run "$@"
     ;;
   test-lib)
     step "Running Rust library tests"

@@ -3,9 +3,11 @@
 commands:
   build: ./caliche build-dev
   lint: ./caliche rust fmt-check && cargo clippy --all-targets --features app,learning-loop,plugins,mcp-client,code-mode,discipline-budget-tests,testing,sqlite-store -- -D warnings && ./caliche rust clippy && ./caliche rust complexity --gate
-  check: ./caliche check
+  check: ./caliche check && ./caliche rust windows-check
   # Root, CLI, server, sandbox, embedded web smoke, and dripstone, then Python and JS.
   # Postgres, Qdrant, Redis, Docker, CUDA, llama.cpp, and ONNX/Candle downloads
-  # stay opt-in. Linux-only and Windows-only tests run on those hosts.
+  # stay opt-in. Linux-only tests run in the pinned Rust image (Docker);
+  # Windows-only tests run on a Windows host, and windows-check refuses a
+  # Windows change without a recorded green run for HEAD.
   # See the Agent gate section in AGENTS.md.
-  test: ./caliche test
+  test: ./caliche test && ./caliche rust test-linux

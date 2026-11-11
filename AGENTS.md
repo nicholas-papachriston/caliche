@@ -279,8 +279,8 @@ Run these steps from the repository root, in order, and stop at the first failur
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 ( ./caliche rust fmt-check && ./caliche rust clippy && ./caliche rust complexity --gate )  # lint
-( ./caliche check )                              # check
-( ./caliche test )                               # test
+( ./caliche check && ./caliche rust windows-check )  # check
+( ./caliche test && ./caliche rust test-linux )     # test
 ( ./caliche build-dev )                          # build
 ```
 
@@ -315,8 +315,11 @@ These test runs are optional, because they need a service, a GPU, a model downlo
 - Live LM Studio: `cargo test -- --ignored` with `CALICHE_RUN_LMSTUDIO_INTEGRATION=true`
 - Live S3: `cargo test -p dripstone --features s3-backend -- --ignored` with `DRIPSTONE_INT_S3_BUCKET` set
 - JavaScript live model tests: `CALICHE_LIVE=1 bun test`
-- Linux sandbox tests (`tests/linux.rs`, `tests/linux_harden.rs`, Landlock, cgroup) run on Linux
-- Windows sandbox tests and `caliche_cli/tests/windows_server_registry.rs` run on Windows
+
+Tests that compile only on Linux or only on Windows do not run on macOS, so the gate runs them separately:
+
+- `./caliche rust test-linux` runs the Linux-only tests (the sandbox crate with `all,landlock-net`, the CLI `server_registry` tests, and the Dripstone `loader::resources` tests with `model-download`) in the official Rust image, pinned by digest in `scripts/caliche/rust`. It needs Docker. The container runs as the calling user, without `--privileged` and without named volumes, on a copy of the working tree in a fresh directory that it deletes afterwards. The cgroup tests in `caliche_sandbox/tests/linux.rs` stay ignored there, because the container has no writable cgroup v2.
+- `./caliche rust windows-check` fails when a `.rs` file changed since `origin/main` (or `CALICHE_PUSH_BASE`) has `windows` in its path or a cfg that names Windows, unless a green Windows run is recorded for `HEAD`. Run the Windows tests on that commit on a Windows host: `cargo test -p caliche_sandbox --features sandbox-windows`, `cargo test -p caliche_cli --lib -- process_liveness:: core::slash_commands::git_ops::`, `cargo test -p caliche_cli --test windows_server_registry`, and `cargo test -p dripstone --lib -- local::store::`. Save the output and record it with `./caliche rust windows-record <sha> <report>`. Records are kept in `$CALICHE_WINDOWS_RUNS`, by default `~/.local/state/caliche/windows-runs`.
 
 A test that was skipped because its variable is unset has not passed. Ignored tests print the reason they are ignored.
 
