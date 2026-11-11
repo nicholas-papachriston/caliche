@@ -67,6 +67,9 @@ pub struct FileError {
     pub error: String,
 }
 
+/// The 400 message for a path that is not a regular file.
+pub const NOT_A_FILE: &str = "Path is not a file";
+
 /// Maximum file size to read (1MB)
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
@@ -338,7 +341,7 @@ pub(crate) fn read_workspace_bytes(
     // A by-path check only picks the 400 message for a directory; the open
     // below is what refuses anything but a regular file.
     if !target.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()));
+        return Err((StatusCode::BAD_REQUEST, NOT_A_FILE.to_string()));
     }
     after_validate(&target);
 
@@ -346,19 +349,12 @@ pub(crate) fn read_workspace_bytes(
         let status = match e.kind() {
             std::io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
             std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            // Anything but a regular file swapped in after validation.
+            std::io::ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, format!("Failed to open file: {e}"))
     })?;
-    let metadata = file.metadata().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to read file metadata: {e}"),
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()));
-    }
 
     let mut bytes = Vec::new();
     file.take(MAX_FILE_SIZE + 1)
@@ -399,7 +395,9 @@ const fn after_validate(_target: &Path) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AFTER_VALIDATE, MAX_FILE_SIZE, list_workspace_dir, read_workspace_file};
+    use super::{
+        AFTER_VALIDATE, MAX_FILE_SIZE, NOT_A_FILE, list_workspace_dir, read_workspace_file,
+    };
     use axum::http::StatusCode;
     use std::path::{Path, PathBuf};
 
@@ -431,7 +429,7 @@ mod tests {
             panic!("a directory must be refused");
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(error, "Path is not a file");
+        assert_eq!(error, NOT_A_FILE);
     }
 
     #[test]
@@ -442,7 +440,83 @@ mod tests {
             panic!("a file over the limit must be refused");
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(error.contains("too large"), "unexpected error: {error}");
+        assert_eq!(error, TOO_LARGE);
+    }
+
+    /// The 400 message for a file over `MAX_FILE_SIZE`.
+    const TOO_LARGE: &str = "File is too large (over 1048576 bytes). Maximum is 1048576 bytes.";
+
+    #[test]
+    fn read_of_a_file_that_grew_after_validation_is_400_too_large() {
+        let (_dir, root) = workspace();
+        file_of_len(&root, "grows.txt", 10);
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(validated)
+                    .expect("open to grow");
+                file.write_all(&vec![b'a'; 1024 * 1024])
+                    .expect("grow past the limit");
+            }));
+        });
+
+        let Err((status, error)) = read_workspace_file(&root, Path::new("grows.txt"), 10) else {
+            panic!("a file that grew past the limit must be refused");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error, TOO_LARGE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_of_a_file_removed_after_validation_is_404() {
+        let (_dir, root) = workspace();
+        file_of_len(&root, "gone.txt", 3);
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                std::fs::remove_file(validated).expect("remove");
+            }));
+        });
+
+        let Err((status, error)) = read_workspace_file(&root, Path::new("gone.txt"), 10) else {
+            panic!("a removed file must be refused");
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            error,
+            "Failed to open file: No such file or directory (os error 2)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_of_a_file_swapped_for_a_fifo_after_validation_is_400() {
+        let (_dir, root) = workspace();
+        file_of_len(&root, "swapped", 3);
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                std::fs::remove_file(validated).expect("remove");
+                let made = std::process::Command::new("mkfifo")
+                    .arg(validated)
+                    .status()
+                    .expect("mkfifo");
+                assert!(made.success(), "mkfifo failed");
+            }));
+        });
+
+        let Err((status, error)) = read_workspace_file(&root, Path::new("swapped"), 10) else {
+            panic!("a FIFO must be refused");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error,
+            format!(
+                "Failed to open file: '{}' is not a regular file",
+                root.join("swapped").display()
+            )
+        );
     }
 
     async fn status_and_json(
@@ -557,6 +631,12 @@ mod tests {
             panic!("a swapped parent must be refused");
         };
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(error.contains("symlink"), "unexpected error: {error}");
+        assert_eq!(
+            error,
+            format!(
+                "Failed to open file: refusing to follow symlink at 'sub' in '{}'",
+                root.join("sub/secret.txt").display()
+            )
+        );
     }
 }

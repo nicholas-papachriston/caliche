@@ -715,7 +715,10 @@ mod tests {
 
         assert_eq!(
             result,
-            Err((StatusCode::BAD_REQUEST, "Path is not a file".to_string()))
+            Err((
+                StatusCode::BAD_REQUEST,
+                crate::handlers::files::NOT_A_FILE.to_string()
+            ))
         );
     }
 
