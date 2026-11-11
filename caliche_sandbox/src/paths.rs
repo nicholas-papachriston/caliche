@@ -438,6 +438,53 @@ pub fn open_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
     }
 }
 
+/// What a listed directory entry is, read without following it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// A directory.
+    Dir,
+    /// A regular file.
+    File,
+    /// Anything else: a symlink, junction or other reparse point, a FIFO, a
+    /// socket, or a device.
+    Other,
+}
+
+/// One entry of a directory listed by [`list_dir_beneath`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntryBeneath {
+    /// The entry's name in its directory.
+    pub name: OsString,
+    /// What the entry is. A link is [`EntryKind::Other`], never its target.
+    pub kind: EntryKind,
+    /// The length in bytes of a regular file, and 0 for anything else.
+    pub len: u64,
+}
+
+/// List the directory `target`, at or below `root`, following no link below it.
+///
+/// The directory is reached as in [`open_file_beneath`], one component at a
+/// time relative to its parent, so a directory swapped for a symlink or
+/// junction after the caller validated `target` is refused instead of
+/// listed. The entries are read from that handle and described without
+/// following any of them. `.` and `..` are left out.
+///
+/// # Errors
+///
+/// Returns an error when `target` is not at or below `root`, a component is a
+/// link, `target` is not a directory, or it cannot be read.
+#[cfg(any(unix, windows))]
+pub fn list_dir_beneath(root: &Path, target: &Path) -> std::io::Result<Vec<DirEntryBeneath>> {
+    #[cfg(unix)]
+    {
+        unix::list_dir_beneath(root, target)
+    }
+    #[cfg(windows)]
+    {
+        windows::list_dir_beneath(root, target)
+    }
+}
+
 /// Write file bytes after path validation.
 ///
 /// Missing parent directories are created, and every component below the

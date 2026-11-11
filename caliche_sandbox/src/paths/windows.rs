@@ -10,10 +10,11 @@
 //! `FILE_SHARE_DELETE` until the target is open, so none of them can be
 //! renamed, moved, or deleted while the walk is in progress.
 
-use std::ffi::OsStr;
+use super::{DirEntryBeneath, EntryKind};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path};
@@ -23,12 +24,13 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
 };
 use windows_sys::Win32::Foundation::{
-    GENERIC_READ, GENERIC_WRITE, HANDLE, RtlNtStatusToDosError, UNICODE_STRING,
+    ERROR_NO_MORE_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE, RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
-    SYNCHRONIZE,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
@@ -77,6 +79,105 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
     }
     drop(ancestors);
     Ok(file)
+}
+
+/// List the directory `target`, the canonical `root` or a path below it.
+///
+/// The root itself is trusted, as in [`open_beneath`]. Every directory below
+/// it is opened relative to its parent and refused if it is a reparse point;
+/// the entries are then read from the last handle.
+pub(super) fn list_dir_beneath(root: &Path, target: &Path) -> io::Result<Vec<DirEntryBeneath>> {
+    let names = components_below(root, target)?;
+    let mut ancestors = Vec::with_capacity(names.len());
+    let mut dir = open_root(root)?;
+    for name in &names {
+        let child = open_dir_child(&dir, name, Access::Read)?;
+        refuse_reparse_point(&child, root, target)?;
+        ancestors.push(std::mem::replace(&mut dir, child));
+    }
+    let entries = read_entries(&dir);
+    drop(ancestors);
+    entries
+}
+
+/// Read every entry of the open directory `dir`, except `.` and `..`.
+fn read_entries(dir: &File) -> io::Result<Vec<DirEntryBeneath>> {
+    // 64 KiB, 8-byte aligned for FILE_FULL_DIR_INFO.
+    let mut buffer = vec![0_u64; 8192];
+    let buffer_len = u32::try_from(buffer.len() * size_of::<u64>()).unwrap_or(u32::MAX);
+    let mut class = FileFullDirectoryRestartInfo;
+    let mut entries = Vec::new();
+    loop {
+        // SAFETY: `dir` owns an open directory handle for the whole call, and
+        // `buffer` is writable memory of `buffer_len` bytes.
+        #[expect(
+            unsafe_code,
+            reason = "GetFileInformationByHandleEx on an owned handle"
+        )]
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                dir.as_raw_handle(),
+                class,
+                buffer.as_mut_ptr().cast(),
+                buffer_len,
+            )
+        };
+        if ok == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == i32::try_from(ERROR_NO_MORE_FILES).ok() {
+                return Ok(entries);
+            }
+            return Err(err);
+        }
+        class = FileFullDirectoryInfo;
+        push_entries(&buffer, &mut entries);
+    }
+}
+
+/// Append the entries of one filled `FILE_FULL_DIR_INFO` chain.
+fn push_entries(buffer: &[u64], entries: &mut Vec<DirEntryBeneath>) {
+    let base = buffer.as_ptr().cast::<u8>();
+    let mut offset = 0_usize;
+    loop {
+        // SAFETY: the call succeeded, so the buffer holds a chain of
+        // FILE_FULL_DIR_INFO records, each starting 8-byte aligned at
+        // `offset`, with `FileNameLength` bytes of UTF-16 name after
+        // `FileName`, all within the buffer.
+        #[expect(
+            unsafe_code,
+            reason = "read the records GetFileInformationByHandleEx wrote"
+        )]
+        let (info, name) = unsafe {
+            let info = &*base.add(offset).cast::<FILE_FULL_DIR_INFO>();
+            let name = std::slice::from_raw_parts(
+                info.FileName.as_ptr(),
+                (info.FileNameLength as usize) / 2,
+            );
+            (info, name)
+        };
+        if name != [u16::from(b'.')] && name != [u16::from(b'.'), u16::from(b'.')] {
+            let kind = if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                EntryKind::Other
+            } else if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
+            let len = match kind {
+                EntryKind::File => u64::try_from(info.EndOfFile).unwrap_or(0),
+                EntryKind::Dir | EntryKind::Other => 0,
+            };
+            entries.push(DirEntryBeneath {
+                name: OsString::from_wide(name),
+                kind,
+                len,
+            });
+        }
+        if info.NextEntryOffset == 0 {
+            return;
+        }
+        offset += info.NextEntryOffset as usize;
+    }
 }
 
 fn components_below<'a>(root: &Path, target: &'a Path) -> io::Result<Vec<&'a OsStr>> {

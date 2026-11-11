@@ -8,11 +8,12 @@
 //! up by a full path string after validation, so a swapped directory, at the
 //! root, above it or below it, makes the open fail instead of leaving the root.
 
-use std::ffi::{CString, OsStr};
+use super::{DirEntryBeneath, EntryKind};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path};
 
@@ -75,6 +76,139 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
         file.set_len(0)?;
     }
     Ok(file)
+}
+
+/// List the directory `target`, the canonical `root` or a path below it.
+///
+/// Every component from `/` down is opened with `O_NOFOLLOW` relative to its
+/// parent, as in [`open_beneath`]; the entries are then read from that
+/// descriptor and described with `fstatat(AT_SYMLINK_NOFOLLOW)`.
+pub(super) fn list_dir_beneath(root: &Path, target: &Path) -> io::Result<Vec<DirEntryBeneath>> {
+    components_below(root, target)?;
+    let mut dir: OwnedFd = File::options()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open("/")?
+        .into();
+    for name in absolute_components(target)? {
+        dir = open_dir(&dir, name, Access::Read, target)?;
+    }
+    read_entries(dir)
+}
+
+/// A directory stream from `fdopendir`, closed on drop.
+struct DirStream(std::ptr::NonNull<libc::DIR>);
+
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        // SAFETY: the stream came from `fdopendir` and is closed only here.
+        #[expect(unsafe_code, reason = "closedir on the stream this value owns")]
+        unsafe {
+            libc::closedir(self.0.as_ptr());
+        }
+    }
+}
+
+/// Read every entry of the open directory `dir`, except `.` and `..`.
+fn read_entries(dir: OwnedFd) -> io::Result<Vec<DirEntryBeneath>> {
+    let fd = dir.into_raw_fd();
+    // SAFETY: `fd` is an open directory descriptor that nothing else owns.
+    // On success the stream owns it; on failure it is still ours.
+    #[expect(unsafe_code, reason = "fdopendir on an owned directory descriptor")]
+    let stream = unsafe { libc::fdopendir(fd) };
+    let Some(stream) = std::ptr::NonNull::new(stream) else {
+        let err = io::Error::last_os_error();
+        // SAFETY: `fdopendir` failed, so `fd` is still open and owned here.
+        #[expect(unsafe_code, reason = "close the descriptor fdopendir did not take")]
+        drop(unsafe { OwnedFd::from_raw_fd(fd) });
+        return Err(err);
+    };
+    let stream = DirStream(stream);
+    // SAFETY: `stream` is an open directory stream.
+    #[expect(unsafe_code, reason = "dirfd of an open directory stream")]
+    let dir_fd = unsafe { libc::dirfd(stream.0.as_ptr()) };
+    let mut entries = Vec::new();
+    loop {
+        clear_errno();
+        // SAFETY: `stream` is an open directory stream used by this thread only.
+        #[expect(unsafe_code, reason = "readdir on an open directory stream")]
+        let entry = unsafe { libc::readdir(stream.0.as_ptr()) };
+        if entry.is_null() {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(0) {
+                return Ok(entries);
+            }
+            return Err(err);
+        }
+        // SAFETY: `readdir` returned a valid entry whose `d_name` is
+        // NUL-terminated and lives until the next call on `stream`.
+        #[expect(unsafe_code, reason = "read the name of the entry readdir returned")]
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        // An entry removed since `readdir` saw it is left out.
+        if let Some((kind, len)) = describe_entry(dir_fd, name)? {
+            entries.push(DirEntryBeneath {
+                name: OsString::from_vec(name.to_bytes().to_vec()),
+                kind,
+                len,
+            });
+        }
+    }
+}
+
+/// What `name` below `dir_fd` is, without following it, and its length.
+fn describe_entry(dir_fd: RawFd, name: &CStr) -> io::Result<Option<(EntryKind, u64)>> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `dir_fd` is the open descriptor of a live directory stream,
+    // `name` is NUL-terminated, and `stat` points to writable memory of the
+    // right size.
+    #[expect(unsafe_code, reason = "fstatat relative to a directory descriptor")]
+    let rc = unsafe {
+        libc::fstatat(
+            dir_fd,
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(err);
+    }
+    // SAFETY: `fstatat` returned 0, so it filled in `stat`.
+    #[expect(unsafe_code, reason = "read the stat buffer fstatat filled in")]
+    let stat = unsafe { stat.assume_init() };
+    let kind = match stat.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => EntryKind::Dir,
+        libc::S_IFREG => EntryKind::File,
+        _ => EntryKind::Other,
+    };
+    let len = match kind {
+        EntryKind::File => u64::try_from(stat.st_size).unwrap_or(0),
+        EntryKind::Dir | EntryKind::Other => 0,
+    };
+    Ok(Some((kind, len)))
+}
+
+/// Set `errno` to 0, so a null `readdir` can tell the end from an error.
+fn clear_errno() {
+    // SAFETY: the errno location is valid for the calling thread.
+    #[expect(unsafe_code, reason = "write this thread's errno")]
+    unsafe {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            *libc::__errno_location() = 0;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            *libc::__error() = 0;
+        }
+    }
 }
 
 /// Refuse a write to a file with more than one link.

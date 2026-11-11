@@ -88,6 +88,7 @@ fn get_workspace_root() -> PathBuf {
 }
 
 /// Validate that a path is within the workspace.
+#[cfg(feature = "document-loaders")]
 pub(crate) fn validate_workspace_path(path: &Path) -> Result<PathBuf> {
     resolve_in_workspace(&get_workspace_root(), path).map(|(_, target)| target)
 }
@@ -160,14 +161,17 @@ pub async fn list_files_handler(
 }
 
 /// List a directory inside `workspace` for the file browser (blocking).
+///
+/// The path is validated, then listed through a walk below the canonical
+/// workspace that follows no link, so a directory swapped for a symlink
+/// after validation is refused with 403 instead of listed.
 fn list_workspace_dir(workspace: PathBuf, requested: Option<String>) -> axum::response::Response {
     let target_path = requested
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.clone());
 
-    // Validate the path
-    let canonical_path = match validate_workspace_path(&target_path) {
-        Ok(p) => p,
+    let (root, canonical_path) = match resolve_in_workspace(&workspace, &target_path) {
+        Ok(resolved) => resolved,
         Err(e) => {
             return (
                 StatusCode::FORBIDDEN,
@@ -176,56 +180,52 @@ fn list_workspace_dir(workspace: PathBuf, requested: Option<String>) -> axum::re
                 .into_response();
         }
     };
+    after_validate(&canonical_path);
 
-    // Read directory entries
-    let entries = match std::fs::read_dir(&canonical_path) {
-        Ok(read_dir) => {
-            let mut entries: Vec<FileEntry> = read_dir
-                .filter_map(|entry| entry.ok())
-                .filter_map(|entry| {
-                    let metadata = entry.metadata().ok()?;
-                    let name = entry.file_name().to_string_lossy().to_string();
-
-                    // Skip hidden files (starting with .)
-                    if name.starts_with('.') {
-                        return None;
-                    }
-
-                    let path = entry.path();
-                    let extension = path.extension().map(|e| e.to_string_lossy().to_string());
-
-                    Some(FileEntry {
-                        name,
-                        path: path.to_string_lossy().to_string(),
-                        is_dir: metadata.is_dir(),
-                        is_file: metadata.is_file(),
-                        size: if metadata.is_file() {
-                            Some(metadata.len())
-                        } else {
-                            None
-                        },
-                        extension,
-                    })
-                })
-                .collect();
-
-            // Sort: directories first, then files, alphabetically
-            entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            });
-
-            entries
-        }
+    let listed = match caliche_sandbox::list_dir_beneath(&root, &canonical_path) {
+        Ok(listed) => listed,
         Err(e) => {
+            let status = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+                std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+                std::io::ErrorKind::NotADirectory => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to read directory: {}", e) })),
+                status,
+                Json(serde_json::json!({ "error": format!("Failed to read directory: {e}") })),
             )
                 .into_response();
         }
     };
+    let mut entries: Vec<FileEntry> = listed
+        .into_iter()
+        .filter_map(|entry| {
+            let name = entry.name.to_string_lossy().to_string();
+            // Skip hidden files (starting with .)
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = canonical_path.join(&entry.name);
+            let extension = path.extension().map(|e| e.to_string_lossy().to_string());
+            let is_file = entry.kind == caliche_sandbox::EntryKind::File;
+            Some(FileEntry {
+                name,
+                path: path.to_string_lossy().to_string(),
+                is_dir: entry.kind == caliche_sandbox::EntryKind::Dir,
+                is_file,
+                size: is_file.then_some(entry.len),
+                extension,
+            })
+        })
+        .collect();
+
+    // Sort: directories first, then files, alphabetically
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
 
     // Compute the canonical parent path and only expose it if it still lives
     // inside the canonical workspace root. Silently falling back to the un-
@@ -391,7 +391,7 @@ const fn after_validate(_target: &Path) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AFTER_VALIDATE, MAX_FILE_SIZE, read_workspace_file};
+    use super::{AFTER_VALIDATE, MAX_FILE_SIZE, list_workspace_dir, read_workspace_file};
     use axum::http::StatusCode;
     use std::path::{Path, PathBuf};
 
@@ -435,6 +435,95 @@ mod tests {
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(error.contains("too large"), "unexpected error: {error}");
+    }
+
+    async fn status_and_json(
+        response: axum::response::Response,
+    ) -> (StatusCode, serde_json::Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json body"))
+    }
+
+    #[tokio::test]
+    async fn list_returns_entries_with_directories_first() {
+        let (_dir, root) = workspace();
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        std::fs::write(root.join("sub/b.txt"), b"abc").expect("b.txt");
+        std::fs::write(root.join("sub/.hidden"), b"h").expect(".hidden");
+        std::fs::create_dir(root.join("sub/a")).expect("a");
+        let sub = root.join("sub");
+
+        let (status, body) = status_and_json(list_workspace_dir(
+            root.clone(),
+            Some(sub.to_string_lossy().to_string()),
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "path": sub.to_string_lossy(),
+                "parent": root.to_string_lossy(),
+                "entries": [
+                    {
+                        "name": "a",
+                        "path": sub.join("a").to_string_lossy(),
+                        "is_dir": true,
+                        "is_file": false,
+                        "size": null,
+                        "extension": null
+                    },
+                    {
+                        "name": "b.txt",
+                        "path": sub.join("b.txt").to_string_lossy(),
+                        "is_dir": false,
+                        "is_file": true,
+                        "size": 3,
+                        "extension": "txt"
+                    }
+                ]
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_of_a_directory_swapped_for_a_symlink_is_403() {
+        let (_dir, root) = workspace();
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").expect("outside file");
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        let sub = root.join("sub");
+
+        let ws = root.clone();
+        let target = outside.path().to_path_buf();
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(move |_validated: &Path| {
+                std::fs::rename(ws.join("sub"), ws.join("sub.moved")).expect("move sub");
+                std::os::unix::fs::symlink(&target, ws.join("sub")).expect("symlink");
+            }));
+        });
+
+        let (status, body) = status_and_json(list_workspace_dir(
+            root.clone(),
+            Some(sub.to_string_lossy().to_string()),
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": format!(
+                    "Failed to read directory: refusing to follow symlink at 'sub' in '{}'",
+                    sub.display()
+                )
+            })
+        );
     }
 
     #[cfg(unix)]
