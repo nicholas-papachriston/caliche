@@ -438,6 +438,30 @@ pub fn open_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
     }
 }
 
+/// Create or open a file below `root` for writing, following no link below it.
+///
+/// The walk is the one [`open_file_beneath`] uses: a symlink, junction, or
+/// other reparse point anywhere below the root is refused, including one
+/// swapped in after validation. Missing directories are created. The file
+/// must be a regular file with a single link; it is truncated only after
+/// those checks.
+///
+/// # Errors
+///
+/// Returns an error when `target` is not below `root`, a component is a link,
+/// the file has more than one hard link, or it cannot be opened.
+#[cfg(any(unix, windows))]
+pub fn create_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    {
+        unix::open_beneath(root, target, unix::Access::Write)
+    }
+    #[cfg(windows)]
+    {
+        windows::open_beneath(root, target, windows::Access::Write)
+    }
+}
+
 /// The reason a write through a hard link is refused. The full message is
 /// `refusing to write '<path>': ` followed by this text.
 pub const HARD_LINK_REFUSAL: &str = "it has more than one hard link";

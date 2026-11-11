@@ -42,7 +42,7 @@ pub use paths::{
     validate_read_path, validate_write_path, write_validated_file,
 };
 #[cfg(any(unix, windows))]
-pub use paths::{list_dir_beneath, open_file_beneath};
+pub use paths::{create_file_beneath, list_dir_beneath, open_file_beneath};
 pub use policy::evaluate_tool_policy;
 pub use traits::{
     EXEC_OUTPUT_LIMIT, ExecResult, ExecTimeout, SandboxBackend, SandboxCapabilities,
