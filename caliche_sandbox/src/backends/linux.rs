@@ -454,7 +454,10 @@ mod tests {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("bind live 127.0.0.1 listener");
         let port = listener.local_addr().expect("listener address").port();
-        let workspace = std::env::temp_dir();
+        // A workspace of its own: other tests leave unlistable directories in
+        // the shared temp dir, and `create` refuses a workspace it cannot scan.
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
         let config = policy_to_config(
             NamedPolicy::WorkspaceWrite,
             &workspace,
