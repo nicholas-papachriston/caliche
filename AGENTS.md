@@ -278,7 +278,7 @@ Run these steps from the repository root, in order, and stop at the first failur
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-( ./caliche rust fmt-check && ./caliche rust clippy )  # lint
+( ./caliche rust fmt-check && ./caliche rust clippy && ./caliche rust complexity --gate )  # lint
 ( ./caliche check )                              # check
 ( ./caliche test )                               # test
 ( ./caliche build-dev )                          # build
