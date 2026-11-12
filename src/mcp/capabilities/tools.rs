@@ -152,6 +152,82 @@ mod tests {
         );
     }
 
+    /// Every entry that runs a tool by name gives a padded name the decision
+    /// of the tool it runs: the agent loop (the CLI and the server's chat),
+    /// the MCP server over stdio and HTTP, the in-process MCP server, and
+    /// the MCP client's check.
+    #[tokio::test]
+    async fn every_entry_path_gates_a_padded_name_as_the_tool_it_runs() {
+        use crate::agent::tools::execution::{
+            HookExecutionMiddleware, ToolExecutionContext, ToolExecutionMiddleware as _,
+        };
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        std::fs::create_dir_all(root.join(".codex")).expect("codex dir");
+        std::fs::write(root.join(".codex/auth.json"), "VENDOR-TOKEN").expect("auth");
+        set_tool_workspace_root(Some(root.clone()));
+        let registry = Arc::new(fs_registry());
+        let agent = HookExecutionMiddleware::new(HookRegistry::new())
+            .with_workspace(root.to_string_lossy());
+        let mut handler = crate::mcp::McpHandler::new(crate::mcp::McpServer::new(
+            Arc::clone(&registry),
+            crate::templates::TemplateRegistry::new(),
+        ));
+        let in_process = crate::mcp::InProcessMcpServerBuilder::new("entry")
+            .add_tools(vec![Arc::new(FsTool::new())])
+            .build()
+            .expect("in-process server");
+        let auth = root.join(".codex/auth.json").to_string_lossy().into_owned();
+
+        let mut seen = Vec::new();
+        for name in ["fs", " fs", "fs ", "\tfs\n"] {
+            let args = serde_json::json!({"op": "read", "path": auth});
+            let ctx = ToolExecutionContext {
+                tool_name: name,
+                arguments: &args,
+                call_id: "entry",
+            };
+            let from_agent = agent
+                .before_execute(&ctx)
+                .await
+                .err()
+                .map(|e| e.into_owned());
+            let request = JsonRpcRequest {
+                jsonrpc: beef::lean::Cow::borrowed("2.0"),
+                method: beef::lean::Cow::borrowed("tools/call"),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": args,
+                    "_meta": {"io.modelcontextprotocol/protocolVersion": LATEST_PROTOCOL_VERSION},
+                })),
+                id: Some(serde_json::json!(1)),
+            };
+            let response = handler.handle_request(request).await.expect("response");
+            let result: ToolsCallResult =
+                serde_json::from_value(response.result.expect("result")).expect("decode");
+            let from_mcp = (result.is_error == Some(true)).then(|| text(&result));
+            let local = in_process
+                .call_tool(name, args.clone())
+                .await
+                .expect("call");
+            let from_in_process = (local.is_error == Some(true)).then(|| text(&local));
+            let from_client = crate::mcp::policy_gate::tool_deny_reason(name, &args);
+            seen.push((name, [from_agent, from_mcp, from_in_process, from_client]));
+        }
+        set_tool_workspace_root(None);
+
+        let refused = || std::array::from_fn(|_| Some(VENDOR_DENY.to_string()));
+        assert_eq!(
+            seen,
+            vec![
+                ("fs", refused()),
+                (" fs", refused()),
+                ("fs ", refused()),
+                ("\tfs\n", refused()),
+            ]
+        );
+    }
+
     /// A hook registered under an alias fires for the tool the alias runs.
     #[tokio::test]
     async fn a_hook_registered_under_an_alias_fires_for_its_tool() {
