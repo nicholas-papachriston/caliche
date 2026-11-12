@@ -10,7 +10,6 @@
 //!
 //! Only used in interactive modes (REPL, TUI) where the agent runs long-term.
 
-use crate::agent::tools::common::path;
 use crate::backpressure::CoalescedSignal;
 use crate::rag::RagService;
 use crate::workspace::config::{
@@ -447,22 +446,7 @@ impl WorkspaceWatcher {
 
     /// Read a file for indexing with size validation.
     async fn read_file(path_str: &str, config: &WorkspaceIndexerConfig) -> anyhow::Result<String> {
-        let max_size = if config.max_file_size > 0 {
-            config.max_file_size
-        } else {
-            DEFAULT_MAX_FILE_SIZE
-        };
-
-        let normalized = path::validate_and_resolve_path(path_str, Some(true))
-            .await
-            .map_err(|e| anyhow::anyhow!("Path validation failed: {}", e))?;
-
-        path::validate_file_size(&normalized, max_size as u64)
-            .map_err(|e| anyhow::anyhow!("File size validation failed: {}", e))?;
-
-        tokio::fs::read_to_string(&normalized)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
+        crate::workspace::indexer::read_index_file(config, Path::new(path_str)).await
     }
 
     /// Shutdown the watcher gracefully.
@@ -689,5 +673,28 @@ mod tests {
         assert!(!changes.contains_key(&sequence), "{changes:?}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::WorkspaceWatcher;
+    use crate::workspace::config::{PersistenceConfig, WorkspaceIndexerConfig};
+
+    #[tokio::test]
+    async fn a_changed_file_that_is_a_link_is_not_read() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), ws.path().join("leak.rs"))
+            .expect("file link");
+        let config = WorkspaceIndexerConfig::new(ws.path().to_path_buf())
+            .persistence(PersistenceConfig::InMemory);
+        let leak = ws.path().join("leak.rs");
+
+        let read = WorkspaceWatcher::read_file(leak.to_str().expect("utf-8 path"), &config).await;
+
+        let err = read.expect_err("a link must not be read");
+        assert!(!err.to_string().contains("secret"), "{err}");
     }
 }

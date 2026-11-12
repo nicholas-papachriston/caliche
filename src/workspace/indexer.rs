@@ -14,7 +14,6 @@ use crate::workspace::gitignore;
 use crate::workspace::manifest::{self, IndexManifest};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::fs;
 use tracing::{debug, info};
 
 /// Result of workspace indexing.
@@ -375,19 +374,58 @@ impl WorkspaceIndexer {
     }
 
     async fn read_file_for_indexing(&self, path: &std::path::Path) -> anyhow::Result<String> {
-        let max_size = if self.config.max_file_size > 0 {
-            self.config.max_file_size
-        } else {
-            DEFAULT_MAX_FILE_SIZE
-        };
-
-        path::validate_file_size(path, max_size as u64)
-            .map_err(|e| anyhow::anyhow!("File size validation failed: {}", e))?;
-
-        fs::read_to_string(path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
+        read_index_file(&self.config, path).await
     }
+}
+
+/// Read `path`, a file the index walk or the file watcher found, without
+/// following a link.
+///
+/// A file in the workspace is opened below the canonical workspace root and
+/// a file in the shared memory directory below that directory, one
+/// component at a time, so a link in the project cannot pull a file from
+/// outside into the index. `path` may name the root in its configured or
+/// its canonical form.
+pub(crate) async fn read_index_file(
+    config: &WorkspaceIndexerConfig,
+    path: &std::path::Path,
+) -> anyhow::Result<String> {
+    use std::io::Read;
+    let max_size = if config.max_file_size > 0 {
+        config.max_file_size
+    } else {
+        DEFAULT_MAX_FILE_SIZE
+    };
+    let bases = [
+        config.root_path.clone(),
+        crate::workspace::config::workspace_memory_markdown_dir(&config.root_path),
+    ];
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        for base in bases {
+            let Ok(root) = base.canonicalize() else {
+                continue;
+            };
+            let Ok(below) = path.strip_prefix(&base).or_else(|_| path.strip_prefix(&root)) else {
+                continue;
+            };
+            let mut file = path::open_walked_file(&root, &root.join(below))
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+            let len = file.metadata()?.len();
+            if len > max_size as u64 {
+                anyhow::bail!(
+                    "File size validation failed: file is {len} bytes, over the {max_size} byte limit"
+                );
+            }
+            let mut text = String::new();
+            file.read_to_string(&mut text)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+            return Ok(text);
+        }
+        anyhow::bail!("Failed to read file: '{}' is outside the index roots", path.display())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Index read task failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -622,5 +660,56 @@ mod tests {
             0,
             "window flush should drain deferred ANN queue after ingest"
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod link_tests {
+    use super::read_index_file;
+    use crate::workspace::config::{PersistenceConfig, WorkspaceIndexerConfig};
+
+    /// A workspace with `ok.rs` and `leak.rs`, a link to a file outside it,
+    /// and an indexer config for it in its non-canonical form.
+    fn workspace() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceIndexerConfig) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::fs::write(ws.path().join("ok.rs"), "fn ok() {}").expect("ok");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), ws.path().join("leak.rs"))
+            .expect("file link");
+        let config = WorkspaceIndexerConfig::new(ws.path().to_path_buf())
+            .persistence(PersistenceConfig::InMemory);
+        (outside, ws, config)
+    }
+
+    #[tokio::test]
+    async fn an_indexed_read_takes_a_workspace_file_by_either_root_form() {
+        let (_outside, ws, config) = workspace();
+        let canonical = ws.path().canonicalize().expect("canonical workspace");
+
+        let named = read_index_file(&config, &ws.path().join("ok.rs"))
+            .await
+            .expect("named");
+        let resolved = read_index_file(&config, &canonical.join("ok.rs"))
+            .await
+            .expect("canonical");
+
+        assert_eq!(named, "fn ok() {}");
+        assert_eq!(resolved, "fn ok() {}");
+    }
+
+    #[tokio::test]
+    async fn an_indexed_read_refuses_a_file_that_is_a_link() {
+        let (_outside, ws, config) = workspace();
+
+        let read = read_index_file(&config, &ws.path().join("leak.rs")).await;
+
+        let err = read.expect_err("a link must not be read");
+        assert!(
+            err.to_string().starts_with("Failed to read file: "),
+            "{err}"
+        );
+        assert!(!err.to_string().contains("secret"), "{err}");
     }
 }
