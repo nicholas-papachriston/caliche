@@ -163,8 +163,7 @@ impl BinaryFileSessionStore {
                 }
             }
             std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-            #[cfg(unix)]
-            std::fs::File::open(&dir)?.sync_all()?;
+            sync_dir(&dir)?;
             Ok(())
         })
         .await
@@ -216,6 +215,16 @@ fn temp_path(dir: &std::path::Path, nanos: u128) -> std::path::PathBuf {
     ))
 }
 
+/// Make a rename in `dir` durable by syncing the directory. Only Unix
+/// syncs a directory this way; elsewhere this does nothing.
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// [`write_durably`] through the temp file `temp`, calling `before_rename`
 /// once it is synced. Tests inject a crash there.
 fn write_durably_with(
@@ -242,8 +251,7 @@ fn write_durably_with(
         before_rename()?;
         std::fs::rename(temp, path)
             .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;
-        #[cfg(unix)]
-        std::fs::File::open(dir)?.sync_all()?;
+        sync_dir(dir)?;
         Ok(())
     })();
     if written.is_err() && created {
