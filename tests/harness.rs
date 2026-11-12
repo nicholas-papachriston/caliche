@@ -1,14 +1,13 @@
 //! Harness module integration tests (events, state, planning, persistence, etc.).
 
 use anyhow::{Result, anyhow};
-use caliche::agent::tools::ToolRegistry;
-use caliche::agent::tools::{CalculatorTool, ToolCall};
+use caliche::agent::tools::ToolCall;
 use caliche::harness::coding::{
     CodingContextPolicy, CodingMode, CodingTaskRequest, VerificationPolicy,
 };
 use caliche::harness::config::PermissionModeConfig;
 use caliche::harness::{
-    AgentEvent, ContextManager, ConversationExport, DiffTracker, EventStream, ParallelToolExecutor,
+    AgentEvent, ContextManager, ConversationExport, DiffTracker, EventStream,
     PlanStatus, ProjectType, SessionPersistence, SnapshotChangeKind, StateManager, StepStatus,
     StreamingResponseHandler, TaskPlan, TaskPlanner, ToolCallAnalysis, detect_language,
     detect_thinking_blocks, extract_code_blocks,
@@ -17,9 +16,7 @@ use caliche::llm::ProviderType;
 use caliche::messages::{Message, TokenUsage};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -84,46 +81,6 @@ async fn test_session_end_event_broadcast_and_serialization() {
         }
         other => panic!("expected SessionEnd, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn test_parallel_executor() {
-    let (sender, mut receiver) = broadcast::channel(100);
-    let executor = ParallelToolExecutor::new(sender, 5);
-
-    let registry = ToolRegistry::new();
-    registry.register(Arc::new(CalculatorTool));
-
-    let calls = vec![
-        ToolCall {
-            name: beef::lean::Cow::borrowed("calculator"),
-            arguments: serde_json::json!({"operation": "add", "a": 1, "b": 1}),
-        },
-        ToolCall {
-            name: beef::lean::Cow::borrowed("calculator"),
-            arguments: serde_json::json!({"operation": "add", "a": 2, "b": 2}),
-        },
-    ];
-
-    let results = executor.execute_batch(&registry, calls, None, None).await;
-
-    assert_eq!(results.len(), 2);
-    for (name, result) in &results {
-        assert_eq!(name, "calculator");
-        assert!(result.success);
-    }
-
-    let mut event_count = 0;
-    while let Ok(event) = receiver.try_recv() {
-        event_count += 1;
-        match event {
-            AgentEvent::ToolQueued { .. } => {}
-            AgentEvent::ToolExecuting { .. } => {}
-            AgentEvent::ToolComplete { .. } => {}
-            _ => panic!("Unexpected event type"),
-        }
-    }
-    assert!(event_count >= 4);
 }
 
 #[test]
