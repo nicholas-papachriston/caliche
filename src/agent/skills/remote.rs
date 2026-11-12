@@ -534,13 +534,13 @@ fn source_entry_matches(owner_repo: &str, entry: &str) -> bool {
 fn find_skill_dirs(root: &Path, skill_path: Option<&str>) -> Result<Vec<PathBuf>> {
     if let Some(path) = skill_path {
         let dir = root.join(path);
-        if dir.join(SKILL_FILE).is_file() {
+        if is_skill_dir(root, &dir) {
             return Ok(vec![dir]);
         }
         bail!("no {SKILL_FILE} at {}", dir.display());
     }
     let mut out = Vec::new();
-    push_if_skill(root, &mut out);
+    push_if_skill(root, root, &mut out);
     for relative in [
         "skills",
         ".agents/skills",
@@ -552,7 +552,7 @@ fn find_skill_dirs(root: &Path, skill_path: Option<&str>) -> Result<Vec<PathBuf>
             continue;
         };
         for entry in entries.flatten() {
-            push_if_skill(&entry.path(), &mut out);
+            push_if_skill(root, &entry.path(), &mut out);
         }
     }
     if out.is_empty() {
@@ -561,10 +561,29 @@ fn find_skill_dirs(root: &Path, skill_path: Option<&str>) -> Result<Vec<PathBuf>
     Ok(out)
 }
 
-fn push_if_skill(dir: &Path, out: &mut Vec<PathBuf>) {
-    if dir.join(SKILL_FILE).is_file() {
+fn push_if_skill(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    if is_skill_dir(root, dir) {
         out.push(dir.to_path_buf());
     }
+}
+
+/// Whether `dir`, inside the checkout `root`, holds a `SKILL.md` that is a
+/// regular file reached from `root` without a link: a link in the checkout
+/// would otherwise install a directory from outside it as a skill.
+fn is_skill_dir(root: &Path, dir: &Path) -> bool {
+    let Ok(below) = dir.strip_prefix(root) else {
+        return false;
+    };
+    if below
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    caliche_sandbox::open_file_beneath(&root, &root.join(below).join(SKILL_FILE)).is_ok()
 }
 
 fn skill_name(dir: &Path) -> Result<String> {
@@ -794,5 +813,37 @@ mod tests {
             .status()
             .expect("git commit");
         assert!(commit.success());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::{SKILL_FILE, find_skill_dirs};
+
+    #[test]
+    fn a_skill_reached_through_a_link_in_the_checkout_is_not_found() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join(SKILL_FILE), "---\nname: outside\n---\n")
+            .expect("outside skill");
+        let checkout = tempfile::tempdir().expect("checkout");
+        let skills = checkout.path().join("skills");
+        std::fs::create_dir_all(skills.join("real")).expect("real dir");
+        std::fs::write(skills.join("real").join(SKILL_FILE), "real").expect("real skill");
+        std::os::unix::fs::symlink(outside.path(), skills.join("dir_link")).expect("dir link");
+        std::fs::create_dir(skills.join("file_link")).expect("file link dir");
+        std::os::unix::fs::symlink(
+            outside.path().join(SKILL_FILE),
+            skills.join("file_link").join(SKILL_FILE),
+        )
+        .expect("file link");
+
+        let found = find_skill_dirs(checkout.path(), None).expect("one real skill");
+        let named = find_skill_dirs(checkout.path(), Some("skills/dir_link"));
+
+        assert_eq!(found, [skills.join("real")]);
+        assert_eq!(
+            named.expect_err("a linked skill dir").to_string(),
+            format!("no {SKILL_FILE} at {}", skills.join("dir_link").display())
+        );
     }
 }
