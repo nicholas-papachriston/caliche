@@ -64,39 +64,35 @@ impl TemplateLoader {
     }
 
     /// Load all templates from a directory (supports nested structure: prompts/<name>/<version>.yaml)
+    ///
+    /// A relative `dir` is below the current directory, which is usually a
+    /// project, so the walk follows no link below the current directory: a
+    /// link committed into the project cannot load a template from outside
+    /// it. An absolute `dir` is trusted as named, and no link below it is
+    /// followed. A link, FIFO or other special file in the tree is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory, or one below it, cannot be listed
+    /// or is a link.
     pub async fn load_templates_from_dir<P: AsRef<Path>>(
         &self,
         dir: P,
     ) -> Result<Vec<AgentTemplate>> {
-        let dir = dir.as_ref();
+        let dir = dir.as_ref().to_path_buf();
+        let files = tokio::task::spawn_blocking(move || template_files(&dir)).await??;
         let mut templates = Vec::new();
-        let mut dirs_to_process = vec![dir.to_path_buf()];
-
-        // Use iterative approach to avoid recursion issues
-        while let Some(current_dir) = dirs_to_process.pop() {
-            let mut entries = tokio::fs::read_dir(&current_dir)
-                .await
-                .with_context(|| format!("Failed to read directory: {}", current_dir.display()))?;
-
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                if path.is_file() {
-                    let ext = path.extension().and_then(|s| s.to_str());
-                    if ext == Some("yaml") || ext == Some("yml") || ext == Some("json") {
-                        match self.load_template(&path).await {
-                            Ok(template) => templates.push(template),
-                            Err(e) => {
-                                tracing::warn!("Failed to load template {}: {}", path.display(), e);
-                            }
-                        }
-                    }
-                } else if path.is_dir() {
-                    // Add subdirectory to queue for processing
-                    dirs_to_process.push(path);
+        for (path, content) in files {
+            let loaded = String::from_utf8(content)
+                .context("template is not UTF-8")
+                .and_then(|content| self.load_template_from_str(&content, Some(path.clone())));
+            match loaded {
+                Ok(template) => templates.push(template),
+                Err(e) => {
+                    tracing::warn!("Failed to load template {}: {}", path.display(), e);
                 }
             }
         }
-
         Ok(templates)
     }
 
@@ -132,5 +128,98 @@ impl TemplateLoader {
 impl Default for TemplateLoader {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The anchor a template directory is walked below, and the directory as a
+/// path below that anchor.
+fn template_root(dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    if dir.is_absolute() {
+        let root = dir
+            .canonicalize()
+            .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
+        return Ok((root.clone(), root));
+    }
+    if !dir.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        anyhow::bail!(
+            "Template directory '{}' leaves the current directory",
+            dir.display()
+        );
+    }
+    let anchor = std::env::current_dir()?.canonicalize()?;
+    let target = anchor.join(dir).components().collect();
+    Ok((anchor, target))
+}
+
+/// The path and bytes of every template file below `dir`, read without
+/// following a link.
+fn template_files(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    use std::io::Read as _;
+    let (anchor, root) = template_root(dir)?;
+    let mut files = Vec::new();
+    let mut dirs_to_process = vec![root];
+    while let Some(current_dir) = dirs_to_process.pop() {
+        let entries = caliche_sandbox::list_dir_beneath(&anchor, &current_dir)
+            .with_context(|| format!("Failed to read directory: {}", current_dir.display()))?;
+        for entry in entries {
+            let path = current_dir.join(&entry.name);
+            match entry.kind {
+                caliche_sandbox::EntryKind::Dir => dirs_to_process.push(path),
+                caliche_sandbox::EntryKind::Other => {}
+                caliche_sandbox::EntryKind::File => {
+                    let ext = path.extension().and_then(|s| s.to_str());
+                    if !matches!(ext, Some("yaml" | "yml" | "json")) {
+                        continue;
+                    }
+                    let mut content = Vec::new();
+                    match caliche_sandbox::open_file_beneath(&anchor, &path)
+                        .and_then(|mut file| file.read_to_end(&mut content))
+                    {
+                        Ok(_) => files.push((path, content)),
+                        Err(e) => {
+                            tracing::warn!("Failed to read template {}: {}", path.display(), e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(all(test, unix, feature = "templates"))]
+mod link_tests {
+    use super::TemplateLoader;
+
+    const TEMPLATE: &str = include_str!("../../templates/tutor.yaml");
+
+    /// A template directory holding a link to an outside template file and
+    /// a link to an outside directory of templates loads only its own file.
+    #[tokio::test]
+    async fn a_linked_template_is_not_loaded() {
+        let dir = tempfile::tempdir().expect("templates");
+        let root = dir.path().canonicalize().expect("canonical templates");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(root.join("own.yaml"), TEMPLATE).expect("own");
+        std::fs::write(outside.path().join("leak.yaml"), TEMPLATE).expect("leak");
+        std::os::unix::fs::symlink(outside.path().join("leak.yaml"), root.join("file.yaml"))
+            .expect("file link");
+        std::os::unix::fs::symlink(outside.path(), root.join("linked")).expect("dir link");
+
+        let templates = TemplateLoader::new()
+            .load_templates_from_dir(&root)
+            .await
+            .expect("load");
+
+        let paths: Vec<_> = templates
+            .iter()
+            .map(|template| template.file_path.clone())
+            .collect();
+        assert_eq!(paths, vec![Some(root.join("own.yaml"))]);
     }
 }
