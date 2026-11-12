@@ -29,15 +29,7 @@ impl PathSecurityInspector {
             return false;
         }
         let path = Path::new(raw);
-        // A path with a root or a prefix is not under the workspace by
-        // joining: on Windows `\Windows\x` is on the current drive and
-        // `C:x` is relative to that drive's directory, though neither is
-        // `is_absolute`.
-        let anchored = matches!(
-            path.components().next(),
-            Some(std::path::Component::RootDir | std::path::Component::Prefix(_))
-        );
-        if !anchored {
+        if !is_anchored(raw) {
             return true;
         }
         let Ok(root) = self.workspace_root.canonicalize() else {
@@ -76,6 +68,16 @@ impl PathSecurityInspector {
         }
         paths
     }
+}
+
+/// Whether `raw` names a root or a drive, so it does not join the workspace.
+/// The same rule on every platform: a leading `/` or `\` (a rooted path, a
+/// UNC share, `\\?\`), or a drive letter and `:` (`C:\x`, and `C:x`, which
+/// is relative to that drive's directory).
+fn is_anchored(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    let drive = chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':');
+    raw.starts_with(['/', '\\']) || drive
 }
 
 #[async_trait]
@@ -162,39 +164,69 @@ mod tests {
         assert!(matches!(results[0].action, InspectionAction::Deny { .. }));
     }
 
-    /// On Windows a rooted path (`\\Windows\\...`) and a drive-relative one
-    /// (`C:x`) are not `is_absolute`, but they do not join the workspace. A
-    /// new file under the plain form of the workspace is inside it.
-    #[cfg(windows)]
+    /// Rooted, drive and UNC paths are anchored on every platform, so
+    /// none of them joins the workspace.
     #[tokio::test]
-    async fn windows_rooted_and_drive_relative_paths_are_denied() {
-        let dir = tempfile::tempdir().expect("workspace");
-        let inspector = PathSecurityInspector::new(dir.path());
-        let plain =
-            caliche_sandbox::external_tool_path(&dir.path().canonicalize().expect("canonical"));
-        let inside = plain.join("new.txt");
-        let cases = [
-            (r"\Windows\win.ini".to_string(), false),
-            ("/etc/passwd".to_string(), false),
-            ("C:outside.txt".to_string(), false),
-            (inside.to_string_lossy().into_owned(), true),
-            ("src\\lib.rs".to_string(), true),
-        ];
-        for (path, allowed) in cases {
+    async fn rooted_drive_and_unc_paths_are_denied_on_every_platform() {
+        let inspector = PathSecurityInspector::new("/tmp/my-workspace");
+        for path in [
+            "/etc/passwd",
+            r"\Windows\x",
+            "C:foo",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+        ] {
             let args = json!({"op": "read", "path": path});
             let request = ToolInspectorRequest {
                 tool_name: "fs",
                 arguments: &args,
-                call_id: "w",
+                call_id: "a",
             };
             let results = inspector.inspect(&request).await.expect("inspect");
             assert_eq!(
-                results[0].action == InspectionAction::Allow,
-                allowed,
-                "{path}: {:?}",
-                results[0].action
+                results[0].action,
+                InspectionAction::Deny {
+                    reason: format!("Path '{path}' is outside workspace '/tmp/my-workspace'")
+                },
+                "{path}"
             );
         }
+    }
+
+    #[test]
+    fn anchored_paths_are_told_from_relative_ones() {
+        for (raw, anchored) in [
+            ("/etc/passwd", true),
+            (r"\Windows\x", true),
+            ("C:foo", true),
+            (r"C:\x", true),
+            (r"\\server\share\x", true),
+            (r"\\?\C:\x", true),
+            ("src/lib.rs", false),
+            (r"src\lib.rs", false),
+            ("foo..bar.txt", false),
+            ("1:x", false),
+        ] {
+            assert_eq!(is_anchored(raw), anchored, "{raw}");
+        }
+    }
+
+    /// On Windows a new file under the plain form of the workspace is inside.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_new_file_under_the_plain_workspace_is_allowed() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let inspector = PathSecurityInspector::new(dir.path());
+        let plain =
+            caliche_sandbox::external_tool_path(&dir.path().canonicalize().expect("canonical"));
+        let args = json!({"op": "read", "path": plain.join("new.txt").to_string_lossy()});
+        let request = ToolInspectorRequest {
+            tool_name: "fs",
+            arguments: &args,
+            call_id: "w",
+        };
+        let results = inspector.inspect(&request).await.expect("inspect");
+        assert_eq!(results[0].action, InspectionAction::Allow);
     }
 
     #[tokio::test]
