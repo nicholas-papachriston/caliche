@@ -79,10 +79,36 @@ impl BinaryFileSessionStore {
     }
 
     fn path_for(&self, session_id: &str) -> std::path::PathBuf {
-        let sanitized = session_id.replace(['/', '\\', '.'], "_");
+        let sanitized = session_id.replace(UNSAFE_ID_CHARS, "_");
         self.dir.join(format!("{sanitized}.cls1"))
     }
+
+    /// Where a session was stored before [`UNSAFE_ID_CHARS`] covered every
+    /// character Windows reserves. There a `:` made an alternate data
+    /// stream, which loads but is never listed. Read and delete still find
+    /// such a session.
+    fn legacy_path_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
+        let sanitized = session_id.replace(['/', '\\', '.'], "_");
+        let legacy = self.dir.join(format!("{sanitized}.cls1"));
+        (cfg!(windows) && legacy != self.path_for(session_id)).then_some(legacy)
+    }
+
+    /// The stored file for `session_id`: the current name, else the legacy
+    /// one.
+    fn existing_path_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
+        std::iter::once(self.path_for(session_id))
+            .chain(self.legacy_path_for(session_id))
+            .find(|path| path.is_file())
+    }
 }
+
+/// Characters replaced by `_` in a session file name: path separators, `.`,
+/// and on Windows every other character it reserves in a file name (`:`
+/// would name an alternate data stream).
+#[cfg(windows)]
+const UNSAFE_ID_CHARS: &[char] = &['/', '\\', '.', ':', '*', '?', '"', '<', '>', '|'];
+#[cfg(not(windows))]
+const UNSAFE_ID_CHARS: &[char] = &['/', '\\', '.'];
 
 #[async_trait]
 impl SessionStore for BinaryFileSessionStore {
@@ -95,10 +121,9 @@ impl SessionStore for BinaryFileSessionStore {
     }
 
     async fn load_session(&self, session_id: &str) -> Result<Option<SessionSnapshot>> {
-        let path = self.path_for(session_id);
-        if !path.is_file() {
+        let Some(path) = self.existing_path_for(session_id) else {
             return Ok(None);
-        }
+        };
         let data = tokio::fs::read(&path).await?;
         let snapshot = decode_session_snapshot_v1(&data)?;
         Ok(Some(snapshot))
@@ -123,8 +148,7 @@ impl SessionStore for BinaryFileSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let path = self.path_for(session_id);
-        if path.is_file() {
+        if let Some(path) = self.existing_path_for(session_id) {
             tokio::fs::remove_file(path).await?;
         }
         Ok(())
@@ -160,6 +184,29 @@ mod tests {
                 total_tokens_estimated: 1,
             },
         })
+    }
+
+    /// A session stored under the old name, where `:` made an alternate
+    /// data stream, still loads and deletes.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_session_in_a_legacy_stream_still_loads_and_deletes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        let snap = minimal_snapshot("id:legacy")?;
+        let legacy = dir.path().join("id:legacy.cls1");
+        std::fs::write(&legacy, encode_session_snapshot_v1(&snap)?)?;
+
+        let loaded = store
+            .load_session("id:legacy")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("expected the legacy session"))?;
+        assert_eq!(loaded.session_id, "id:legacy");
+        assert_eq!(loaded.conversation_history[0].as_text(), Some("ping"));
+
+        store.delete_session("id:legacy").await?;
+        assert!(store.load_session("id:legacy").await?.is_none());
+        Ok(())
     }
 
     #[tokio::test]
