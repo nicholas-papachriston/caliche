@@ -1,6 +1,6 @@
 //! Unified session persistence: snapshot types and store trait.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,10 @@ pub trait SessionStore: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct BinaryFileSessionStore {
     dir: std::path::PathBuf,
+    /// Test hook: fail a save after its new file is in place and before an
+    /// old-name copy is removed.
+    #[cfg(test)]
+    fail_before_legacy_removal: bool,
 }
 
 impl BinaryFileSessionStore {
@@ -75,6 +79,8 @@ impl BinaryFileSessionStore {
     pub fn new(dir: impl AsRef<std::path::Path>) -> Self {
         Self {
             dir: dir.as_ref().to_path_buf(),
+            #[cfg(test)]
+            fail_before_legacy_removal: false,
         }
     }
 
@@ -104,6 +110,36 @@ impl BinaryFileSessionStore {
         let snapshot = decode_session_snapshot_v1(&data).ok()?;
         (snapshot.session_id == session_id).then_some((path, snapshot))
     }
+}
+
+/// Write `bytes` to `path` in `dir` so a crash leaves either the old file or
+/// the whole new one: write a temp file in `dir`, sync it, rename it over
+/// `path`, then sync `dir` (on Unix) so the rename is durable.
+fn write_durably(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let temp = dir.join(format!(".session-{}-{nanos}.tmp", std::process::id()));
+    let written = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .with_context(|| format!("create {}", temp.display()))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+            .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// End of every session file name. The `.id` part keeps these names apart
@@ -148,9 +184,17 @@ impl SessionStore for BinaryFileSessionStore {
         tokio::fs::create_dir_all(&self.dir).await?;
         let path = self.path_for(&snapshot.session_id);
         let bytes = encode_session_snapshot_v1(snapshot)?;
-        tokio::fs::write(path, bytes).await?;
-        // The session now has its own file; drop its old-scheme copy so it
-        // is listed once.
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || write_durably(&dir, &path, &bytes))
+            .await
+            .context("session write task failed")??;
+        #[cfg(test)]
+        if self.fail_before_legacy_removal {
+            anyhow::bail!("injected failure before the old-name copy is removed");
+        }
+        // The session's own file is now durable; only then drop its
+        // old-scheme copy, so it is listed once. A failure before this point
+        // leaves the old copy in place.
         if let Some((legacy, _)) = self.read_legacy(&snapshot.session_id).await {
             tokio::fs::remove_file(legacy).await?;
         }
@@ -332,6 +376,44 @@ mod tests {
         store.delete_session("a/b").await?;
         assert!(store.load_session("a/b").await?.is_none());
         assert_eq!(store.list_sessions().await?.len(), 0);
+        Ok(())
+    }
+
+    /// A save that fails after the new file is written and before the old
+    /// copy is removed leaves the old copy, and the session still loads.
+    #[tokio::test]
+    async fn a_save_that_fails_before_removing_the_old_copy_keeps_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut store = BinaryFileSessionStore::new(dir.path());
+        let legacy = dir.path().join("a_b.cls1");
+        std::fs::write(
+            &legacy,
+            encode_session_snapshot_v1(&tagged_snapshot("a/b")?)?,
+        )?;
+        store.fail_before_legacy_removal = true;
+
+        let err = store
+            .save_session(&tagged_snapshot("a/b")?)
+            .await
+            .expect_err("injected failure");
+
+        assert_eq!(
+            err.to_string(),
+            "injected failure before the old-name copy is removed"
+        );
+        assert!(legacy.is_file(), "the old copy was removed");
+        let loaded = store
+            .load_session("a/b")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the session was lost"))?;
+        assert_eq!(loaded.conversation_history[0].as_text(), Some("a/b"));
+        let names: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<_>>()?;
+        assert!(
+            names.iter().all(|name| !name.ends_with(".tmp")),
+            "{names:?}"
+        );
         Ok(())
     }
 
