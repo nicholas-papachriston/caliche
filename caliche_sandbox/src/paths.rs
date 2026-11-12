@@ -542,8 +542,8 @@ mod plain_path_tests {
     #[test]
     fn a_verbatim_drive_path_becomes_plain() {
         assert_eq!(
-            plain_from_verbatim(r"\\?\C:\Users\nicho\AppData\Local\Temp\.tmpAB\work"),
-            Some(r"C:\Users\nicho\AppData\Local\Temp\.tmpAB\work".to_string())
+            plain_from_verbatim(r"\\?\C:\Users\user\AppData\Local\Temp\.tmpAB\work"),
+            Some(r"C:\Users\user\AppData\Local\Temp\.tmpAB\work".to_string())
         );
         assert_eq!(plain_from_verbatim(r"\\?\D:\"), Some(r"D:\".to_string()));
     }

@@ -486,6 +486,30 @@ mod tests {
         assert_eq!(resolved.place, PathPlace::GitMetadata);
     }
 
+    /// An existing file canonicalizes to a verbatim path (`\\?\C:\...`) on
+    /// Windows; it is shown in plain form, so it is inside a plain workspace.
+    #[cfg(windows)]
+    #[test]
+    fn an_existing_file_resolves_to_its_plain_canonical_path() {
+        let dir = std::env::temp_dir().join(format!("policy-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("a.txt"), "a").expect("file");
+        let verbatim = std::fs::canonicalize(&dir).expect("canonical");
+        let plain = verbatim
+            .to_string_lossy()
+            .strip_prefix(r"\\?\")
+            .expect("canonicalize gives a verbatim path")
+            .to_owned();
+        let slashed = plain.replace('\\', "/");
+
+        let resolved = resolve_with_home(&format!(r"{plain}\a.txt"), roots(&plain, &plain), None)
+            .expect("path");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(resolved.canonical, format!("{slashed}/a.txt"));
+        assert_eq!(resolved.place, PathPlace::Inside);
+    }
+
     #[test]
     fn relative_dotdot_outside_the_workspace_is_outside() {
         let resolved =

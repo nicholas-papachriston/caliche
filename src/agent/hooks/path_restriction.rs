@@ -75,6 +75,11 @@ pub fn extract_paths_from_text(text: &str) -> Vec<PathBuf> {
         std::env::var("HOME").ok(),
         std::env::var("USERPROFILE").ok(),
     );
+    extract_paths_with_home(text, &home)
+}
+
+/// [`extract_paths_from_text`] with `~/` expanded against `home`.
+fn extract_paths_with_home(text: &str, home: &str) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
 
@@ -155,15 +160,25 @@ mod tests {
 
     #[test]
     fn extracts_paths_from_user_text() {
-        let paths =
-            extract_paths_from_text("Please read /etc/hosts and also check ~/projects/foo.rs");
-        assert!(paths.contains(&PathBuf::from("/etc/hosts")));
-        // ~/projects/foo.rs should be expanded
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.to_string_lossy().ends_with("projects/foo.rs"))
+        let paths = extract_paths_with_home(
+            "Please read /etc/hosts and also check ~/projects/foo.rs",
+            "/home/n",
         );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/etc/hosts"),
+                PathBuf::from("/home/n/projects/foo.rs")
+            ]
+        );
+    }
+
+    /// A Windows home does not start with `/`, and a home-relative path is
+    /// still extracted.
+    #[test]
+    fn a_home_path_under_a_windows_home_is_extracted() {
+        let paths = extract_paths_with_home("check ~/projects/foo.rs", r"C:\Users\n");
+        assert_eq!(paths, vec![PathBuf::from(r"C:\Users\n/projects/foo.rs")]);
     }
 
     #[test]
