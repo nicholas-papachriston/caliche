@@ -94,6 +94,47 @@ impl CommandHandler for InitHandler {
     }
 }
 
+/// The canonical working directory and `path` below it, for a file init
+/// reads or writes there, or `None` for a path the user named outside it.
+fn below_cwd(cwd: &Path, path: &Path) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
+    let Ok(below) = path.strip_prefix(cwd) else {
+        return Ok(None);
+    };
+    let root = cwd.canonicalize()?;
+    let target = root.join(below);
+    Ok(Some((root, target)))
+}
+
+/// The text of `path`, an init file. Inside the working directory it is
+/// opened without following a link, so a project's `AGENTS.md` that links
+/// elsewhere is not read into the prompt; a path the user named outside the
+/// working directory is read as named.
+fn read_init_file(cwd: &Path, path: &Path) -> Option<String> {
+    match below_cwd(cwd, path).ok()? {
+        Some((root, target)) => caliche::discovery::auto::read_workspace_text(&root, &target),
+        None => std::fs::read_to_string(path).ok(),
+    }
+}
+
+/// Write `content` to `path`, an init file. Inside the working directory it
+/// is written without following a link, so a project's `AGENTS.md` that
+/// links elsewhere does not overwrite the file it points to; a path the user
+/// named outside the working directory is written as named.
+async fn write_init_file(cwd: &Path, path: &Path, content: &str) -> Result<()> {
+    let Some((root, target)) = below_cwd(cwd, path)? else {
+        tokio::fs::write(path, content).await?;
+        return Ok(());
+    };
+    let content = content.to_owned();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write as _;
+        caliche_sandbox::create_file_beneath(&root, &target)?.write_all(content.as_bytes())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("init write task failed: {e}"))??;
+    Ok(())
+}
+
 /// Resolve the output path from args, defaulting to AGENTS.md in cwd.
 fn resolve_output_path(cwd: &Path, output: &Option<String>) -> PathBuf {
     match output {
@@ -160,7 +201,7 @@ pub async fn run_init_command(args: &InitArgs) -> Result<()> {
     // Generate content and write primary output file
     let content = generate_project_context(&project_name, &project_type, &cwd);
 
-    tokio::fs::write(&output_path, &content).await?;
+    write_init_file(&cwd, &output_path, &content).await?;
     println!("\nCreated: {}", output_path.display());
 
     let create_agentignore = if unattended {
@@ -176,7 +217,7 @@ pub async fn run_init_command(args: &InitArgs) -> Result<()> {
     if create_agentignore {
         let agentignore_path = cwd.join(".agentignore");
         let agentignore_content = generate_agentignore(&project_type);
-        tokio::fs::write(&agentignore_path, &agentignore_content).await?;
+        write_init_file(&cwd, &agentignore_path, &agentignore_content).await?;
         println!("Created: {}", agentignore_path.display());
     }
 
@@ -207,14 +248,16 @@ struct UserAnswers {
 /// Run an interactive questionnaire before AI analysis.
 ///
 /// Returns `None` if the user cancelled.
-fn run_questionnaire(output_path: &std::path::Path, force: bool) -> Result<Option<UserAnswers>> {
+fn run_questionnaire(
+    cwd: &Path,
+    output_path: &std::path::Path,
+    force: bool,
+) -> Result<Option<UserAnswers>> {
     use dialoguer::{Input, Select, theme::ColorfulTheme};
 
     let theme = ColorfulTheme::default();
     let existing_content: Option<String> = if output_path.exists() {
-        std::fs::read_to_string(output_path)
-            .ok()
-            .filter(|s| !s.trim().is_empty())
+        read_init_file(cwd, output_path).filter(|s| !s.trim().is_empty())
     } else {
         None
     };
@@ -390,7 +433,7 @@ pub async fn run_init_command_ai(args: &InitArgs, ctx: &mut CommandContext<'_>) 
     let output_path = resolve_output_path(&cwd, &args.output);
 
     // Interactive questionnaire — returns None if user cancelled
-    let answers = match run_questionnaire(&output_path, args.force)? {
+    let answers = match run_questionnaire(&cwd, &output_path, args.force)? {
         Some(a) => a,
         None => {
             println!("Initialization cancelled.");
@@ -425,7 +468,7 @@ pub async fn run_init_command_ai(args: &InitArgs, ctx: &mut CommandContext<'_>) 
 
     let content = extract_markdown_content(&response.text());
 
-    tokio::fs::write(&output_path, &content).await?;
+    write_init_file(&cwd, &output_path, &content).await?;
 
     let action = if answers.update_mode {
         "Updated"
@@ -447,7 +490,7 @@ pub async fn run_init_ai_for_repl(output: Option<String>, force: bool) -> Result
     let cwd = std::env::current_dir()?;
     let output_path = resolve_output_path(&cwd, &output);
 
-    let answers = match run_questionnaire(&output_path, force)? {
+    let answers = match run_questionnaire(&cwd, &output_path, force)? {
         Some(a) => a,
         None => {
             println!("Initialization cancelled.");
@@ -482,7 +525,7 @@ pub async fn run_init_ai_for_repl(output: Option<String>, force: bool) -> Result
 
     let content = extract_markdown_content(&response.text());
 
-    tokio::fs::write(&output_path, &content).await?;
+    write_init_file(&cwd, &output_path, &content).await?;
 
     let action = if answers.update_mode {
         "Updated"
@@ -1095,5 +1138,48 @@ mod tests {
         let text = "abc—def";
         let truncated = truncate_utf8(text, 4);
         assert_eq!(truncated, "abc");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::{read_init_file, write_init_file};
+
+    #[tokio::test]
+    async fn an_agents_file_that_is_a_link_is_neither_read_nor_overwritten() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        let target = outside.path().join("notes.md");
+        std::fs::write(&target, "outside text").expect("outside file");
+        let ws = tempfile::tempdir().expect("workspace");
+        let agents = ws.path().join("AGENTS.md");
+        std::os::unix::fs::symlink(&target, &agents).expect("file link");
+
+        let read = read_init_file(ws.path(), &agents);
+        let written = write_init_file(ws.path(), &agents, "new text").await;
+
+        assert_eq!(read, None);
+        assert!(written.is_err(), "a link must not be written through");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("outside file"),
+            "outside text"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agents_file_in_the_workspace_is_read_and_written() {
+        let ws = tempfile::tempdir().expect("workspace");
+        let agents = ws.path().join("AGENTS.md");
+        std::fs::write(&agents, "old text").expect("agents");
+
+        let read = read_init_file(ws.path(), &agents);
+        write_init_file(ws.path(), &agents, "new text")
+            .await
+            .expect("write");
+
+        assert_eq!(read.as_deref(), Some("old text"));
+        assert_eq!(
+            std::fs::read_to_string(&agents).expect("agents"),
+            "new text"
+        );
     }
 }
