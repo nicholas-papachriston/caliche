@@ -71,9 +71,10 @@ impl PathRestrictionHook {
 /// punctuation.  Returns a deduplicated list of resolved `PathBuf`s.
 #[must_use]
 pub fn extract_paths_from_text(text: &str) -> Vec<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
+    let home = home_dir_from(
+        std::env::var("HOME").ok(),
+        std::env::var("USERPROFILE").ok(),
+    );
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
 
@@ -104,6 +105,14 @@ pub fn extract_paths_from_text(text: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// The home directory `~/` expands to: `HOME`, else `USERPROFILE` (Windows
+/// sets only the second outside Git Bash), else none.
+fn home_dir_from(home: Option<String>, user_profile: Option<String>) -> String {
+    home.filter(|home| !home.is_empty())
+        .or(user_profile)
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl LifecycleHook for PathRestrictionHook {
     async fn on_pre_tool_use(&self, ctx: &HookContext<'_>) -> HookResult {
@@ -131,6 +140,18 @@ impl LifecycleHook for PathRestrictionHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_is_home_then_userprofile() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            home_dir_from(some("/home/n"), some(r"C:\Users\n")),
+            "/home/n"
+        );
+        assert_eq!(home_dir_from(None, some(r"C:\Users\n")), r"C:\Users\n");
+        assert_eq!(home_dir_from(some(""), some(r"C:\Users\n")), r"C:\Users\n");
+        assert_eq!(home_dir_from(None, None), "");
+    }
 
     #[test]
     fn extracts_paths_from_user_text() {

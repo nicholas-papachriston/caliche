@@ -217,8 +217,15 @@ mod tests {
     async fn a_new_file_under_the_plain_workspace_is_allowed() {
         let dir = tempfile::tempdir().expect("workspace");
         let inspector = PathSecurityInspector::new(dir.path());
-        let plain =
-            caliche_sandbox::external_tool_path(&dir.path().canonicalize().expect("canonical"));
+        // The plain form, built here rather than with the helper the
+        // inspector uses, so a broken helper cannot hide a failure.
+        let canonical = dir.path().canonicalize().expect("canonical");
+        let plain = PathBuf::from(
+            canonical
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .expect("a canonical Windows path is verbatim"),
+        );
         let args = json!({"op": "read", "path": plain.join("new.txt").to_string_lossy()});
         let request = ToolInspectorRequest {
             tool_name: "fs",
