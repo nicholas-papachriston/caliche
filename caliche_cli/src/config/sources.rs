@@ -523,11 +523,17 @@ impl ProjectTomlConfigSource {
 
     /// Find project config file (caliche.toml or .caliche/config.toml) from CWD up to git root.
     pub fn find_config_file() -> Option<PathBuf> {
-        Self::find_config_file_from(std::env::current_dir().ok()?)
+        let (_, candidates) = Self::candidates_from(std::env::current_dir().ok()?)?;
+        candidates.into_iter().find(|path| path.exists())
     }
 
-    fn find_config_file_from(cwd: PathBuf) -> Option<PathBuf> {
-        let git_root = find_git_root(&cwd);
+    /// The canonical root reads are confined to (the git root, or `cwd`
+    /// outside a repository), and the candidate files from `cwd` up to it,
+    /// in search order.
+    fn candidates_from(cwd: PathBuf) -> Option<(PathBuf, Vec<PathBuf>)> {
+        let cwd = caliche_sandbox::external_tool_path(&cwd.canonicalize().ok()?);
+        let git_root = find_git_root(&cwd).map(|root| caliche_sandbox::external_tool_path(&root));
+        let base = git_root.clone().unwrap_or_else(|| cwd.clone());
 
         let search_dirs: Vec<PathBuf> = if let Some(root) = &git_root {
             let mut dirs = Vec::new();
@@ -545,15 +551,21 @@ impl ProjectTomlConfigSource {
         };
 
         let filenames = ["caliche.toml", ".caliche/config.toml"];
-        for dir in search_dirs {
-            for name in filenames {
-                let path = dir.join(name);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
+        let candidates = search_dirs
+            .iter()
+            .flat_map(|dir| filenames.iter().map(move |name| dir.join(name)))
+            .collect();
+        Some((base, candidates))
+    }
+
+    /// The first candidate that reads, following no link below the root: the
+    /// file comes with the repository, and a link or a FIFO planted at one
+    /// of these names must not pull in an outside file or block startup.
+    fn read_config_from(cwd: PathBuf) -> Option<String> {
+        let (base, candidates) = Self::candidates_from(cwd)?;
+        candidates
+            .iter()
+            .find_map(|path| caliche::discovery::auto::read_workspace_text(&base, path))
     }
 }
 
@@ -566,17 +578,17 @@ impl Default for ProjectTomlConfigSource {
 #[async_trait]
 impl ConfigSource for ProjectTomlConfigSource {
     async fn load(&self) -> CliResult<Option<Config>> {
-        let found = match &self.start {
-            Some(start) => Self::find_config_file_from(start.clone()),
-            None => Self::find_config_file(),
+        let start = match &self.start {
+            Some(start) => start.clone(),
+            None => std::env::current_dir()
+                .map_err(|e| CliError::Config(format!("Failed to read current directory: {e}")))?,
         };
-        let Some(path) = found else {
+        let read = tokio::task::spawn_blocking(move || Self::read_config_from(start))
+            .await
+            .map_err(|e| CliError::Config(format!("Failed to read project config: {e}")))?;
+        let Some(content) = read else {
             return Ok(None);
         };
-
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|e| CliError::Config(format!("Failed to read project config: {}", e)))?;
 
         let config = Config::from_untrusted_toml(&content, "project-toml");
 
@@ -716,6 +728,56 @@ mod tests {
         });
         assert_eq!(image_provider, None);
         Ok(())
+    }
+
+    /// A `caliche.toml` link to an outside file is skipped, and the next
+    /// name below the root is read instead.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_project_toml_is_skipped_for_the_next_name() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("x.toml"), "banner = \"OUTSIDE\"\n").expect("outside");
+        std::os::unix::fs::symlink(
+            outside.path().join("x.toml"),
+            repo.path().join("caliche.toml"),
+        )
+        .expect("symlink");
+        std::fs::create_dir(repo.path().join(".caliche")).expect(".caliche");
+        std::fs::write(
+            repo.path().join(".caliche/config.toml"),
+            "banner = \"inside\"\n",
+        )
+        .expect("inside");
+        let source = ProjectTomlConfigSource {
+            start: Some(repo.path().to_path_buf()),
+        };
+
+        let config = source.load().await.expect("load").expect("inside config");
+
+        assert_eq!(config.banner.as_deref(), Some("inside"));
+    }
+
+    /// A FIFO at `caliche.toml` is skipped without blocking the load.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_project_toml_is_skipped_without_blocking() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let made = std::process::Command::new("mkfifo")
+            .arg(repo.path().join("caliche.toml"))
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let source = ProjectTomlConfigSource {
+            start: Some(repo.path().to_path_buf()),
+        };
+
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(5), source.load())
+            .await
+            .expect("a FIFO must not block the load")
+            .expect("load");
+
+        assert_eq!(loaded.map(|c| c.banner), None);
     }
 
     /// A cloned repository's config must not run host commands or pull

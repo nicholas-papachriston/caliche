@@ -753,14 +753,35 @@ pub async fn load_project_config() -> Option<ProjectConfig> {
         });
     }
 
+    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
+    find_project_file(&caliche_sandbox::external_tool_path(&cwd)).await
+}
+
+/// Names searched in each folder from the working directory up to the git
+/// root, in order.
+const PROJECT_FILE_NAMES: [&str; 5] = [
+    "AGENTS.md",
+    "AGENT.md",
+    ".caliche.md",
+    ".caliche/config.md",
+    "agent.md",
+];
+
+/// The first project file from the canonical, plain `cwd` up to its git
+/// root (or in `cwd` alone outside a repository).
+///
+/// Every read is confined to that root and follows no link: a cloned
+/// repository or a sandboxed command can plant a link or a FIFO at one of
+/// these names, and the content goes into the system prompt.
+async fn find_project_file(cwd: &Path) -> Option<ProjectConfig> {
     use crate::utils::find_git_root;
 
-    let cwd = std::env::current_dir().ok()?;
-    let git_root = find_git_root(&cwd);
+    let git_root = find_git_root(cwd).map(|root| caliche_sandbox::external_tool_path(&root));
+    let base = git_root.clone().unwrap_or_else(|| cwd.to_path_buf());
 
     let search_dirs: Vec<PathBuf> = if let Some(root) = &git_root {
         let mut dirs = Vec::new();
-        let mut current = cwd.clone();
+        let mut current = cwd.to_path_buf();
         loop {
             dirs.push(current.clone());
             if current == *root {
@@ -770,44 +791,39 @@ pub async fn load_project_config() -> Option<ProjectConfig> {
         }
         dirs
     } else {
-        vec![cwd]
+        vec![cwd.to_path_buf()]
     };
 
-    let search_filenames = [
-        "AGENTS.md",
-        "AGENT.md",
-        ".caliche.md",
-        ".caliche/config.md",
-        "agent.md",
-    ];
-
     for dir in search_dirs {
-        for filename in search_filenames {
+        for filename in PROJECT_FILE_NAMES {
             let path = dir.join(filename);
-            if path.exists() {
-                match tokio::fs::read_to_string(&path).await {
-                    Ok(content) if !content.trim().is_empty() => {
-                        let content = if content.len() > MAX_PROJECT_CONTEXT_BYTES {
-                            format!(
-                                "{}\n\n[project context truncated to {} bytes]",
-                                truncate_utf8(&content, MAX_PROJECT_CONTEXT_BYTES),
-                                MAX_PROJECT_CONTEXT_BYTES
-                            )
-                        } else {
-                            content
-                        };
-                        return Some(ProjectConfig {
-                            path,
-                            source_filename: filename.to_string(),
-                            content,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::debug!("Failed to read project config {}: {}", path.display(), e);
-                    }
-                    _ => {}
-                }
+            let (read_base, read_path) = (base.clone(), path.clone());
+            let read = tokio::task::spawn_blocking(move || {
+                caliche::discovery::auto::read_workspace_text(&read_base, &read_path)
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some(content) = read else {
+                continue;
+            };
+            if content.trim().is_empty() {
+                continue;
             }
+            let content = if content.len() > MAX_PROJECT_CONTEXT_BYTES {
+                format!(
+                    "{}\n\n[project context truncated to {} bytes]",
+                    truncate_utf8(&content, MAX_PROJECT_CONTEXT_BYTES),
+                    MAX_PROJECT_CONTEXT_BYTES
+                )
+            } else {
+                content
+            };
+            return Some(ProjectConfig {
+                path,
+                source_filename: filename.to_string(),
+                content,
+            });
         }
     }
 
@@ -979,6 +995,69 @@ fn detect_build_commands(cwd: &Path, project_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    mod project_file {
+        use super::*;
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        fn canonical_dir() -> (tempfile::TempDir, PathBuf) {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().canonicalize().expect("canonical temp dir");
+            (dir, path)
+        }
+
+        #[tokio::test]
+        async fn a_symlinked_agents_md_is_skipped_for_the_next_name() {
+            let (_ws_dir, ws) = canonical_dir();
+            let (_out_dir, outside) = canonical_dir();
+            fs::write(outside.join("secret.txt"), "OUTSIDE-SECRET-TEXT").expect("outside");
+            symlink(outside.join("secret.txt"), ws.join("AGENTS.md")).expect("symlink");
+            fs::write(ws.join(".caliche.md"), "inside rules").expect(".caliche.md");
+
+            let found = find_project_file(&ws).await.expect(".caliche.md is read");
+
+            assert_eq!(
+                (found.source_filename.as_str(), found.content.as_str()),
+                (".caliche.md", "inside rules")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_fifo_agents_md_is_skipped_without_blocking() {
+            let (_ws_dir, ws) = canonical_dir();
+            let fifo = ws.join("AGENTS.md");
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("mkfifo");
+            assert!(made.success());
+
+            let found =
+                tokio::time::timeout(std::time::Duration::from_secs(5), find_project_file(&ws))
+                    .await
+                    .expect("a FIFO must not block the search");
+
+            assert_eq!(found.map(|f| f.content), None);
+        }
+
+        #[tokio::test]
+        async fn a_file_between_cwd_and_the_git_root_is_read() {
+            let (_ws_dir, root) = canonical_dir();
+            fs::create_dir(root.join(".git")).expect(".git");
+            let cwd = root.join("a/b");
+            fs::create_dir_all(&cwd).expect("cwd");
+            fs::write(root.join("a/AGENTS.md"), "middle rules").expect("AGENTS.md");
+
+            let found = find_project_file(&cwd).await.expect("found");
+
+            assert_eq!(
+                (found.path, found.content),
+                (root.join("a/AGENTS.md"), "middle rules".to_string())
+            );
+        }
+    }
 
     #[test]
     fn test_init_handler_metadata() {
