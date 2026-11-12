@@ -29,13 +29,22 @@ impl PathSecurityInspector {
             return false;
         }
         let path = Path::new(raw);
-        if !path.is_absolute() {
+        // A path with a root or a prefix is not under the workspace by
+        // joining: on Windows `\Windows\x` is on the current drive and
+        // `C:x` is relative to that drive's directory, though neither is
+        // `is_absolute`.
+        let anchored = matches!(
+            path.components().next(),
+            Some(std::path::Component::RootDir | std::path::Component::Prefix(_))
+        );
+        if !anchored {
             return true;
         }
         let Ok(root) = self.workspace_root.canonicalize() else {
             return path == self.workspace_root.as_path() || path.starts_with(&self.workspace_root);
         };
         path.starts_with(&root)
+            || path.starts_with(caliche_sandbox::external_tool_path(&root))
             || path
                 .canonicalize()
                 .map(|canonical| canonical.starts_with(&root))
@@ -151,6 +160,41 @@ mod tests {
         };
         let results = inspector.inspect(&request).await.expect("inspect");
         assert!(matches!(results[0].action, InspectionAction::Deny { .. }));
+    }
+
+    /// On Windows a rooted path (`\\Windows\\...`) and a drive-relative one
+    /// (`C:x`) are not `is_absolute`, but they do not join the workspace. A
+    /// new file under the plain form of the workspace is inside it.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_rooted_and_drive_relative_paths_are_denied() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let inspector = PathSecurityInspector::new(dir.path());
+        let plain =
+            caliche_sandbox::external_tool_path(&dir.path().canonicalize().expect("canonical"));
+        let inside = plain.join("new.txt");
+        let cases = [
+            (r"\Windows\win.ini".to_string(), false),
+            ("/etc/passwd".to_string(), false),
+            ("C:outside.txt".to_string(), false),
+            (inside.to_string_lossy().into_owned(), true),
+            ("src\\lib.rs".to_string(), true),
+        ];
+        for (path, allowed) in cases {
+            let args = json!({"op": "read", "path": path});
+            let request = ToolInspectorRequest {
+                tool_name: "fs",
+                arguments: &args,
+                call_id: "w",
+            };
+            let results = inspector.inspect(&request).await.expect("inspect");
+            assert_eq!(
+                results[0].action == InspectionAction::Allow,
+                allowed,
+                "{path}: {:?}",
+                results[0].action
+            );
+        }
     }
 
     #[tokio::test]
