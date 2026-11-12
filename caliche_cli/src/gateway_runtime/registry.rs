@@ -1,7 +1,7 @@
 use super::types::{ForwardSessionRecord, GatewayRuntimeEntry, GatewayRuntimeRegistry};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -109,52 +109,47 @@ pub(super) async fn load_registry() -> Result<GatewayRuntimeRegistry> {
     .context("failed to query gateway runtime registry")?;
     let mut entries = Vec::new();
     for row in rows {
-        let forwarding = match (
-            row.get::<Option<String>, _>("forward_provider"),
-            row.get::<Option<i64>, _>("forward_tunnel_pid"),
-            row.get::<Option<String>, _>("forward_started_at"),
-            row.get::<Option<i64>, _>("forward_local_port"),
-            row.get::<Option<String>, _>("forward_log_path"),
-        ) {
-            (
-                Some(provider),
-                Some(tunnel_pid),
-                Some(started_at),
-                Some(local_port),
-                Some(log_path),
-            ) => {
-                let tunnel_pid_u32 = u32::try_from(tunnel_pid)
-                    .context("invalid stored forwarding pid in gateway runtime db")?;
-                let local_port_u16 = u16::try_from(local_port)
-                    .context("invalid stored forwarding port in gateway runtime db")?;
-                Some(ForwardSessionRecord {
-                    provider,
-                    tunnel_pid: tunnel_pid_u32,
-                    started_at,
-                    local_port: local_port_u16,
-                    log_path,
-                    public_url: row.get::<Option<String>, _>("forward_public_url"),
-                })
-            }
-            _ => None,
-        };
-        let pid_i64 = row.get::<i64, _>("pid");
-        let port_i64 = row.get::<i64, _>("port");
+        let forwarding = forwarding_from_row(&row)?;
+        let pid_i64 = row.try_get::<i64, _>("pid")?;
+        let port_i64 = row.try_get::<i64, _>("port")?;
         let pid = u32::try_from(pid_i64).context("invalid stored pid in gateway runtime db")?;
         let port = u16::try_from(port_i64).context("invalid stored port in gateway runtime db")?;
         entries.push(GatewayRuntimeEntry {
-            agent_id: row.get::<String, _>("agent_id"),
-            cwd: row.get::<String, _>("cwd"),
+            agent_id: row.try_get::<String, _>("agent_id")?,
+            cwd: row.try_get::<String, _>("cwd")?,
             pid,
             port,
-            role: row.get::<String, _>("role"),
-            main_gateway_url: row.get::<Option<String>, _>("main_gateway_url"),
-            started_at: row.get::<String, _>("started_at"),
-            log_path: row.get::<String, _>("log_path"),
+            role: row.try_get::<String, _>("role")?,
+            main_gateway_url: row.try_get::<Option<String>, _>("main_gateway_url")?,
+            started_at: row.try_get::<String, _>("started_at")?,
+            log_path: row.try_get::<String, _>("log_path")?,
             forwarding,
         });
     }
     Ok(GatewayRuntimeRegistry { entries })
+}
+
+/// The forwarding session stored in `row`, if every forwarding column is set.
+fn forwarding_from_row(row: &SqliteRow) -> Result<Option<ForwardSessionRecord>> {
+    let (Some(provider), Some(tunnel_pid), Some(started_at), Some(local_port), Some(log_path)) = (
+        row.try_get::<Option<String>, _>("forward_provider")?,
+        row.try_get::<Option<i64>, _>("forward_tunnel_pid")?,
+        row.try_get::<Option<String>, _>("forward_started_at")?,
+        row.try_get::<Option<i64>, _>("forward_local_port")?,
+        row.try_get::<Option<String>, _>("forward_log_path")?,
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(ForwardSessionRecord {
+        provider,
+        tunnel_pid: u32::try_from(tunnel_pid)
+            .context("invalid stored forwarding pid in gateway runtime db")?,
+        started_at,
+        local_port: u16::try_from(local_port)
+            .context("invalid stored forwarding port in gateway runtime db")?,
+        log_path,
+        public_url: row.try_get::<Option<String>, _>("forward_public_url")?,
+    }))
 }
 
 pub(super) async fn save_registry(registry: &GatewayRuntimeRegistry) -> Result<()> {
@@ -230,4 +225,37 @@ async fn upsert_runtime_entry(pool: &SqlitePool, entry: &GatewayRuntimeEntry) ->
     .await
     .context("failed to upsert gateway runtime entry")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caliche_test_env::EnvGuard;
+
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn a_mistyped_column_fails_the_load_naming_it() {
+        let home = tempfile::tempdir().expect("tempdir");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { EnvGuard::acquire() };
+        env.set("HOME", home.path());
+        let pool = runtime_db_pool().await.expect("runtime db");
+        sqlx::query(
+            "INSERT INTO gateway_runtime_entries (cwd, agent_id, pid, port, role, started_at, log_path)
+             VALUES ('/w', X'00', 1, 3000, 'worker', '2026-11-11', '/w/log')",
+        )
+        .execute(&pool)
+        .await
+        .expect("plant row");
+
+        let err = load_registry()
+            .await
+            .expect_err("a blob agent_id must fail");
+
+        assert_eq!(
+            format!("{err:#}"),
+            "error occurred while decoding column \"agent_id\": mismatched types; Rust type `alloc::string::String` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`: mismatched types; Rust type `alloc::string::String` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`"
+        );
+    }
 }

@@ -62,8 +62,8 @@ impl HistoryStore {
 
         let commands: Vec<String> = rows
             .into_iter()
-            .map(|row| row.get::<String, _>(0))
-            .collect();
+            .map(|row| row.try_get::<String, _>(0))
+            .collect::<Result<_, _>>()?;
 
         Ok(commands)
     }
@@ -84,8 +84,8 @@ impl HistoryStore {
 
         let commands: Vec<String> = rows
             .into_iter()
-            .map(|row| row.get::<String, _>(0))
-            .collect();
+            .map(|row| row.try_get::<String, _>(0))
+            .collect::<Result<_, _>>()?;
 
         Ok(commands)
     }
@@ -129,9 +129,41 @@ impl HistoryStore {
 
         let commands: Vec<String> = rows
             .into_iter()
-            .map(|row| row.get::<String, _>(0))
-            .collect();
+            .map(|row| row.try_get::<String, _>(0))
+            .collect::<Result<_, _>>()?;
 
         Ok(commands)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BLOB_COMMAND: &str = "error occurred while decoding column 0: mismatched types; Rust type `alloc::string::String` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`: mismatched types; Rust type `alloc::string::String` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`";
+
+    #[tokio::test]
+    async fn a_mistyped_command_fails_every_read_naming_the_column() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::open_at(&dir.path().join("caliche.db"))
+            .await
+            .expect("open db");
+        sqlx::query(
+            "INSERT INTO command_history (session_id, command, timestamp)
+             VALUES (NULL, X'00', '2026-11-11T00:00:00Z')",
+        )
+        .execute(db.pool())
+        .await
+        .expect("plant row");
+        let store = HistoryStore::new(db);
+
+        let recent = store.get_recent(None, 10).await.expect_err("get_recent");
+        let found = store.search("", 10).await.expect_err("search");
+        let all = store.get_all(None).await.expect_err("get_all");
+
+        assert_eq!(
+            [recent, found, all].map(|e| format!("{e:#}")),
+            [BLOB_COMMAND; 3]
+        );
     }
 }

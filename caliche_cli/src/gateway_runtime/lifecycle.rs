@@ -537,11 +537,17 @@ async fn resolve_gateway_llm_config(cwd: &str) -> Result<GatewayLlmConfigStatus>
         .context("failed to query gateway llm settings")?;
     let configured_provider = row
         .as_ref()
-        .and_then(|r| r.get::<Option<String>, _>("provider"))
+        .map(|r| r.try_get::<Option<String>, _>("provider"))
+        .transpose()
+        .context("failed to read gateway llm provider setting")?
+        .flatten()
         .filter(|v| !v.trim().is_empty());
     let configured_model = row
         .as_ref()
-        .and_then(|r| r.get::<Option<String>, _>("model"))
+        .map(|r| r.try_get::<Option<String>, _>("model"))
+        .transpose()
+        .context("failed to read gateway llm model setting")?
+        .flatten()
         .filter(|v| !v.trim().is_empty());
 
     let mut provider_from_scope = None;
@@ -623,6 +629,33 @@ mod tests {
         cmd.get_envs()
             .find(|(key, _)| *key == OsStr::new(name))
             .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn a_mistyped_llm_setting_fails_naming_the_column() {
+        let home = tempfile::tempdir().expect("tempdir");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that reads the environment while the guard lives.
+        let mut env = unsafe { EnvGuard::acquire() };
+        env.set("HOME", home.path());
+        let pool = runtime_db_pool().await.expect("runtime db");
+        sqlx::query(
+            "INSERT INTO gateway_runtime_settings (cwd, provider, model, updated_at)
+             VALUES ('/w', X'00', 'm', '2026-11-11')",
+        )
+        .execute(&pool)
+        .await
+        .expect("plant row");
+
+        let err = resolve_gateway_llm_config("/w")
+            .await
+            .expect_err("a blob provider must fail");
+
+        assert_eq!(
+            format!("{err:#}"),
+            "failed to read gateway llm provider setting: error occurred while decoding column \"provider\": mismatched types; Rust type `core::option::Option<alloc::string::String>` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`: mismatched types; Rust type `core::option::Option<alloc::string::String>` (as SQL type `TEXT`) is not compatible with SQL type `BLOB`"
+        );
     }
 
     async fn keychain_with(provider: &str, key: &str) -> SecureCredentialManager {

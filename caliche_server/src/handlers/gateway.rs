@@ -15,7 +15,7 @@ use caliche::gateway::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -233,15 +233,17 @@ pub async fn list_cluster_nodes_handler()
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let nodes = rows
-        .into_iter()
-        .map(|row| ClusterNodeResponse {
-            agent_id: row.get::<String, _>("agent_id"),
-            cwd: row.get::<String, _>("cwd"),
-            base_url: row.get::<String, _>("base_url"),
-            is_main: row.get::<bool, _>("is_main"),
-            updated_at: row.get::<String, _>("updated_at"),
+        .iter()
+        .map(|row| {
+            Ok(ClusterNodeResponse {
+                agent_id: cluster_column(row, "agent_id")?,
+                cwd: cluster_column(row, "cwd")?,
+                base_url: cluster_column(row, "base_url")?,
+                is_main: cluster_column(row, "is_main")?,
+                updated_at: cluster_column(row, "updated_at")?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
     Ok(Json(nodes))
 }
 
@@ -259,13 +261,15 @@ pub async fn list_cluster_routes_handler()
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let routes = rows
-        .into_iter()
-        .map(|row| ClusterRouteResponse {
-            route_key: row.get::<String, _>("route_key"),
-            target_agent_id: row.get::<String, _>("target_agent_id"),
-            updated_at: row.get::<String, _>("updated_at"),
+        .iter()
+        .map(|row| {
+            Ok(ClusterRouteResponse {
+                route_key: cluster_column(row, "route_key")?,
+                target_agent_id: cluster_column(row, "target_agent_id")?,
+                updated_at: cluster_column(row, "updated_at")?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
     Ok(Json(routes))
 }
 
@@ -802,6 +806,25 @@ fn is_main_gateway() -> bool {
         .unwrap_or(true)
 }
 
+/// Read the required `column` from a gateway cluster row. A NULL or mistyped
+/// value is a 500 that names the column, not a panic. sqlx decodes a NULL
+/// into `String` as `""` and into `bool` as `false`, so the value is read as
+/// an `Option` and a NULL is refused here.
+fn cluster_column<'r, T>(row: &'r SqliteRow, column: &str) -> Result<T, (StatusCode, String)>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    let internal = |reason: String| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("gateway cluster db: {reason}"),
+        )
+    };
+    row.try_get::<Option<T>, _>(column)
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or_else(|| internal(format!("column \"{column}\" is NULL")))
+}
+
 fn cluster_db_path() -> Result<std::path::PathBuf, (StatusCode, String)> {
     let home = dirs::home_dir().ok_or_else(|| {
         (
@@ -991,12 +1014,14 @@ async fn resolve_worker_node_for_route(
         return Ok(None);
     }
     let workers = workers_rows
-        .into_iter()
-        .map(|row| ClusterNode {
-            agent_id: row.get::<String, _>("agent_id"),
-            base_url: row.get::<String, _>("base_url"),
+        .iter()
+        .map(|row| {
+            Ok(ClusterNode {
+                agent_id: cluster_column(row, "agent_id")?,
+                base_url: cluster_column(row, "base_url")?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
 
     let existing = sqlx::query(
         r#"
@@ -1010,7 +1035,7 @@ async fn resolve_worker_node_for_route(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if let Some(row) = existing {
-        let target_id = row.get::<String, _>("target_agent_id");
+        let target_id: String = cluster_column(&row, "target_agent_id")?;
         if let Some(node) = workers.iter().find(|n| n.agent_id == target_id) {
             return Ok(Some(node.clone()));
         }
