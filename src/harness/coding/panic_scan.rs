@@ -41,18 +41,31 @@ pub fn panic_path_verification(root: &Path, changed_files: &[PathBuf]) -> Option
     })
 }
 
+/// Scan the changed Rust library files below `root`. Each is opened below
+/// the canonical root without following a link, so a link in the project
+/// does not pull an outside file into the report.
 fn scan_changed_rust_files(root: &Path, changed_files: &[PathBuf]) -> Vec<PanicPathHit> {
     let mut hits = Vec::new();
+    let Ok(base) = root.canonicalize() else {
+        return hits;
+    };
     for path in changed_files {
         if !is_library_rust_file(path) {
             continue;
         }
-        let abs = if path.is_absolute() {
-            path.clone()
+        let below = if path.is_absolute() {
+            match path
+                .strip_prefix(root)
+                .or_else(|_| path.strip_prefix(&base))
+            {
+                Ok(below) => below,
+                Err(_) => continue,
+            }
         } else {
-            root.join(path)
+            path.as_path()
         };
-        let Ok(source) = std::fs::read_to_string(&abs) else {
+        let Some(source) = crate::discovery::auto::read_workspace_text(&base, &base.join(below))
+        else {
             continue;
         };
         for (line, kind) in rust_panic_paths(&source) {
@@ -200,5 +213,39 @@ mod tests {
         assert!(!is_library_rust_file(Path::new("tests/foo.rs")));
         assert!(is_library_rust_file(Path::new("src/parse.rs")));
         assert!(!is_library_rust_file(Path::new("src/foo_test.rs")));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::scan_changed_rust_files;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_changed_file_that_is_a_link_is_not_scanned() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(
+            outside.path().join("secret.rs"),
+            "pub fn f() { None::<u8>.unwrap(); }\n",
+        )
+        .expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(ws.path().join("src")).expect("src");
+        std::fs::write(
+            ws.path().join("src").join("ok.rs"),
+            "pub fn g() { None::<u8>.unwrap(); }\n",
+        )
+        .expect("ok");
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.rs"),
+            ws.path().join("src").join("leak.rs"),
+        )
+        .expect("file link");
+        let changed = [PathBuf::from("src/ok.rs"), PathBuf::from("src/leak.rs")];
+
+        let hits = scan_changed_rust_files(ws.path(), &changed);
+
+        let paths: Vec<PathBuf> = hits.into_iter().map(|hit| hit.path).collect();
+        assert_eq!(paths, [PathBuf::from("src/ok.rs")]);
     }
 }
