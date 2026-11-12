@@ -84,7 +84,10 @@ impl HookRegistry {
     pub fn register(&mut self, matcher: HookMatcher, hook: Arc<dyn LifecycleHook>) {
         match matcher {
             HookMatcher::Tool { name } => {
-                self.hooks.entry(name.into_owned()).or_default().push(hook);
+                // Keyed by the tool the name runs, so a hook registered
+                // under an alias fires for that tool.
+                let name = caliche_policy::tool_name_as_run(&name).to_string();
+                self.hooks.entry(name).or_default().push(hook);
             }
             HookMatcher::All => {
                 // Store "all" hooks separately or apply to all tools
@@ -98,7 +101,8 @@ impl HookRegistry {
         self.completion_hooks.push(hook);
     }
 
-    /// Get hooks matching a tool name
+    /// Get hooks matching a tool name, the name the call runs as (see
+    /// [`caliche_policy::tool_name_as_run`]): hooks are registered under it.
     pub fn get_matching(&self, tool_name: &str) -> Vec<Arc<dyn LifecycleHook>> {
         let mut result = Vec::new();
 

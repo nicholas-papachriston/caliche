@@ -70,3 +70,114 @@ pub(crate) async fn execute_mcp_tool(
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::hooks::{HookContext, HookMatcher, HookResult, LifecycleHook};
+    use crate::agent::tools::common::set_tool_workspace_root;
+    use crate::agent::tools::fs_tool::FsTool;
+    use crate::mcp::protocol::ContentPart;
+    use async_trait::async_trait;
+
+    const VENDOR_DENY: &str = "floor denies reading vendor auth files";
+
+    #[derive(Debug)]
+    struct DenyHook;
+
+    #[async_trait]
+    impl LifecycleHook for DenyHook {
+        async fn on_pre_tool_use(&self, ctx: &HookContext<'_>) -> HookResult {
+            HookResult::deny(format!("hook stopped {}", ctx.tool_name))
+        }
+    }
+
+    fn text(result: &ToolsCallResult) -> String {
+        result
+            .content
+            .iter()
+            .flatten()
+            .filter_map(|part| match part {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn fs_registry() -> ToolRegistry {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(FsTool::new()));
+        registry
+    }
+
+    /// The MCP server gates a call under the name the registry runs it as,
+    /// so a padded name gets the `fs` decision and the `fs` hooks.
+    #[tokio::test]
+    async fn an_mcp_tool_call_is_gated_as_the_tool_it_runs() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        std::fs::create_dir_all(root.join(".codex")).expect("codex dir");
+        std::fs::write(root.join(".codex/auth.json"), "VENDOR-TOKEN").expect("auth");
+        std::fs::write(root.join("notes.txt"), "notes").expect("notes");
+        set_tool_workspace_root(Some(root.clone()));
+        let registry = fs_registry();
+        let auth = root.join(".codex/auth.json").to_string_lossy().into_owned();
+
+        let mut seen = Vec::new();
+        for name in ["fs", " fs", "fs ", "\tfs\n"] {
+            let args = serde_json::json!({"op": "read", "path": auth});
+            let result = execute_mcp_tool(&registry, &HookRegistry::new(), name, args).await;
+            seen.push((name, result.is_error, text(&result)));
+        }
+
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookMatcher::tool("fs"), Arc::new(DenyHook));
+        let args = serde_json::json!({"op": "read", "path": "notes.txt"});
+        let hooked = execute_mcp_tool(&registry, &hooks, " fs", args).await;
+
+        set_tool_workspace_root(None);
+        let refused = |name| (name, Some(true), VENDOR_DENY.to_string());
+        assert_eq!(
+            seen,
+            vec![
+                refused("fs"),
+                refused(" fs"),
+                refused("fs "),
+                refused("\tfs\n")
+            ]
+        );
+        assert_eq!(
+            (hooked.is_error, text(&hooked)),
+            (Some(true), "hook stopped fs".to_string())
+        );
+    }
+
+    /// A hook registered under an alias fires for the tool the alias runs.
+    #[tokio::test]
+    async fn a_hook_registered_under_an_alias_fires_for_its_tool() {
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookMatcher::tool("memory"), Arc::new(DenyHook));
+        hooks.register(HookMatcher::tool(" Shell "), Arc::new(DenyHook));
+        let registry = ToolRegistry::new();
+
+        let mut seen = Vec::new();
+        for name in ["workspace", "memory", "bash", "shell"] {
+            let result = execute_mcp_tool(&registry, &hooks, name, Value::Null).await;
+            seen.push((name, result.is_error, text(&result)));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "workspace",
+                    Some(true),
+                    "hook stopped workspace".to_string()
+                ),
+                ("memory", Some(true), "hook stopped workspace".to_string()),
+                ("bash", Some(true), "hook stopped bash".to_string()),
+                ("shell", Some(true), "hook stopped bash".to_string()),
+            ]
+        );
+    }
+}

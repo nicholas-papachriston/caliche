@@ -8,14 +8,20 @@ use crate::agent::hooks::policy_shadow::observe_live_outcome;
 use crate::agent::hooks::{HookContext, HookRegistry, HookResult};
 use crate::gateway::egress::{EgressClass, EgressPolicy, current_policy};
 use beef::lean::Cow;
-use caliche_policy::{Action, Decision, Effect, evaluate_action, evaluate_shadow};
+use caliche_policy::{
+    Action, Decision, Effect, evaluate_action, evaluate_shadow, tool_name_as_run,
+};
 use serde_json::Value;
 
 const URL_WALK_DEPTH: u8 = 8;
 
 /// Hard deny for a tool call. `None` means the call may run.
+///
+/// The call is checked under the name it runs as (see
+/// [`tool_name_as_run`]), so `" fs"` gets the `fs` decision.
 #[must_use]
 pub fn tool_deny_reason(tool: &str, args: &Value) -> Option<String> {
+    let tool = tool_name_as_run(tool);
     let decision = evaluate_shadow(tool, args);
     finish_tool(tool, args, &decision)
 }
@@ -93,6 +99,7 @@ fn first_denied_url(policy: &EgressPolicy, value: &Value, depth: u8) -> Option<S
 }
 
 async fn hook_block(hooks: &HookRegistry, tool: &str, args: &Value) -> Option<String> {
+    let tool = tool_name_as_run(tool);
     let matching = hooks.get_matching(tool);
     if matching.is_empty() {
         return None;

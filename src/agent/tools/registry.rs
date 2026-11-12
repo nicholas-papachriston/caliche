@@ -69,18 +69,7 @@ impl ToolRegistry {
     /// [`Self::expand_tool_alias_names`].
     #[must_use]
     pub fn canonical_tool_name(name: &str) -> &str {
-        let trimmed = name.trim();
-        if trimmed.eq_ignore_ascii_case("shell") {
-            "bash"
-        } else if trimmed.eq_ignore_ascii_case("web") {
-            "http"
-        } else if trimmed.eq_ignore_ascii_case("memory") {
-            "workspace"
-        } else if trimmed.eq_ignore_ascii_case("session") {
-            "sessions_send"
-        } else {
-            trimmed
-        }
+        caliche_policy::tool_name_as_run(name)
     }
 
     /// Expand ergonomic aliases used when building active-tool filters.

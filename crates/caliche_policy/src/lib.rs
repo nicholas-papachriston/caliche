@@ -74,6 +74,7 @@ mod request;
 mod rule;
 mod shadow;
 mod source;
+mod tool_name;
 
 pub use action::{
     Action, FsOp, HttpMethod, PathPlace, ResolvedPath, ShellPlan, ToolClass, ToolFacts,
@@ -128,3 +129,4 @@ pub use shadow::{
     evaluate_tool_gate, observe_shadow, shadow_enabled_value,
 };
 pub use source::{PolicySource, ingest_source, source_rules};
+pub use tool_name::{TOOL_ALIASES, tool_name_as_run};
