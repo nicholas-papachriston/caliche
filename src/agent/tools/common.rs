@@ -304,6 +304,91 @@ pub mod path {
             .map_err(std::io::Error::other)?
     }
 
+    /// The metadata of `path`, a canonical path, following no link.
+    ///
+    /// A regular file's metadata is read from the file the no-link open
+    /// returns. A directory is listed through [`list_resolved_dir`] first, so
+    /// a path with a link in it is refused rather than described.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the no-link open when `path` is neither a
+    /// regular file nor a directory reached without a link.
+    pub fn resolved_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+        metadata_beneath(fs_root(path), path)
+    }
+
+    /// The metadata of `path`, a path from [`resolve_path_for_tool`],
+    /// following no link below the workspace root, as [`open_tool_file`]
+    /// reads it. Only with host file system access unlocked is a path
+    /// outside the workspace described, and then by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` is outside the workspace and host access
+    /// is locked, or as [`resolved_metadata`] below the workspace.
+    pub fn tool_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+        match below_workspace(path) {
+            Ok((root, target)) => metadata_beneath(&root, &target),
+            Err(_) if super::host_fs_unlocked() => std::fs::metadata(path),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The metadata of the regular file or directory `target`, reached from
+    /// the canonical `root` without following a link.
+    fn metadata_beneath(root: &Path, target: &Path) -> std::io::Result<std::fs::Metadata> {
+        match open_walked_file(root, target) {
+            Ok(file) => file.metadata(),
+            Err(open_error) => {
+                #[cfg(any(unix, windows))]
+                if caliche_sandbox::list_dir_beneath(root, target).is_ok() {
+                    return std::fs::symlink_metadata(target);
+                }
+                Err(open_error)
+            }
+        }
+    }
+
+    /// [`resolved_metadata`] on a blocking thread.
+    ///
+    /// # Errors
+    ///
+    /// As [`resolved_metadata`].
+    pub async fn resolved_metadata_async(path: &Path) -> std::io::Result<std::fs::Metadata> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || resolved_metadata(&path))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// The canonical form of `path`, resolved on a blocking thread. It reads
+    /// no file; a caller opens the result with a no-link helper here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error canonicalizing `path`.
+    pub async fn canonical_path_async(path: &Path) -> std::io::Result<PathBuf> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || path.canonicalize())
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// [`list_resolved_dir`] on a blocking thread.
+    ///
+    /// # Errors
+    ///
+    /// As [`list_resolved_dir`].
+    pub async fn list_resolved_dir_async(
+        path: &Path,
+    ) -> std::io::Result<Vec<caliche_sandbox::DirEntryBeneath>> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || list_resolved_dir(&path))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
     /// Refuse `canonical`, the resolution of `lexical`, when `lexical` names
     /// a place inside the workspace and `canonical` is outside it.
     ///
@@ -1285,6 +1370,45 @@ mod tests {
             std::fs::read_to_string(&secret).expect("secret"),
             "OUTSIDE-SECRET"
         );
+    }
+
+    /// The metadata helpers describe a plain file and directory, and give
+    /// nothing for a file link or a path through a directory link that
+    /// leads out of the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn metadata_through_a_link_is_refused() {
+        use super::path;
+        let ws = tempfile::tempdir().expect("ws");
+        let out = tempfile::tempdir().expect("outside");
+        let root = ws.path().canonicalize().expect("root");
+        let outside = out.path().canonicalize().expect("outside");
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE-SECRET").expect("secret");
+        std::fs::write(root.join("a.txt"), "inside").expect("a.txt");
+        std::fs::create_dir(root.join("dir")).expect("dir");
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("leak.txt"))
+            .expect("file link");
+        std::os::unix::fs::symlink(&outside, root.join("linked")).expect("dir link");
+        super::set_tool_workspace_root(Some(root.clone()));
+        super::set_tool_host_fs_unlocked(false);
+
+        let described = |name: &str| {
+            let place = root.join(name);
+            (
+                path::resolved_metadata(&place).map(|meta| meta.len()).ok(),
+                path::tool_metadata(&place).map(|meta| meta.len()).ok(),
+            )
+        };
+        let kinds = [
+            described("a.txt"),
+            described("leak.txt"),
+            described("linked/secret.txt"),
+        ];
+        let dir_is_dir = path::tool_metadata(&root.join("dir")).map(|meta| meta.is_dir());
+        super::set_tool_workspace_root(None);
+
+        assert_eq!(kinds, [(Some(6), Some(6)), (None, None), (None, None)]);
+        assert!(dir_is_dir.is_ok_and(|is_dir| is_dir));
     }
 
     #[test]

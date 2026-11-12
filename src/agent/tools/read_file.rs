@@ -219,7 +219,7 @@ impl Tool for ReadFileTool {
 
         // Get file metadata
         let stage_start = measure_start();
-        let metadata = match std::fs::metadata(&normalized_path) {
+        let metadata = match path::resolved_metadata(&normalized_path) {
             Ok(m) => m,
             Err(e) => return ToolResult::error(format!("Failed to read file metadata: {e}")),
         };

@@ -253,7 +253,7 @@ fn apply_add_sync(path: &Path, contents: &str) -> Result<()> {
 }
 
 fn apply_delete_sync(path: &Path) -> Result<()> {
-    let recursive = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    let recursive = path::tool_metadata(path).is_ok_and(|meta| meta.is_dir());
     path::remove_tool_path(path, recursive)
         .with_context(|| format!("delete {}", path.display()))?;
     Ok(())

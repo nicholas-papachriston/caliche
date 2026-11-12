@@ -579,7 +579,7 @@ struct GrepRun {
 
 #[cfg(feature = "tools-grep")]
 fn run_grep_search(job: GrepSearchJob) -> Result<GrepRun, String> {
-    let metadata = std::fs::metadata(&job.normalized_path).map_err(|e| {
+    let metadata = path::resolved_metadata(&job.normalized_path).map_err(|e| {
         format!(
             "Failed to access path '{}': {e}",
             job.normalized_path.display()

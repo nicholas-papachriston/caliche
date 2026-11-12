@@ -3,7 +3,7 @@
 //! This tool enables semantic code search using embeddings, allowing the agent
 //! to find relevant code by meaning rather than exact text matching.
 
-use crate::agent::tools::common::params;
+use crate::agent::tools::common::{params, path};
 use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use crate::llm::EmbeddingProvider;
 use crate::utils::math::cosine_similarity;
@@ -337,7 +337,7 @@ impl SemanticSearchTool {
         let mut total_files = 0;
         let mut total_chunks = 0;
 
-        let workspace = tokio::fs::canonicalize(&self.config.workspace_root)
+        let workspace = path::canonical_path_async(&self.config.workspace_root)
             .await
             .with_context(|| {
                 format!(
@@ -376,30 +376,23 @@ impl SemanticSearchTool {
         files: &'a mut Vec<PathBuf>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let mut entries = tokio::fs::read_dir(dir)
+            let entries = path::list_resolved_dir_async(dir)
                 .await
                 .with_context(|| format!("Failed to read directory '{}'", dir.display()))?;
 
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .context("Failed to read directory entry")?
-            {
-                let path = entry.path();
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            for entry in entries {
+                let path = dir.join(&entry.name);
+                let file_name = entry.name.to_str().unwrap_or("");
                 // The entry's own type: a link is neither and is skipped.
-                let kind = entry
-                    .file_type()
-                    .await
-                    .context("Failed to read directory entry type")?;
+                let kind = entry.kind;
 
                 // Skip ignored directories
-                if kind.is_dir() {
+                if kind == caliche_sandbox::EntryKind::Dir {
                     if self.config.ignore_dirs.iter().any(|d| file_name == d) {
                         continue;
                     }
                     self.collect_files_recursive(&path, files).await?;
-                } else if kind.is_file()
+                } else if kind == caliche_sandbox::EntryKind::File
                     && let Some(ext) = path.extension().and_then(|e| e.to_str())
                     && self.config.file_extensions.iter().any(|e| e == ext)
                 {
@@ -572,7 +565,7 @@ impl Tool for SemanticSearchTool {
                 };
                 // The policy gate decides on this canonical path; it is read
                 // from the file system root without following a link.
-                let file = match tokio::fs::canonicalize(&file).await {
+                let file = match path::canonical_path_async(&file).await {
                     Ok(file) => file,
                     Err(e) => return ToolResult::error(format!("Failed to index file: {e}")),
                 };

@@ -68,7 +68,10 @@ async fn existing_file_len(
     sandbox: &dyn caliche_sandbox::SandboxHandleOps,
     path_str: &str,
 ) -> Option<u64> {
-    if let Ok(metadata) = std::fs::metadata(path_str) {
+    let host = std::path::Path::new(path_str);
+    if host.is_absolute()
+        && let Ok(metadata) = path::tool_metadata(host)
+    {
         return Some(metadata.len());
     }
     sandbox
@@ -168,7 +171,7 @@ impl Tool for WriteFileTool {
         let is_new = !file_path.exists();
 
         if !is_new
-            && let Ok(metadata) = std::fs::metadata(&file_path)
+            && let Ok(metadata) = path::tool_metadata(&file_path)
             && is_catastrophic_overwrite(metadata.len(), content.len(), append, force)
         {
             return catastrophic_overwrite_error(&path_str, metadata.len(), content.len());

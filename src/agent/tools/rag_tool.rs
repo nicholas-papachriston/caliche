@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs;
 
 mod formatters;
 mod types;
@@ -1076,26 +1075,20 @@ async fn collect_directory_files(
     let mut to_process = vec![normalized_path];
 
     while let Some(current_path) = to_process.pop() {
-        let mut entries = fs::read_dir(&current_path).await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to read directory '{}': {}",
-                current_path.display(),
-                e
-            )
-        })?;
-
-        while let Some(entry) = entries
-            .next_entry()
+        let entries = path::list_resolved_dir_async(&current_path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read directory entry: {e}"))?
-        {
-            let entry_path = entry.path();
-            let metadata = entry
-                .metadata()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to get metadata: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read directory '{}': {}",
+                    current_path.display(),
+                    e
+                )
+            })?;
 
-            if metadata.is_file() {
+        for entry in entries {
+            let entry_path = current_path.join(&entry.name);
+            // The entry's own type: a link is neither and is skipped.
+            if entry.kind == caliche_sandbox::EntryKind::File {
                 let file_name = entry_path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -1116,7 +1109,7 @@ async fn collect_directory_files(
                 {
                     return Ok(files);
                 }
-            } else if metadata.is_dir() && recursive {
+            } else if entry.kind == caliche_sandbox::EntryKind::Dir && recursive {
                 to_process.push(entry_path);
             }
         }

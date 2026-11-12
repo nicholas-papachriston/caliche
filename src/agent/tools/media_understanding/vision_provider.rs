@@ -51,7 +51,10 @@ impl MediaUnderstandingProvider for VisionMediaProvider {
         video_path: &Path,
         _config: &MediaConfig,
     ) -> anyhow::Result<String> {
-        let bytes = tokio::fs::read(video_path)
+        let video_path = &crate::agent::tools::common::path::canonical_path_async(video_path)
+            .await
+            .with_context(|| format!("Failed to resolve video '{}'", video_path.display()))?;
+        let bytes = crate::agent::tools::common::path::read_resolved_bytes_async(video_path)
             .await
             .with_context(|| format!("Failed to read video '{}'", video_path.display()))?;
         let message = crate::messages::Message::user_with_attachments(

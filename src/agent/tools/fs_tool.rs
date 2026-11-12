@@ -478,7 +478,7 @@ async fn execute_read_or_list(
     // when fs(op=read) targets a directory, auto-route to list.
     let is_directory = path::resolve_path_for_tool(&path_str)
         .ok()
-        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|p| path::tool_metadata(&p).ok())
         .is_some_and(|m| m.is_dir());
 
     if is_directory {
@@ -507,7 +507,7 @@ async fn execute_read_or_list(arguments: serde_json::Value) -> ToolResult {
 
     let is_directory = path::resolve_path_for_tool(&path_str)
         .ok()
-        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|p| path::tool_metadata(&p).ok())
         .is_some_and(|m| m.is_dir());
 
     if is_directory {
@@ -595,7 +595,7 @@ async fn execute_delete(path_str: &str, recursive: bool) -> ToolResult {
 }
 
 fn delete_path_sync(file_path: &std::path::Path, path_str: &str, recursive: bool) -> ToolResult {
-    let metadata = match std::fs::metadata(file_path) {
+    let metadata = match path::tool_metadata(file_path) {
         Ok(m) => m,
         Err(e) => {
             return ToolResult::error(format!(

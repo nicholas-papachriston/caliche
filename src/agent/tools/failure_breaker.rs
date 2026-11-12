@@ -905,7 +905,10 @@ fn resolve_against_cwd(cwd: Option<&str>, path: &str) -> String {
 }
 
 fn stamp_one(path: &str) -> PathStamp {
-    let meta = std::fs::metadata(path).ok();
+    let canonical = std::path::Path::new(path).canonicalize().ok();
+    let meta = canonical
+        .as_deref()
+        .and_then(|file| crate::agent::tools::common::path::resolved_metadata(file).ok());
     let mtime_nanos = meta.as_ref().and_then(|meta| {
         meta.modified()
             .ok()
@@ -915,7 +918,10 @@ fn stamp_one(path: &str) -> PathStamp {
         if !meta.is_file() || meta.len() > STAMP_HASH_MAX_BYTES {
             return None;
         }
-        std::fs::read(path).ok().map(|bytes| short_hash(&bytes))
+        let file = canonical.as_deref()?;
+        crate::agent::tools::common::path::read_resolved_bytes(file)
+            .ok()
+            .map(|bytes| short_hash(&bytes))
     });
     PathStamp {
         path: path.to_string(),

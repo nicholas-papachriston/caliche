@@ -84,13 +84,13 @@ fn append_top_level_with_walker(output: &mut String, path: &Path) {
 fn append_top_level_with_read_dir(output: &mut String, path: &Path) -> std::io::Result<()> {
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    for entry in std::fs::read_dir(path)?.flatten() {
-        let entry_path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
+    let listed = crate::agent::tools::common::path::list_resolved_dir(&path.canonicalize()?)?;
+    for entry in listed {
+        let name = entry.name.to_string_lossy().to_string();
         if name.starts_with('.') {
             continue;
         }
-        if entry_path.is_dir() {
+        if entry.kind == caliche_sandbox::EntryKind::Dir {
             dirs.push(name);
         } else {
             files.push(name);
@@ -817,9 +817,13 @@ mod link_tests {
     }
 
     async fn run(ws: &Path, action: &str) -> ToolResult {
-        WorkspaceTool
+        use crate::agent::tools::common::set_tool_workspace_root;
+        set_tool_workspace_root(Some(ws.to_path_buf()));
+        let result = WorkspaceTool
             .execute(json!({ "path": ws.to_string_lossy(), "action": action }))
-            .await
+            .await;
+        set_tool_workspace_root(None);
+        result
     }
 
     #[tokio::test]

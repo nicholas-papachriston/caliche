@@ -55,13 +55,14 @@ impl ToolMeta for VerifyIntegrationTool {
 impl Tool for VerifyIntegrationTool {
     async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
         let project_root = params::extract_string_or(&arguments, "project_root", ".");
-        let root = match std::env::current_dir() {
-            Ok(dir) => dir.join(&project_root),
-            Err(e) => return ToolResult::error(format!("Failed to get current directory: {e}")),
-        };
-        // The walks below read files under this canonical root without
+        // The root resolves against the tool workspace and is refused outside
+        // it; the walks below read files under the canonical root without
         // following a link.
-        let root = match root.canonicalize() {
+        let resolved = match tool_path::resolve_path_for_tool(&project_root) {
+            Ok(resolved) => resolved,
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
+        let root = match resolved.canonicalize() {
             Ok(root) if root.is_dir() => root,
             _ => {
                 return ToolResult::error(format!(
@@ -69,6 +70,9 @@ impl Tool for VerifyIntegrationTool {
                 ));
             }
         };
+        if let Err(e) = tool_path::refuse_link_out_of_workspace(&resolved, &root) {
+            return ToolResult::error(e.to_string());
+        }
 
         let paths: Vec<String> = arguments
             .get("paths")
@@ -172,35 +176,33 @@ fn list_recent_files(root: &std::path::Path) -> Vec<PathBuf> {
         if *visited >= MAX_CANDIDATES {
             return;
         }
-        let Ok(rd) = std::fs::read_dir(dir) else {
+        let Ok(entries) = tool_path::list_resolved_dir(dir) else {
             return;
         };
-        for e in rd.flatten() {
+        for e in entries {
             *visited += 1;
             if *visited >= MAX_CANDIDATES {
                 return;
             }
-            let p = e.path();
-            let Some(file_name) = p.file_name().and_then(|n| n.to_str()) else {
+            let p = dir.join(&e.name);
+            let Some(file_name) = e.name.to_str() else {
                 continue;
             };
             if file_name.starts_with('.') || IGNORED_DIRS.contains(&file_name) {
                 continue;
             }
             // The entry's own type: a link is neither, so it is skipped.
-            let Ok(kind) = e.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                walk(&p, out, visited);
-                continue;
-            }
-            if !kind.is_file() {
-                continue;
+            match e.kind {
+                caliche_sandbox::EntryKind::Dir => {
+                    walk(&p, out, visited);
+                    continue;
+                }
+                caliche_sandbox::EntryKind::Other => continue,
+                caliche_sandbox::EntryKind::File => {}
             }
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
             if matches!(ext, "lua" | "ts" | "tsx" | "js" | "jsx" | "rs" | "py")
-                && let Ok(m) = e.metadata().and_then(|m| m.modified())
+                && let Ok(m) = tool_path::resolved_metadata(&p).and_then(|m| m.modified())
             {
                 out.push((m, p));
             }
@@ -348,22 +350,17 @@ fn search_count_in_project(
         exclude: Option<&std::path::Path>,
         count: &mut usize,
     ) {
-        let Ok(rd) = std::fs::read_dir(dir) else {
+        let Ok(entries) = tool_path::list_resolved_dir(dir) else {
             return;
         };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.file_name()
-                .is_none_or(|n| n.to_str().is_none_or(|s| s.starts_with('.')))
-            {
+        for e in entries {
+            let p = dir.join(&e.name);
+            if e.name.to_str().is_none_or(|s| s.starts_with('.')) {
                 continue;
             }
-            let Ok(kind) = e.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
+            if e.kind == caliche_sandbox::EntryKind::Dir {
                 walk(root, &p, needle, exclude, count);
-            } else if kind.is_file()
+            } else if e.kind == caliche_sandbox::EntryKind::File
                 && p.extension().is_some_and(|e| {
                     matches!(e.to_str(), Some("lua" | "ts" | "tsx" | "js" | "jsx" | "rs"))
                 })
@@ -422,5 +419,37 @@ mod link_tests {
             .collect();
         assert_eq!(checked.len(), 1, "{report}");
         assert!(checked[0].ends_with(" ok.rs"), "{report}");
+    }
+
+    /// The project root resolves in the tool workspace, not the process
+    /// directory, and a root outside the workspace is refused.
+    #[tokio::test]
+    async fn the_project_root_is_the_tool_workspace() {
+        use crate::agent::tools::Tool;
+        use crate::agent::tools::common::set_tool_workspace_root;
+        let (outside, _ws, root) = workspace();
+        let outside_root = outside.path().canonicalize().expect("canonical outside");
+        set_tool_workspace_root(Some(root.clone()));
+
+        let own = super::VerifyIntegrationTool
+            .execute(serde_json::json!({}))
+            .await;
+        let out = super::VerifyIntegrationTool
+            .execute(serde_json::json!({ "project_root": outside_root.to_string_lossy() }))
+            .await;
+        set_tool_workspace_root(None);
+
+        assert!(own.content.contains(" ok.rs"), "{own:?}");
+        assert_eq!(
+            (out.success, out.error),
+            (
+                false,
+                Some(format!(
+                    "Path '{}' is outside workspace '{}'",
+                    outside_root.display(),
+                    root.display()
+                ))
+            )
+        );
     }
 }

@@ -51,7 +51,10 @@ impl MediaUnderstandingProvider for WhisperApiProvider {
         audio_path: &Path,
         config: &MediaConfig,
     ) -> anyhow::Result<String> {
-        let metadata = tokio::fs::metadata(audio_path)
+        let audio_path = &crate::agent::tools::common::path::canonical_path_async(audio_path)
+            .await
+            .with_context(|| format!("Failed to resolve audio file '{}'", audio_path.display()))?;
+        let metadata = crate::agent::tools::common::path::resolved_metadata_async(audio_path)
             .await
             .with_context(|| format!("Failed to stat audio file '{}'", audio_path.display()))?;
         if metadata.len() > (config.max_file_size_mb as u64 * 1024 * 1024) {
@@ -62,7 +65,7 @@ impl MediaUnderstandingProvider for WhisperApiProvider {
             ));
         }
 
-        let bytes = tokio::fs::read(audio_path)
+        let bytes = crate::agent::tools::common::path::read_resolved_bytes_async(audio_path)
             .await
             .with_context(|| format!("Failed to read audio file '{}'", audio_path.display()))?;
         let filename = audio_path
