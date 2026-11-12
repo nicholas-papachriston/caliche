@@ -289,11 +289,16 @@ impl SandboxInstance for WasmtimeSandboxInstance {
         }
         let resolved = self.resolve_user_path(path);
         self.validate_sandbox_path(&resolved, true)?;
-        if let Some(parent) = resolved.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create parent {}", parent.display()))?;
-        }
-        std::fs::write(&resolved, content)
+        let (Some(parent), Some(name)) = (resolved.parent(), resolved.file_name()) else {
+            bail!("failed to write {}: no file name", resolved.display());
+        };
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent {}", parent.display()))?;
+        let canonical = std::fs::canonicalize(parent)
+            .with_context(|| format!("failed to write {}", resolved.display()))?
+            .join(name);
+        self.validate_sandbox_path(&canonical, true)?;
+        write_canonical_no_link(&canonical, content)
             .with_context(|| format!("failed to write {}", resolved.display()))?;
         Ok(())
     }
@@ -317,6 +322,15 @@ fn read_canonical_no_link(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     crate::paths::open_file_beneath(root, path)?.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+/// Write `content` to `path`, whose parent is canonical, opening every
+/// component from the file system root without following a link, so a link
+/// swapped in after the path was validated is refused.
+fn write_canonical_no_link(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let root = path.ancestors().last().unwrap_or(path);
+    crate::paths::create_file_beneath(root, path)?.write_all(content)
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
@@ -406,5 +420,75 @@ mod tests {
             error.to_string(),
             "wasmtime is not installed outside the workspace"
         );
+    }
+
+    /// A sandbox instance on `workspace` that may write there.
+    async fn instance(workspace: &Path) -> Box<dyn SandboxInstance> {
+        let config = crate::config::policy_to_config(
+            crate::config::NamedPolicy::WorkspaceWrite,
+            workspace,
+            None,
+            SandboxBackendType::WasmWasmtime {
+                policy: crate::config::NamedPolicy::WorkspaceWrite,
+                modules: HashMap::new(),
+            },
+        );
+        WasmtimeBackend::new()
+            .expect("backend")
+            .create(&config, workspace)
+            .await
+            .expect("instance")
+    }
+
+    /// `a.txt` in the workspace flips between a plain file and a link to a
+    /// file outside it while the instance reads and writes it. Every read
+    /// and write that a check let through must stay on the plain file, so
+    /// a link swapped in after the check is never followed.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_link_swapped_in_after_the_check_is_never_followed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "OUTSIDE-SECRET").expect("secret");
+        let target = root.join("a.txt");
+        std::fs::write(&target, "inside").expect("inside");
+        let sandbox = instance(&root).await;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let flipper = {
+            let (stop, target, secret) = (Arc::clone(&stop), target.clone(), secret.clone());
+            std::thread::spawn(move || {
+                let staged = target.with_file_name("staged");
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::os::unix::fs::symlink(&secret, &staged);
+                    let _ = std::fs::rename(&staged, &target);
+                    let _ = std::fs::write(&staged, "inside");
+                    let _ = std::fs::rename(&staged, &target);
+                }
+            })
+        };
+        let path = target.to_string_lossy().into_owned();
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let mut leaked = None;
+        while Instant::now() < deadline && leaked.is_none() {
+            if let Ok(bytes) = sandbox.read_file(&path).await
+                && bytes != b"inside"
+            {
+                leaked = Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            let _ = sandbox.write_file(&path, b"inside").await;
+            if std::fs::read(&secret).expect("secret") != b"OUTSIDE-SECRET" {
+                leaked = Some("the outside file was written".to_string());
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().expect("flipper");
+
+        assert_eq!(leaked, None);
     }
 }
