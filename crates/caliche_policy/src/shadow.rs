@@ -217,7 +217,9 @@ fn tool_class_from_name(tool: &str) -> ToolClass {
         "web_fetch" | "web_search" => ToolClass::WebFetch,
         "execute_python" => ToolClass::CodeExec,
         "apply_patch" => ToolClass::Patch,
-        "git" => ToolClass::Git,
+        "git" | "git_status" | "git_diff" | "git_log" | "git_branch" | "git_commit" => {
+            ToolClass::Git
+        }
         "sql" | "sql_execution" => ToolClass::Sql,
         "workspace" => ToolClass::Workspace,
         other if other.contains("__") => ToolClass::Mcp,
@@ -243,7 +245,37 @@ fn facts_from_args(class: ToolClass, tool: &str, args: &Value) -> ToolFacts {
             host: host_from_args(args).unwrap_or_default(),
         },
         ToolClass::Mcp => mcp_facts(tool),
+        // These open the repository or directory their `path` names and
+        // return what they find there, so the path gets the inside and
+        // outside check a filesystem read gets.
+        ToolClass::Git => ToolFacts::Fs {
+            op: git_op(tool, args),
+            paths: paths_from_args(args),
+        },
+        ToolClass::Workspace => ToolFacts::Fs {
+            op: FsOp::Read,
+            paths: paths_from_args(args),
+        },
         _ => ToolFacts::Opaque,
+    }
+}
+
+/// A git call that only reads the repository is a read. A commit or a
+/// branch change is [`FsOp::Other`]: not a read, and not a file edit that
+/// an edit overlay could allow.
+fn git_op(tool: &str, args: &Value) -> FsOp {
+    let operation = match tool {
+        "git" => args
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or("status"),
+        other => other.strip_prefix("git_").unwrap_or(other),
+    };
+    let branch_action = args.get("action").and_then(Value::as_str).unwrap_or("list");
+    match operation {
+        "status" | "diff" | "log" => FsOp::Read,
+        "branch" if branch_action == "list" => FsOp::Read,
+        _ => FsOp::Other,
     }
 }
 
@@ -726,6 +758,95 @@ mod tests {
             "/work",
         );
         assert_eq!(decision.effect, Effect::Allow);
+    }
+
+    /// The git and workspace tools open the directory their `path` names,
+    /// so an outside one asks a human, or is denied without one, in every
+    /// overlay, the commit and the branch change included.
+    #[test]
+    fn git_and_workspace_tools_outside_the_workspace_ask_or_are_denied() {
+        for (tool, args) in [
+            (
+                "git",
+                serde_json::json!({"operation": "diff", "path": "/etc"}),
+            ),
+            (
+                "git",
+                serde_json::json!({"operation": "commit", "path": "/srv/repo", "message": "m"}),
+            ),
+            ("git_diff", serde_json::json!({"path": "/srv/repo"})),
+            ("git_log", serde_json::json!({"path": "/srv/repo"})),
+            ("git_status", serde_json::json!({"path": "/srv/repo"})),
+            (
+                "git_branch",
+                serde_json::json!({"path": "/srv/repo", "action": "create", "branch_name": "b"}),
+            ),
+            (
+                "git_commit",
+                serde_json::json!({"path": "/srv/repo", "message": "m"}),
+            ),
+            (
+                "workspace",
+                serde_json::json!({"action": "config", "path": "/etc"}),
+            ),
+            (
+                "workspace",
+                serde_json::json!({"action": "structure", "path": "../.."}),
+            ),
+            (
+                "workspace",
+                serde_json::json!({"action": "entry_points", "path": "/srv"}),
+            ),
+            (
+                "workspace",
+                serde_json::json!({"action": "codebase_context", "path": "/srv"}),
+            ),
+        ] {
+            for overlay in [
+                crate::posture::ModeOverlay::Default,
+                crate::posture::ModeOverlay::AcceptEdits,
+                crate::posture::ModeOverlay::AcceptAll,
+            ] {
+                let asked = gate(
+                    tool,
+                    &args,
+                    overlay,
+                    crate::principal::ApprovalWaiter::Present(HumanChannel::CliTty),
+                    "/work",
+                );
+                assert_eq!(asked.effect, Effect::Ask, "{tool} {args} {overlay:?}");
+                assert_eq!(asked.reason.code(), ReasonCode::OutsideWorkspace);
+                let closed = gate(
+                    tool,
+                    &args,
+                    overlay,
+                    crate::principal::ApprovalWaiter::Absent,
+                    "/work",
+                );
+                assert_eq!(closed.effect, Effect::Deny, "{tool} {args} {overlay:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn git_and_workspace_reads_inside_the_workspace_are_allowed() {
+        for (tool, args) in [
+            ("git", serde_json::json!({"operation": "diff"})),
+            ("git_status", serde_json::json!({"path": "."})),
+            (
+                "workspace",
+                serde_json::json!({"action": "structure", "path": "src"}),
+            ),
+        ] {
+            let decision = gate(
+                tool,
+                &args,
+                crate::posture::ModeOverlay::Default,
+                crate::principal::ApprovalWaiter::Absent,
+                "/work",
+            );
+            assert_eq!(decision.effect, Effect::Allow, "{tool} {args}");
+        }
     }
 
     #[test]
