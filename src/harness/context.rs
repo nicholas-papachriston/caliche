@@ -222,8 +222,14 @@ impl ContextManager {
 
     /// Update git context
     pub async fn refresh_git_context(&mut self) -> Result<Option<GitContext>> {
-        // Check if .git directory exists
-        if !self.workspace_root.join(".git").exists() {
+        // Only the workspace's own repository goes into context. A `.git`
+        // that is a link, or a workspace without its own `.git`, gives none,
+        // so a link committed into a project cannot put another
+        // repository's branch and remote into the prompt.
+        if !matches!(
+            caliche_policy::classify(&self.workspace_root),
+            Ok(caliche_policy::WorkspaceGit::Own { .. })
+        ) {
             self.git_context = None;
             return Ok(None);
         }
@@ -447,4 +453,56 @@ pub fn detect_language(ext: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(all(test, unix, feature = "tools-git"))]
+mod git_context_tests {
+    use super::ContextManager;
+
+    /// A repository with its own branch name, made outside the workspace.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn outside_repo(branch: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("outside repo");
+        let repo = git2::Repository::init(dir.path()).expect("init");
+        repo.remote("origin", "https://token@example.invalid/outside.git")
+            .expect("remote");
+        let sig = git2::Signature::now("t", "t@example.invalid").expect("sig");
+        let tree = repo
+            .find_tree(repo.index().expect("index").write_tree().expect("tree"))
+            .expect("find tree");
+        let commit = repo
+            .commit(None, &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+        repo.branch(branch, &repo.find_commit(commit).expect("c"), true)
+            .expect("branch");
+        repo.set_head(&format!("refs/heads/{branch}"))
+            .expect("head");
+        dir
+    }
+
+    /// A workspace whose `.git` is a link to another repository gives no
+    /// git context; one with its own repository gives its own.
+    #[tokio::test]
+    async fn only_the_workspace_own_repository_goes_into_context() {
+        let outside = outside_repo("outside-branch");
+        let linked = tempfile::tempdir().expect("linked workspace");
+        std::os::unix::fs::symlink(outside.path().join(".git"), linked.path().join(".git"))
+            .expect("link");
+        let own = outside_repo("own-branch");
+
+        let from_link = ContextManager::new(linked.path().to_path_buf())
+            .refresh_git_context()
+            .await
+            .expect("refresh");
+        let from_own = ContextManager::new(own.path().to_path_buf())
+            .refresh_git_context()
+            .await
+            .expect("refresh");
+
+        assert!(from_link.is_none(), "{from_link:?}");
+        assert_eq!(
+            from_own.map(|context| context.branch).as_deref(),
+            Some("own-branch")
+        );
+    }
 }
