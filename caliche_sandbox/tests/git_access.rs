@@ -3,6 +3,7 @@
 #![cfg(any(unix, windows))]
 
 use caliche_policy::{COMMONDIR_FILE, plant_linked_worktree, write_loose_git_dir};
+use caliche_sandbox::external_tool_path;
 use caliche_sandbox::git_access::{
     CheckedRepository, WORKTREE_GITDIR_FILE, check_repository, refusal,
 };
@@ -164,11 +165,11 @@ fn the_pinned_environment_names_the_checked_paths() {
     assert_eq!(
         set.map(|(name, value)| (name, PathBuf::from(value))),
         [
-            ("GIT_DIR", ws.join(".git")),
-            ("GIT_WORK_TREE", ws.clone()),
+            ("GIT_DIR", external_tool_path(&ws.join(".git"))),
+            ("GIT_WORK_TREE", external_tool_path(&ws)),
             (
                 "GIT_CEILING_DIRECTORIES",
-                ws.parent().expect("parent").to_path_buf()
+                external_tool_path(ws.parent().expect("parent"))
             ),
         ]
     );

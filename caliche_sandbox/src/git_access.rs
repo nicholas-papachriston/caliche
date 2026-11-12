@@ -9,7 +9,7 @@
 //! [`CheckedRepository::git_env`] gives the environment that pins `git` to
 //! the checked paths.
 
-use crate::paths::{EntryKind, list_dir_beneath, open_file_beneath};
+use crate::paths::{EntryKind, external_tool_path, list_dir_beneath, open_file_beneath};
 use caliche_policy::{COMMONDIR_FILE, GIT_DIR_NAME, common_dir_path, gitfile_path, is_git_dir};
 use std::ffi::OsString;
 use std::io::{self, Read as _};
@@ -47,19 +47,17 @@ pub struct CheckedRepository {
 
 impl CheckedRepository {
     /// Variables to set, then variables to remove, so `git` uses exactly
-    /// these paths and discovers nothing above the work tree.
+    /// these paths and discovers nothing above the work tree. The paths are
+    /// given in the form an external program reads (no `\\?\` prefix on
+    /// Windows, see [`external_tool_path`]).
     #[must_use]
     pub fn git_env(&self) -> ([(&'static str, OsString); 3], [&'static str; 5]) {
-        let ceiling = self
-            .work_tree
-            .parent()
-            .unwrap_or(&self.work_tree)
-            .as_os_str()
-            .to_owned();
+        let plain = |path: &Path| external_tool_path(path).into_os_string();
+        let ceiling = plain(self.work_tree.parent().unwrap_or(&self.work_tree));
         (
             [
-                (GIT_DIR_VAR, self.git_dir.as_os_str().to_owned()),
-                (GIT_WORK_TREE_VAR, self.work_tree.as_os_str().to_owned()),
+                (GIT_DIR_VAR, plain(&self.git_dir)),
+                (GIT_WORK_TREE_VAR, plain(&self.work_tree)),
                 (GIT_CEILING_DIRECTORIES_VAR, ceiling),
             ],
             GIT_REDIRECT_VARS,
@@ -80,7 +78,7 @@ impl CheckedRepository {
     pub fn git_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new("git");
         self.pin(&mut command);
-        command.current_dir(&self.work_tree);
+        command.current_dir(external_tool_path(&self.work_tree));
         command
     }
 }
