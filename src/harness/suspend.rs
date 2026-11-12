@@ -144,45 +144,39 @@ impl SuspendedSession {
     pub fn from_json(json: &str) -> Result<Self> {
         serde_json::from_str(json).context("parse suspended session")
     }
-
-    /// Write `{session_id}.suspend.json` under `dir`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session id is unsafe or the write fails.
-    pub fn save_to_dir(&self, dir: &Path) -> Result<PathBuf> {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("create suspend dir {}", dir.display()))?;
-        let path = suspend_path(dir, &self.session_id)?;
-        std::fs::write(&path, self.to_json()?)
-            .with_context(|| format!("write suspend snapshot {}", path.display()))?;
-        Ok(path)
-    }
-
-    /// Load `{session_id}.suspend.json` from `dir`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file is missing or invalid.
-    pub fn load_from_dir(dir: &Path, session_id: &str) -> Result<Self> {
-        let path = suspend_path(dir, session_id)?;
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("read suspend snapshot {}", path.display()))?;
-        Self::from_json(&raw)
-    }
 }
 
 /// Directory-backed store for suspended sessions.
+///
+/// Snapshots are read and written below an anchor directory without
+/// following any link below it: the workspace for the store a workspace
+/// keeps in `.caliche/suspended`, and the store directory itself for one
+/// named elsewhere. A link committed into a project therefore cannot feed
+/// `/resume` a snapshot from outside it, or take a save outside it.
 #[derive(Debug, Clone)]
 pub struct SuspendStore {
     dir: PathBuf,
+    anchor: PathBuf,
 }
 
 impl SuspendStore {
-    /// Store snapshots under `dir`.
+    /// Store snapshots under `dir`, which is trusted as named.
     #[must_use]
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        let dir = dir.into();
+        Self {
+            anchor: dir.clone(),
+            dir,
+        }
+    }
+
+    /// The store a workspace keeps in `.caliche/suspended`.
+    #[must_use]
+    pub fn for_workspace(workspace: &Path) -> Self {
+        Self {
+            dir: workspace.join(".caliche").join("suspended"),
+            anchor: workspace.to_path_buf(),
+        }
     }
 
     /// Directory used for `{session_id}.suspend.json` files.
@@ -191,30 +185,63 @@ impl SuspendStore {
         &self.dir
     }
 
+    /// The canonical anchor and the snapshot path for `session_id` below it.
+    fn place(&self, session_id: &str) -> Result<(PathBuf, PathBuf)> {
+        let anchor = self
+            .anchor
+            .canonicalize()
+            .with_context(|| format!("open suspend dir {}", self.dir.display()))?;
+        let below = self
+            .dir
+            .strip_prefix(&self.anchor)
+            .unwrap_or_else(|_| Path::new(""));
+        Ok((
+            anchor.clone(),
+            suspend_path(&anchor.join(below), session_id)?,
+        ))
+    }
+
     /// Persist `snapshot` and return the file path.
     ///
     /// # Errors
     ///
-    /// Returns an error when the write fails.
+    /// Returns an error when the session id is unsafe, a component below
+    /// the anchor is a link, or the write fails.
     pub fn save(&self, snapshot: &SuspendedSession) -> Result<PathBuf> {
-        snapshot.save_to_dir(&self.dir)
+        use std::io::Write as _;
+        if self.anchor == self.dir {
+            std::fs::create_dir_all(&self.dir)
+                .with_context(|| format!("create suspend dir {}", self.dir.display()))?;
+        }
+        let (anchor, path) = self.place(&snapshot.session_id)?;
+        let json = snapshot.to_json()?;
+        caliche_sandbox::create_file_beneath(&anchor, &path)
+            .and_then(|mut file| file.write_all(json.as_bytes()))
+            .with_context(|| format!("write suspend snapshot {}", path.display()))?;
+        Ok(path)
     }
 
     /// Load a snapshot by session id.
     ///
     /// # Errors
     ///
-    /// Returns an error when the snapshot is missing or invalid.
+    /// Returns an error when the snapshot is missing, invalid, or reached
+    /// through a link.
     pub fn load(&self, session_id: &str) -> Result<SuspendedSession> {
-        SuspendedSession::load_from_dir(&self.dir, session_id)
+        use std::io::Read as _;
+        let (anchor, path) = self.place(session_id)?;
+        let mut raw = String::new();
+        caliche_sandbox::open_file_beneath(&anchor, &path)
+            .and_then(|mut file| file.read_to_string(&mut raw))
+            .with_context(|| format!("read suspend snapshot {}", path.display()))?;
+        SuspendedSession::from_json(&raw)
     }
 
     /// True when a snapshot exists for `session_id`.
     #[must_use]
     pub fn contains(&self, session_id: &str) -> bool {
-        suspend_path(&self.dir, session_id)
-            .map(|path| path.exists())
-            .unwrap_or(false)
+        self.place(session_id)
+            .is_ok_and(|(anchor, path)| caliche_sandbox::open_file_beneath(&anchor, &path).is_ok())
     }
 }
 
@@ -264,5 +291,74 @@ mod tests {
     fn rejects_path_traversal_session_id() {
         let err = sanitize_session_id("../etc/passwd").expect_err("unsafe id");
         assert!(err.to_string().contains("invalid suspend session id"));
+    }
+
+    /// A workspace whose `.caliche` is a link to an outside directory, or
+    /// whose snapshot is a link to an outside file: `/resume` loads nothing
+    /// from outside, and a save writes nothing there.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_workspace_snapshot_is_not_loaded_or_written() {
+        for layout in ["linked dir", "linked file"] {
+            let workspace = tempfile::TempDir::new().expect("workspace");
+            let root = workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace");
+            let outside = tempfile::TempDir::new().expect("outside");
+            let outside_dir = outside.path().join("suspended");
+            std::fs::create_dir(&outside_dir).expect("outside suspended");
+            let mut planted = SuspendedSession::new("sess-1");
+            planted.turn_count = 7;
+            let planted_json = planted.to_json().expect("json");
+            std::fs::write(outside_dir.join("sess-1.suspend.json"), &planted_json)
+                .expect("planted");
+            if layout == "linked dir" {
+                std::os::unix::fs::symlink(outside.path(), root.join(".caliche"))
+                    .expect("dir link");
+            } else {
+                std::fs::create_dir_all(root.join(".caliche/suspended")).expect("suspended");
+                std::os::unix::fs::symlink(
+                    outside_dir.join("sess-1.suspend.json"),
+                    root.join(".caliche/suspended/sess-1.suspend.json"),
+                )
+                .expect("file link");
+            }
+            let store = SuspendStore::for_workspace(&root);
+
+            let loaded = store.load("sess-1");
+            let contained = store.contains("sess-1");
+            let saved = store.save(&SuspendedSession::new("sess-1"));
+
+            assert!(loaded.is_err(), "{layout}: loaded {loaded:?}");
+            assert!(!contained, "{layout}");
+            assert!(saved.is_err(), "{layout}: saved {saved:?}");
+            assert_eq!(
+                std::fs::read_to_string(outside_dir.join("sess-1.suspend.json")).expect("planted"),
+                planted_json,
+                "{layout}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_snapshot_round_trips() {
+        let workspace = tempfile::TempDir::new().expect("workspace");
+        let store = SuspendStore::for_workspace(workspace.path());
+        let mut snap = SuspendedSession::new("sess-2");
+        snap.turn_count = 3;
+
+        let path = store.save(&snap).expect("save");
+
+        assert_eq!(
+            path,
+            workspace
+                .path()
+                .canonicalize()
+                .expect("canonical")
+                .join(".caliche/suspended/sess-2.suspend.json")
+        );
+        assert!(store.contains("sess-2"));
+        assert_eq!(store.load("sess-2").expect("load").turn_count, 3);
     }
 }

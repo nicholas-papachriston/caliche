@@ -310,7 +310,7 @@ mod tests {
             .iter()
             .map(caliche::harness::ExportedMessage::from)
             .collect();
-        caliche::harness::SuspendStore::new(workspace.path().join(".caliche").join("suspended"))
+        caliche::harness::SuspendStore::for_workspace(workspace.path())
             .save(&snapshot)
             .expect("save snapshot");
 

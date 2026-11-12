@@ -275,13 +275,16 @@ impl SlashCommandExecutor {
         }
     }
 
-    fn suspend_dir(state: &InteractiveState) -> PathBuf {
+    /// The store `CALICHE_SUSPEND_DIR` names, or else the workspace's own.
+    fn suspend_store(state: &InteractiveState) -> SuspendStore {
         std::env::var("CALICHE_SUSPEND_DIR")
             .ok()
             .map(|raw| raw.trim().to_string())
             .filter(|raw| !raw.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| state.working_directory.join(".caliche").join("suspended"))
+            .map_or_else(
+                || SuspendStore::for_workspace(&state.working_directory),
+                SuspendStore::new,
+            )
     }
 
     pub(crate) fn handle_suspend(
@@ -298,7 +301,7 @@ impl SlashCommandExecutor {
             total_tokens: u32::try_from(state.total_tokens).ok(),
             ..TokenUsage::default()
         };
-        let path = SuspendStore::new(Self::suspend_dir(state)).save(&snapshot)?;
+        let path = Self::suspend_store(state).save(&snapshot)?;
         Ok(SlashCommandResult::StatusMessage(format!(
             "Session suspended to {} (resume with /resume {session_id})",
             path.display()
@@ -312,7 +315,7 @@ impl SlashCommandExecutor {
         id: Option<&str>,
     ) -> Result<SlashCommandResult> {
         if let Some(raw_id) = id.filter(|value| !value.is_empty() && *value != "last") {
-            let store = SuspendStore::new(Self::suspend_dir(state));
+            let store = Self::suspend_store(state);
             if store.contains(raw_id) {
                 let snapshot = store.load(raw_id)?;
                 let history = snapshot.to_messages();
