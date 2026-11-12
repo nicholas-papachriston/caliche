@@ -79,36 +79,68 @@ impl BinaryFileSessionStore {
     }
 
     fn path_for(&self, session_id: &str) -> std::path::PathBuf {
-        let sanitized = session_id.replace(UNSAFE_ID_CHARS, "_");
+        self.dir.join(format!(
+            "{}{SESSION_FILE_SUFFIX}",
+            encode_session_id(session_id)
+        ))
+    }
+
+    /// Where the old scheme stored `session_id`: `/`, `\\` and `.` became
+    /// `_`, so two IDs could share a file, and on Windows a `:` named an
+    /// alternate data stream. Its stem has no `.`, so it never equals a
+    /// [`Self::path_for`] name.
+    fn legacy_path_for(&self, session_id: &str) -> std::path::PathBuf {
+        let sanitized = session_id.replace(['/', '\\', '.'], "_");
         self.dir.join(format!("{sanitized}.cls1"))
     }
 
-    /// Where a session was stored before [`UNSAFE_ID_CHARS`] covered every
-    /// character Windows reserves. There a `:` made an alternate data
-    /// stream, which loads but is never listed. Read and delete still find
-    /// such a session.
-    fn legacy_path_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
-        let sanitized = session_id.replace(['/', '\\', '.'], "_");
-        let legacy = self.dir.join(format!("{sanitized}.cls1"));
-        (cfg!(windows) && legacy != self.path_for(session_id)).then_some(legacy)
-    }
-
-    /// The stored file for `session_id`: the current name, else the legacy
-    /// one.
-    fn existing_path_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
-        std::iter::once(self.path_for(session_id))
-            .chain(self.legacy_path_for(session_id))
-            .find(|path| path.is_file())
+    /// The old-scheme file for `session_id`, if it holds that session.
+    async fn read_legacy(&self, session_id: &str) -> Option<(std::path::PathBuf, SessionSnapshot)> {
+        let path = self.legacy_path_for(session_id);
+        if !path.is_file() {
+            return None;
+        }
+        let data = tokio::fs::read(&path).await.ok()?;
+        let snapshot = decode_session_snapshot_v1(&data).ok()?;
+        (snapshot.session_id == session_id).then_some((path, snapshot))
     }
 }
 
-/// Characters replaced by `_` in a session file name: path separators, `.`,
-/// and on Windows every other character it reserves in a file name (`:`
-/// would name an alternate data stream).
-#[cfg(windows)]
-const UNSAFE_ID_CHARS: &[char] = &['/', '\\', '.', ':', '*', '?', '"', '<', '>', '|'];
-#[cfg(not(windows))]
-const UNSAFE_ID_CHARS: &[char] = &['/', '\\', '.'];
+/// End of every session file name. The `.id` part keeps these names apart
+/// from old-scheme names, whose stem has no `.`.
+const SESSION_FILE_SUFFIX: &str = ".id.cls1";
+
+/// Windows device names, reserved in a file name with any extension.
+const WINDOWS_DEVICE_NAMES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+
+/// A file-name stem for `session_id` that no other ID shares and every
+/// platform accepts: ASCII letters, digits, `-` and `_` stay, every other
+/// byte (`%` and `.` included) becomes `%XX`, and the first character of a
+/// Windows device name (`CON`, `COM1`) is encoded too.
+fn encode_session_id(session_id: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(session_id.len());
+    for byte in session_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    if is_windows_device_name(&out) {
+        let first = out.remove(0);
+        out.insert_str(0, &format!("%{:02X}", u32::from(first)));
+    }
+    out
+}
+
+fn is_windows_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    let numbered = (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && upper.len() == 4
+        && upper.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
+    WINDOWS_DEVICE_NAMES.contains(&upper.as_str()) || numbered
+}
 
 #[async_trait]
 impl SessionStore for BinaryFileSessionStore {
@@ -117,16 +149,24 @@ impl SessionStore for BinaryFileSessionStore {
         let path = self.path_for(&snapshot.session_id);
         let bytes = encode_session_snapshot_v1(snapshot)?;
         tokio::fs::write(path, bytes).await?;
+        // The session now has its own file; drop its old-scheme copy so it
+        // is listed once.
+        if let Some((legacy, _)) = self.read_legacy(&snapshot.session_id).await {
+            tokio::fs::remove_file(legacy).await?;
+        }
         Ok(())
     }
 
     async fn load_session(&self, session_id: &str) -> Result<Option<SessionSnapshot>> {
-        let Some(path) = self.existing_path_for(session_id) else {
-            return Ok(None);
-        };
-        let data = tokio::fs::read(&path).await?;
-        let snapshot = decode_session_snapshot_v1(&data)?;
-        Ok(Some(snapshot))
+        let path = self.path_for(session_id);
+        if path.is_file() {
+            let data = tokio::fs::read(&path).await?;
+            return decode_session_snapshot_v1(&data).map(Some);
+        }
+        Ok(self
+            .read_legacy(session_id)
+            .await
+            .map(|(_, snapshot)| snapshot))
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
@@ -148,8 +188,12 @@ impl SessionStore for BinaryFileSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
-        if let Some(path) = self.existing_path_for(session_id) {
+        let path = self.path_for(session_id);
+        if path.is_file() {
             tokio::fs::remove_file(path).await?;
+        }
+        if let Some((legacy, _)) = self.read_legacy(session_id).await {
+            tokio::fs::remove_file(legacy).await?;
         }
         Ok(())
     }
@@ -186,23 +230,129 @@ mod tests {
         })
     }
 
-    /// A session stored under the old name, where `:` made an alternate
-    /// data stream, still loads and deletes.
+    /// A snapshot whose message text is its ID, so a load shows whose file
+    /// it read.
+    fn tagged_snapshot(id: &str) -> Result<SessionSnapshot> {
+        let mut snapshot = minimal_snapshot(id)?;
+        snapshot.conversation_history = vec![Message::user(id)];
+        Ok(snapshot)
+    }
+
+    /// Save every ID, then check each loads its own text and all are listed.
+    async fn assert_each_has_its_own_file(ids: &[&str]) -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        for id in ids {
+            store.save_session(&tagged_snapshot(id)?).await?;
+        }
+        for id in ids {
+            let loaded = store
+                .load_session(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("{id} was not stored"))?;
+            assert_eq!(loaded.session_id, *id);
+            assert_eq!(loaded.conversation_history[0].as_text(), Some(*id));
+        }
+        assert_eq!(store.list_sessions().await?.len(), ids.len());
+        Ok(())
+    }
+
+    #[test]
+    fn session_file_names_encode_every_reserved_character() {
+        let store = BinaryFileSessionStore::new("/sessions");
+        let name = |id: &str| {
+            store
+                .path_for(id)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        };
+        let cases = [
+            (
+                "0190b8c2-7d1e-7a00-8f00-5e55105e55a1",
+                "0190b8c2-7d1e-7a00-8f00-5e55105e55a1.id.cls1",
+            ),
+            ("a_b", "a_b.id.cls1"),
+            ("a/b", "a%2Fb.id.cls1"),
+            ("a\\b", "a%5Cb.id.cls1"),
+            ("a.b", "a%2Eb.id.cls1"),
+            ("a:b", "a%3Ab.id.cls1"),
+            ("a%2Fb", "a%252Fb.id.cls1"),
+            ("*?\"<>|", "%2A%3F%22%3C%3E%7C.id.cls1"),
+            ("CON", "%43ON.id.cls1"),
+            ("nul", "%6Eul.id.cls1"),
+            ("COM1", "%43OM1.id.cls1"),
+            ("lpt9", "%6Cpt9.id.cls1"),
+            ("COM10", "COM10.id.cls1"),
+            ("trail.", "trail%2E.id.cls1"),
+            ("trail ", "trail%20.id.cls1"),
+            ("caf\u{e9}", "caf%C3%A9.id.cls1"),
+        ];
+        for (id, expected) in cases {
+            assert_eq!(name(id).as_deref(), Some(expected), "{id:?}");
+        }
+    }
+
+    /// IDs the old scheme mapped to one file each save, load and list on
+    /// their own.
+    #[tokio::test]
+    async fn ids_that_differ_only_in_a_reserved_character_keep_separate_files() -> Result<()> {
+        assert_each_has_its_own_file(&["a/b", "a_b", "a.b", "a\\b", "a:b", "a%2Fb", "a*b"]).await
+    }
+
+    /// Windows device names and trailing dots or spaces save, load and list.
+    #[tokio::test]
+    async fn device_names_and_trailing_dots_or_spaces_are_stored() -> Result<()> {
+        assert_each_has_its_own_file(&["CON", "nul", "COM1", "LPT9", "aux", "trail.", "trail "])
+            .await
+    }
+
+    /// A session stored under its old name loads under its own ID only, is
+    /// moved to its new name on save, and deletes.
+    #[tokio::test]
+    async fn a_session_under_its_old_name_is_read_moved_and_deleted() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        let legacy = dir.path().join("a_b.cls1");
+        std::fs::write(
+            &legacy,
+            encode_session_snapshot_v1(&tagged_snapshot("a/b")?)?,
+        )?;
+
+        let loaded = store
+            .load_session("a/b")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("expected the old-name session"))?;
+        assert_eq!(loaded.conversation_history[0].as_text(), Some("a/b"));
+        assert!(store.load_session("a_b").await?.is_none());
+
+        store.save_session(&tagged_snapshot("a/b")?).await?;
+        assert!(!legacy.exists());
+        assert_eq!(store.list_sessions().await?.len(), 1);
+
+        store.delete_session("a/b").await?;
+        assert!(store.load_session("a/b").await?.is_none());
+        assert_eq!(store.list_sessions().await?.len(), 0);
+        Ok(())
+    }
+
+    /// A session the old scheme put in a Windows alternate data stream
+    /// (`id:legacy.cls1`) still loads and deletes.
     #[cfg(windows)]
     #[tokio::test]
     async fn a_session_in_a_legacy_stream_still_loads_and_deletes() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = BinaryFileSessionStore::new(dir.path());
-        let snap = minimal_snapshot("id:legacy")?;
         let legacy = dir.path().join("id:legacy.cls1");
-        std::fs::write(&legacy, encode_session_snapshot_v1(&snap)?)?;
+        std::fs::write(
+            &legacy,
+            encode_session_snapshot_v1(&tagged_snapshot("id:legacy")?)?,
+        )?;
 
         let loaded = store
             .load_session("id:legacy")
             .await?
             .ok_or_else(|| anyhow::anyhow!("expected the legacy session"))?;
-        assert_eq!(loaded.session_id, "id:legacy");
-        assert_eq!(loaded.conversation_history[0].as_text(), Some("ping"));
+        assert_eq!(loaded.conversation_history[0].as_text(), Some("id:legacy"));
 
         store.delete_session("id:legacy").await?;
         assert!(store.load_session("id:legacy").await?.is_none());
