@@ -493,13 +493,15 @@ async fn apply_learning_loop(agent: &super::Agent, step_result: &StepResult) {
         return;
     };
     for (tool_name, result) in &step_result.tool_results {
-        record_learning_tool_result(ll, step_result, tool_name, result).await;
+        record_learning_tool_result(ll, agent.workspace_root(), step_result, tool_name, result)
+            .await;
     }
 }
 
 #[cfg(feature = "learning-loop")]
 async fn record_learning_tool_result(
     ll: &crate::agent::learning::LearningLoop,
+    workspace: Option<&std::path::Path>,
     step_result: &StepResult,
     tool_name: &str,
     result: &crate::agent::tools::tool::ToolResult,
@@ -533,12 +535,15 @@ async fn record_learning_tool_result(
         tracker.amend_last_error_message(error_message);
     }
     if needs_checkpoint {
-        run_learning_checkpoint(ll).await;
+        run_learning_checkpoint(ll, workspace).await;
     }
 }
 
 #[cfg(feature = "learning-loop")]
-async fn run_learning_checkpoint(ll: &crate::agent::learning::LearningLoop) {
+async fn run_learning_checkpoint(
+    ll: &crate::agent::learning::LearningLoop,
+    workspace: Option<&std::path::Path>,
+) {
     let existing_skills = collect_existing_skills(ll).await;
     let actions = match ll.evaluate_checkpoint(&existing_skills).await {
         Ok(actions) => actions,
@@ -549,7 +554,7 @@ async fn run_learning_checkpoint(ll: &crate::agent::learning::LearningLoop) {
     };
     let mut outcome = crate::agent::learning::EpisodeOutcome::PartialSuccess;
     for action in actions {
-        if apply_checkpoint_action(ll, action).await {
+        if apply_checkpoint_action(ll, workspace, action).await {
             outcome = crate::agent::learning::EpisodeOutcome::Success;
         }
     }
@@ -559,11 +564,12 @@ async fn run_learning_checkpoint(ll: &crate::agent::learning::LearningLoop) {
 #[cfg(feature = "learning-loop")]
 async fn apply_checkpoint_action(
     ll: &crate::agent::learning::LearningLoop,
+    workspace: Option<&std::path::Path>,
     action: crate::agent::learning::checkpoint::CheckpointAction,
 ) -> bool {
     match action {
         crate::agent::learning::checkpoint::CheckpointAction::MemoryNudge(facts) => {
-            apply_memory_nudge(ll, &facts).await;
+            apply_memory_nudge(ll, workspace, &facts).await;
             false
         }
         crate::agent::learning::checkpoint::CheckpointAction::CreateSkill {
@@ -580,11 +586,15 @@ async fn apply_checkpoint_action(
 }
 
 #[cfg(feature = "learning-loop")]
-async fn apply_memory_nudge(ll: &crate::agent::learning::LearningLoop, facts: &[String]) {
+async fn apply_memory_nudge(
+    ll: &crate::agent::learning::LearningLoop,
+    workspace: Option<&std::path::Path>,
+    facts: &[String],
+) {
     let Some(ref path) = ll.config.memory_file_path else {
         return;
     };
-    let store = crate::agent::learning::memory_nudge::MemoryStore::new(path);
+    let store = crate::agent::learning::memory_nudge::MemoryStore::new(path, workspace);
     if let Err(e) = store.append_facts(facts).await {
         tracing::warn!("Memory nudge failed: {e}");
     }
