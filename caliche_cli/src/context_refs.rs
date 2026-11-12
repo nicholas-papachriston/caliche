@@ -265,14 +265,24 @@ impl ContextResolver {
                 | caliche::messages::AttachmentType::Video
                 | caliche::messages::AttachmentType::Document
         ) {
-            let attachment = caliche::messages::Attachment::from_file(&artifact.path).await?;
+            let attachment = caliche::messages::Attachment::new(
+                store.read(&artifact).await?,
+                artifact.media_type.clone(),
+                artifact
+                    .path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(ToOwned::to_owned),
+                attachment_type,
+            );
             ResolvedItem {
                 text: format!("{header}\n[Attached as native media]"),
                 attachments: vec![attachment],
                 allowed_paths: vec![artifact.path.clone()],
             }
         } else {
-            let content = tokio::fs::read_to_string(&artifact.path).await?;
+            let content = String::from_utf8(store.read(&artifact).await?)
+                .context("artifact is not UTF-8 text")?;
             ResolvedItem::text(format!("{header}\nContent:\n{content}"))
         };
         if item.allowed_paths.is_empty() {
@@ -701,6 +711,96 @@ mod link_tests {
                 "{name}: {}",
                 resolved.message
             );
+        }
+    }
+
+    /// A workspace whose `.caliche/artifacts` is a link to an outside
+    /// directory, or holds a link to an outside file: no artifact
+    /// reference attaches the outside content.
+    #[tokio::test]
+    async fn an_artifact_reference_attaches_nothing_from_a_linked_store() {
+        for layout in ["linked store", "linked image dir", "linked file"] {
+            let outside = tempfile::tempdir().expect("outside dir");
+            let images = outside.path().join("images");
+            std::fs::create_dir(&images).expect("outside images");
+            std::fs::write(images.join("leak.txt"), "outside text").expect("leak");
+            let ws = tempfile::tempdir().expect("workspace");
+            let root = ws.path().canonicalize().expect("canonical workspace");
+            let caliche_dir = root.join(".caliche");
+            std::fs::create_dir(&caliche_dir).expect(".caliche");
+            let store_dir = caliche_dir.join("artifacts");
+            match layout {
+                "linked store" => {
+                    std::os::unix::fs::symlink(outside.path(), &store_dir).expect("store link");
+                }
+                "linked image dir" => {
+                    std::fs::create_dir(&store_dir).expect("store");
+                    std::os::unix::fs::symlink(&images, store_dir.join("images"))
+                        .expect("images link");
+                }
+                _ => {
+                    std::fs::create_dir_all(store_dir.join("images")).expect("store images");
+                    std::os::unix::fs::symlink(
+                        images.join("leak.txt"),
+                        store_dir.join("images/leak.txt"),
+                    )
+                    .expect("file link");
+                }
+            }
+            let store = std::sync::Arc::new(caliche::ArtifactStore::for_workspace(&root, None));
+            let resolver = ContextResolver::new(root.clone(), Some(store), Vec::new());
+
+            for mention in [
+                "@artifact:latest",
+                "@artifact:leak",
+                "@artifact:images/leak.txt",
+            ] {
+                let resolved = resolver.resolve_prompt(mention).await;
+
+                assert!(
+                    !resolved.message.contains("outside text"),
+                    "{layout} {mention}: {}",
+                    resolved.message
+                );
+                assert!(
+                    resolved.message.contains("[Error loading @"),
+                    "{layout} {mention}: {}",
+                    resolved.message
+                );
+                assert!(resolved.attachments.is_empty(), "{layout} {mention}");
+            }
+        }
+    }
+
+    /// An artifact in a plain store is still attached.
+    #[tokio::test]
+    async fn an_artifact_in_a_plain_store_is_attached() {
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        let images = root.join(".caliche/artifacts/images");
+        std::fs::create_dir_all(&images).expect("store");
+        std::fs::write(images.join("note.txt"), "inside artifact").expect("note");
+        let store = std::sync::Arc::new(caliche::ArtifactStore::for_workspace(&root, None));
+        let resolver = ContextResolver::new(root.clone(), Some(store), Vec::new());
+
+        for mention in [
+            "@artifact:latest",
+            "@artifact:note",
+            "@artifact:images/note.txt",
+        ] {
+            let resolved = resolver.resolve_prompt(mention).await;
+
+            assert!(
+                resolved.message.ends_with("[Attached as native media]"),
+                "{mention}: {}",
+                resolved.message
+            );
+            let data: Vec<&[u8]> = resolved
+                .attachments
+                .iter()
+                .map(|attachment| attachment.data.as_slice())
+                .collect();
+            assert_eq!(data, vec![b"inside artifact".as_slice()], "{mention}");
         }
     }
 }
