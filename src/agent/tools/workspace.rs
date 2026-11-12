@@ -18,6 +18,12 @@ const DESCRIPTION: &str = "Detect and analyze workspace/project structure. Use t
         entry_points (mains, binaries), members (authoritative list of Cargo workspace members + git submodules from Cargo.toml/.gitmodules), \
         codebase_context (one-shot: project type + AGENTS.md/README + structure + members + ranked file list). \
         Prefer workspace over fs op=list when you need project type or config; use codebase_context for quick orientation; use members when you need an exact crate count.";
+/// The text of `name` in the canonical workspace `base`, read without
+/// following any link; `None` when it is missing, a link, or unreadable.
+fn read_text(base: &Path, name: &str) -> Option<String> {
+    crate::discovery::auto::read_workspace_text(base, &base.join(name))
+}
+
 fn append_labeled_names(output: &mut String, title: &str, names: &[String], suffix: &str) {
     if names.is_empty() {
         return;
@@ -155,14 +161,18 @@ impl Tool for WorkspaceTool {
             }
         };
 
-        if !workspace_path.exists() {
+        // Canonical, so the files below are read without following any link
+        // under it: a cloned repository can plant `README.md` as a link to an
+        // outside file, and its text would reach the model.
+        let Ok(canonical) = workspace_path.canonicalize() else {
             return ToolResult::error(format!("Path does not exist: {path_str}"));
-        }
+        };
+        let workspace_path = caliche_sandbox::external_tool_path(&canonical);
 
         match action.as_str() {
             "detect" => Self::detect_project_type(&workspace_path),
             "structure" => Self::list_structure(&workspace_path).await,
-            "config" => Self::read_configs(&workspace_path).await,
+            "config" => Self::read_configs(&workspace_path),
             "entry_points" => Self::find_entry_points(&workspace_path).await,
             "members" => Self::members(&workspace_path),
             "codebase_context" => Self::codebase_context(&workspace_path).await,
@@ -233,7 +243,7 @@ impl WorkspaceTool {
         }
     }
 
-    async fn read_configs(workspace_path: &Path) -> ToolResult {
+    fn read_configs(workspace_path: &Path) -> ToolResult {
         let mut output = String::from("Configuration Files:\n");
         output.push_str("===================\n\n");
 
@@ -252,7 +262,7 @@ impl WorkspaceTool {
             let config_path = workspace_path.join(filename);
             if config_path.exists() {
                 output.push_str(&format!("{filename} ({project_type})\n"));
-                if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                if let Some(content) = read_text(workspace_path, filename) {
                     // Limit content to first 500 chars
                     let preview = if content.len() > 500 {
                         format!("{}...", truncate_utf8(&content, 500))
@@ -388,8 +398,7 @@ impl WorkspaceTool {
     /// is missing or has no `[workspace]` table; returns an empty vec if the
     /// table exists but lists no members.
     fn read_cargo_workspace_members(workspace_path: &Path) -> Option<Vec<String>> {
-        let cargo_path = workspace_path.join("Cargo.toml");
-        let raw = std::fs::read_to_string(&cargo_path).ok()?;
+        let raw = read_text(workspace_path, "Cargo.toml")?;
         let parsed: toml::Value = raw.parse().ok()?;
         let workspace = parsed.get("workspace")?;
         let members = workspace
@@ -409,8 +418,7 @@ impl WorkspaceTool {
     /// `(name, path)` pairs in declaration order. Empty when the file is missing
     /// or has no safe submodule paths.
     fn read_git_submodules(workspace_path: &Path) -> Vec<(String, String)> {
-        let gitmodules_path = workspace_path.join(".gitmodules");
-        let Ok(raw) = std::fs::read_to_string(&gitmodules_path) else {
+        let Some(raw) = read_text(workspace_path, ".gitmodules") else {
             return Vec::new();
         };
         crate::gitmodules::parse_gitmodules(&raw)
@@ -424,9 +432,7 @@ impl WorkspaceTool {
 
         // Check config files first (always done)
         // Rust entry points from Cargo.toml
-        if let Ok(cargo_content) =
-            tokio::fs::read_to_string(workspace_path.join("Cargo.toml")).await
-        {
+        if let Some(cargo_content) = read_text(workspace_path, "Cargo.toml") {
             if cargo_content.contains("[[bin]]") {
                 entry_points.push("Rust binary (see Cargo.toml [[bin]] section)".to_string());
             }
@@ -436,8 +442,7 @@ impl WorkspaceTool {
         }
 
         // Node.js entry points from package.json
-        if let Ok(package_content) =
-            tokio::fs::read_to_string(workspace_path.join("package.json")).await
+        if let Some(package_content) = read_text(workspace_path, "package.json")
             && let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&package_content)
         {
             if let Some(main) = package_json.get("main").and_then(|v| v.as_str()) {
@@ -535,7 +540,9 @@ impl WorkspaceTool {
                                     continue;
                                 }
 
-                                if let Ok(content) = std::fs::read_to_string(path) {
+                                if let Some(content) =
+                                    crate::discovery::auto::read_workspace_text(&path_buf, path)
+                                {
                                     let lines: Vec<&str> = content.lines().collect();
                                     for (idx, line) in lines.iter().enumerate() {
                                         if matcher.find(line.as_bytes()).ok().flatten().is_some() {
@@ -575,6 +582,13 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// The canonical path of `dir`, as `execute` passes the workspace.
+    fn canonical(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
+
     #[test]
     fn read_cargo_workspace_members_parses_named_entries() {
         let dir = tempdir().expect("tempdir");
@@ -591,7 +605,7 @@ members = [
         )
         .expect("write Cargo.toml");
 
-        let members = WorkspaceTool::read_cargo_workspace_members(dir.path())
+        let members = WorkspaceTool::read_cargo_workspace_members(&canonical(&dir))
             .expect("workspace table present");
         assert_eq!(
             members,
@@ -617,13 +631,13 @@ edition = "2021"
         )
         .expect("write Cargo.toml");
 
-        assert!(WorkspaceTool::read_cargo_workspace_members(dir.path()).is_none());
+        assert!(WorkspaceTool::read_cargo_workspace_members(&canonical(&dir)).is_none());
     }
 
     #[test]
     fn read_cargo_workspace_members_returns_none_when_cargo_toml_missing() {
         let dir = tempdir().expect("tempdir");
-        assert!(WorkspaceTool::read_cargo_workspace_members(dir.path()).is_none());
+        assert!(WorkspaceTool::read_cargo_workspace_members(&canonical(&dir)).is_none());
     }
 
     #[test]
@@ -642,7 +656,7 @@ edition = "2021"
         )
         .expect("write .gitmodules");
 
-        let subs = WorkspaceTool::read_git_submodules(dir.path());
+        let subs = WorkspaceTool::read_git_submodules(&canonical(&dir));
         assert_eq!(
             subs,
             vec![
@@ -661,14 +675,14 @@ edition = "2021"
         )
         .expect("write .gitmodules");
 
-        let subs = WorkspaceTool::read_git_submodules(dir.path());
+        let subs = WorkspaceTool::read_git_submodules(&canonical(&dir));
         assert_eq!(subs, vec![("my child".to_string(), "my child".to_string())]);
     }
 
     #[test]
     fn read_git_submodules_returns_empty_when_file_missing() {
         let dir = tempdir().expect("tempdir");
-        assert!(WorkspaceTool::read_git_submodules(dir.path()).is_empty());
+        assert!(WorkspaceTool::read_git_submodules(&canonical(&dir)).is_empty());
     }
 
     #[test]
@@ -690,7 +704,7 @@ members = ["crate_a", "crate_b"]
         )
         .expect("write .gitmodules");
 
-        let body = WorkspaceTool::collect_members(dir.path());
+        let body = WorkspaceTool::collect_members(&canonical(&dir));
         assert!(body.contains("Cargo workspace members (2 entries"));
         assert!(body.contains("crate_a"));
         assert!(body.contains("Git submodules (1 entries"));
@@ -701,14 +715,96 @@ members = ["crate_a", "crate_b"]
     #[test]
     fn collect_members_empty_when_neither_present() {
         let dir = tempdir().expect("tempdir");
-        assert!(WorkspaceTool::collect_members(dir.path()).is_empty());
+        assert!(WorkspaceTool::collect_members(&canonical(&dir)).is_empty());
     }
 
     #[test]
     fn members_action_returns_friendly_message_when_neither_present() {
         let dir = tempdir().expect("tempdir");
-        let result = WorkspaceTool::members(dir.path());
+        let result = WorkspaceTool::members(&canonical(&dir));
         assert!(result.success);
         assert!(result.content.contains("No Cargo workspace"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    const OUTSIDE: &str = "OUTSIDE-SECRET";
+
+    /// A workspace and an outside folder holding `name` with outside text.
+    fn workspace_and_outside(
+        name: &str,
+        text: &str,
+    ) -> anyhow::Result<(tempfile::TempDir, PathBuf, tempfile::TempDir, PathBuf)> {
+        let ws_dir = tempfile::tempdir()?;
+        let ws = ws_dir.path().canonicalize()?;
+        let out_dir = tempfile::tempdir()?;
+        let outside = out_dir.path().canonicalize()?.join(name);
+        std::fs::write(&outside, text)?;
+        Ok((ws_dir, ws, out_dir, outside))
+    }
+
+    async fn run(ws: &Path, action: &str) -> ToolResult {
+        WorkspaceTool
+            .execute(json!({ "path": ws.to_string_lossy(), "action": action }))
+            .await
+    }
+
+    #[tokio::test]
+    async fn config_does_not_return_a_linked_file() -> anyhow::Result<()> {
+        let (_ws_dir, ws, _out_dir, outside) = workspace_and_outside("secret.md", OUTSIDE)?;
+        std::fs::write(ws.join("Cargo.toml"), "[package]\nname = \"demo\"\n")?;
+        symlink(&outside, ws.join("README.md"))?;
+
+        let result = run(&ws, "config").await;
+
+        assert!(result.success);
+        assert_eq!(
+            result.content,
+            "Configuration Files:\n===================\n\n\
+             Cargo.toml (Rust)\n  [package]\n  name = \"demo\"\n  \n\n\
+             README.md (Documentation)\n"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn members_does_not_read_linked_manifests() -> anyhow::Result<()> {
+        let (_ws_dir, ws, _out_dir, outside) = workspace_and_outside(
+            "Cargo.toml",
+            &format!("[workspace]\nmembers = [\"{OUTSIDE}\"]\n"),
+        )?;
+        symlink(&outside, ws.join("Cargo.toml"))?;
+        let gitmodules = outside.with_file_name("gitmodules");
+        std::fs::write(
+            &gitmodules,
+            format!("[submodule \"{OUTSIDE}\"]\n\tpath = {OUTSIDE}\n"),
+        )?;
+        symlink(&gitmodules, ws.join(".gitmodules"))?;
+
+        let result = run(&ws, "members").await;
+
+        assert!(result.success);
+        assert_eq!(
+            result.content,
+            "No Cargo workspace ([workspace].members) and no .gitmodules found at this path."
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn entry_points_do_not_read_a_linked_manifest() -> anyhow::Result<()> {
+        let (_ws_dir, ws, _out_dir, outside) =
+            workspace_and_outside("package.json", r#"{"main": "OUTSIDE-SECRET.js"}"#)?;
+        symlink(&outside, ws.join("package.json"))?;
+
+        let result = run(&ws, "entry_points").await;
+
+        assert!(result.success);
+        assert_eq!(result.content, "No entry points detected");
+        Ok(())
     }
 }
