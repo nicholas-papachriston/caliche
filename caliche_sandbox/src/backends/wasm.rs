@@ -452,7 +452,12 @@ mod tests {
             .path()
             .canonicalize()
             .expect("canonical workspace");
-        let outside = tempfile::tempdir().expect("outside");
+        // The policy also allows the temporary directories, so the file
+        // outside the workspace lives in this crate's directory instead.
+        let outside = tempfile::Builder::new()
+            .prefix(".wasm-race-outside")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("outside");
         let secret = outside.path().join("secret.txt");
         std::fs::write(&secret, "OUTSIDE-SECRET").expect("secret");
         let target = root.join("a.txt");
@@ -475,13 +480,16 @@ mod tests {
         let path = target.to_string_lossy().into_owned();
         let deadline = Instant::now() + std::time::Duration::from_secs(3);
         let mut leaked = None;
+        let (mut reads, mut writes) = (0_u32, 0_u32);
         while Instant::now() < deadline && leaked.is_none() {
-            if let Ok(bytes) = sandbox.read_file(&path).await
-                && bytes != b"inside"
-            {
-                leaked = Some(String::from_utf8_lossy(&bytes).into_owned());
+            match sandbox.read_file(&path).await {
+                Ok(bytes) if bytes == b"inside" => reads += 1,
+                Ok(bytes) => leaked = Some(String::from_utf8_lossy(&bytes).into_owned()),
+                Err(_) => {}
             }
-            let _ = sandbox.write_file(&path, b"inside").await;
+            if sandbox.write_file(&path, b"inside").await.is_ok() {
+                writes += 1;
+            }
             if std::fs::read(&secret).expect("secret") != b"OUTSIDE-SECRET" {
                 leaked = Some("the outside file was written".to_string());
             }
@@ -490,5 +498,9 @@ mod tests {
         flipper.join().expect("flipper");
 
         assert_eq!(leaked, None);
+        assert!(
+            reads > 0 && writes > 0,
+            "the plain file must be read and written: {reads} reads, {writes} writes"
+        );
     }
 }
