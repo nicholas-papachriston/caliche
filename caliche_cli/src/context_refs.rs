@@ -187,7 +187,9 @@ impl ContextResolver {
     ) -> anyhow::Result<ResolvedItem> {
         match reference {
             ContextReference::File(path) => self.resolve_file(path).await,
-            ContextReference::Directory(path) => resolve_directory(path).await,
+            ContextReference::Directory(path) => {
+                resolve_directory(&self.workspace_root, path).await
+            }
             ContextReference::Url(url) => resolve_url(url).await,
             ContextReference::Symbol(symbol) => Ok(ResolvedItem::text(format!(
                 "[Reference to symbol: {symbol}]"
@@ -201,7 +203,7 @@ impl ContextResolver {
     }
 
     async fn resolve_file(&self, path: &Path) -> anyhow::Result<ResolvedItem> {
-        let bytes = tokio::fs::read(path).await?;
+        let bytes = read_reference(&self.workspace_root, path).await?;
         let filename = path
             .file_name()
             .map(|name| name.to_string_lossy())
@@ -436,13 +438,10 @@ fn parse_artifact_selector(input: &str) -> caliche::ArtifactSelector {
     }
 }
 
-async fn resolve_directory(path: &Path) -> anyhow::Result<ResolvedItem> {
+async fn resolve_directory(workspace_root: &Path, path: &Path) -> anyhow::Result<ResolvedItem> {
     let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(path).await?;
-    while let Some(entry) = dir.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = entry.file_type().await?;
-        let suffix = if file_type.is_dir() { "/" } else { "" };
+    for (name, is_dir) in list_reference(workspace_root, path).await? {
+        let suffix = if is_dir { "/" } else { "" };
         entries.push(format!("  {name}{suffix}"));
     }
     entries.sort();
@@ -571,10 +570,137 @@ fn resource_filename(uri: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Where a reference reads from: the canonical workspace and the part of
+/// the path below it, or `None` for a path the user named outside it.
+fn below_workspace(workspace_root: &Path, path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let joined = resolve_allowed_path(path, workspace_root);
+    let Ok(below) = joined.strip_prefix(workspace_root) else {
+        return Ok(None);
+    };
+    Ok(Some(workspace_root.canonicalize()?.join(below)))
+}
+
+/// The bytes of the file a reference names.
+///
+/// A path inside the workspace is opened below it without following a
+/// link, so a link in the project cannot pull in a file from outside. A
+/// path the user names outside the workspace is read as named.
+async fn read_reference(workspace_root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
+    let (workspace_root, path) = (workspace_root.to_path_buf(), path.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let Some(target) = below_workspace(&workspace_root, &path)? else {
+            return std::fs::read(&path);
+        };
+        let root = workspace_root.canonicalize()?;
+        let mut bytes = Vec::new();
+        caliche_sandbox::open_file_beneath(&root, &target)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// The entries of the directory a reference names, with whether each is a
+/// directory. A directory inside the workspace is listed as
+/// [`read_reference`] reads a file there.
+async fn list_reference(
+    workspace_root: &Path,
+    path: &Path,
+) -> std::io::Result<Vec<(String, bool)>> {
+    let (workspace_root, path) = (workspace_root.to_path_buf(), path.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let Some(target) = below_workspace(&workspace_root, &path)? else {
+            return std::fs::read_dir(&path)?
+                .map(|entry| {
+                    let entry = entry?;
+                    let is_dir = entry.file_type()?.is_dir();
+                    Ok((entry.file_name().to_string_lossy().into_owned(), is_dir))
+                })
+                .collect();
+        };
+        let root = workspace_root.canonicalize()?;
+        Ok(caliche_sandbox::list_dir_beneath(&root, &target)?
+            .into_iter()
+            .map(|entry| {
+                let is_dir = entry.kind == caliche_sandbox::EntryKind::Dir;
+                (entry.name.to_string_lossy().into_owned(), is_dir)
+            })
+            .collect())
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 fn resolve_allowed_path(path: &Path, workspace_root: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
         workspace_root.join(path)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::ContextResolver;
+
+    /// A canonical workspace with `ok.txt`, a file link `leak.txt` and a
+    /// directory link `linked`, both to a file outside it.
+    fn workspace() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), "outside text").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        std::fs::write(root.join("ok.txt"), "inside text").expect("ok");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("leak.txt"))
+            .expect("file link");
+        std::os::unix::fs::symlink(outside.path(), root.join("linked")).expect("dir link");
+        (outside, ws, root)
+    }
+
+    #[tokio::test]
+    async fn a_reference_to_a_workspace_file_is_attached() {
+        let (_outside, _ws, root) = workspace();
+        let resolver = ContextResolver::new(root.clone(), None, Vec::new());
+
+        let resolved = resolver
+            .resolve_prompt(&format!("@{}", root.join("ok.txt").display()))
+            .await;
+
+        assert!(
+            resolved
+                .message
+                .ends_with("--- File: ok.txt ---\ninside text"),
+            "{}",
+            resolved.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reference_to_a_linked_file_or_directory_attaches_nothing_from_outside() {
+        let (_outside, _ws, root) = workspace();
+        let resolver = ContextResolver::new(root.clone(), None, Vec::new());
+
+        for name in ["leak.txt", "linked/secret.txt", "linked/"] {
+            let resolved = resolver
+                .resolve_prompt(&format!("@{}", root.join(name).display()))
+                .await;
+
+            assert!(
+                resolved.message.contains("[Error loading @"),
+                "{name}: {}",
+                resolved.message
+            );
+            assert!(
+                !resolved.message.contains("outside text"),
+                "{name}: {}",
+                resolved.message
+            );
+            assert!(
+                !resolved.message.contains("secret.txt\n"),
+                "{name}: {}",
+                resolved.message
+            );
+        }
     }
 }
