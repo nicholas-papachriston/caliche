@@ -440,6 +440,9 @@ impl EndpointManager {
         };
 
         if let Some(pid) = pid {
+            // Windows has no SIGTERM; the wait and kill below stop the child.
+            #[cfg(not(unix))]
+            let _ = pid;
             // SIGTERM on Unix
             #[cfg(unix)]
             {

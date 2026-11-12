@@ -1,6 +1,7 @@
 use super::types::GatewayRuntimeRegistry;
 #[cfg(unix)]
 use caliche::security::SystemBinary;
+#[cfg(unix)]
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
