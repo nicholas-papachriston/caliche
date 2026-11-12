@@ -207,7 +207,13 @@ pub fn discover_all(options: &DiscoveryOptions) -> DiscoverySnapshot {
         Ok(v) => caliche_sandbox::external_tool_path(&v),
         Err(_) => return DiscoverySnapshot::default(),
     };
-    let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
+    // Canonical too, so a home that is or holds the workspace is told apart
+    // by a plain prefix check.
+    let home_dir = std::env::var("HOME").ok().map(|home| {
+        let home = PathBuf::from(home);
+        home.canonicalize()
+            .map_or(home, |v| caliche_sandbox::external_tool_path(&v))
+    });
     discover_in(&cwd, home_dir.as_deref(), options)
 }
 
@@ -297,23 +303,35 @@ fn collect_candidates<F>(
 where
     F: Fn(&Path) -> Vec<PathBuf>,
 {
-    let mut candidates = Vec::new();
-    let mut add = |base: &Path, confine: bool| {
-        for path in candidates_fn(base) {
-            candidates.push(Candidate {
-                path,
-                confine: confine.then(|| base.to_path_buf()),
-            });
-        }
-    };
-    add(cwd, true);
+    let mut confined = vec![cwd];
     if let Some(root) = repo_root
         && root != cwd
     {
-        add(root, true);
+        confined.push(root);
+    }
+    let mut candidates = Vec::new();
+    for base in &confined {
+        for path in candidates_fn(base) {
+            candidates.push(Candidate {
+                path,
+                confine: Some(base.to_path_buf()),
+            });
+        }
     }
     if let Some(home) = home_dir {
-        add(home, false);
+        for path in candidates_fn(home) {
+            // A home file inside the workspace (home is the workspace, or the
+            // workspace is a folder of home) is a workspace file: read it
+            // confined, once.
+            let confine = confined
+                .iter()
+                .find(|base| path.starts_with(base))
+                .map(|base| base.to_path_buf());
+            if confine.is_some() && candidates.iter().any(|c| c.path == path) {
+                continue;
+            }
+            candidates.push(Candidate { path, confine });
+        }
     }
     candidates
 }
@@ -1412,6 +1430,56 @@ mod link_tests {
 
         assert_eq!(snapshot.mcp_servers.len(), 0);
         assert!(!mentions_outside(&snapshot));
+    }
+
+    #[test]
+    fn a_symlinked_command_is_skipped_when_home_is_the_workspace() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        let commands = ws.join(".caliche/commands");
+        fs::create_dir_all(&commands).expect("commands dir");
+        fs::write(commands.join("ok.md"), "run the tests").expect("ok.md");
+        symlink(outside.join("secret.md"), commands.join("evil.md")).expect("symlink");
+
+        let snapshot = discover_in(&ws, Some(&ws), &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), vec!["ok"]);
+        assert!(!mentions_outside(&snapshot));
+    }
+
+    #[test]
+    fn a_symlinked_rule_is_skipped_when_the_workspace_is_inside_home() {
+        let (_home_dir, home) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        // The workspace is home's own config folder, so home's candidates
+        // below it are workspace files.
+        let ws = home.join(".caliche");
+        fs::create_dir_all(&ws).expect("workspace");
+        symlink(outside.join("secret.md"), ws.join("config.md")).expect("symlink");
+
+        let snapshot = discover_in(&ws, Some(&home), &only(true, false, false));
+
+        let contents: Vec<&str> = snapshot.rules.iter().map(|r| r.content.as_str()).collect();
+        assert_eq!(contents, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_rule_over_one_mib_is_skipped_and_one_at_the_cap_is_read() {
+        let (_ws_dir, ws) = canonical_dir();
+        let cap = usize::try_from(MAX_DISCOVERED_FILE_BYTES).expect("cap fits usize");
+        fs::write(ws.join("AGENTS.md"), "a".repeat(cap)).expect("AGENTS.md");
+        fs::write(ws.join("AGENT.md"), "b".repeat(cap + 1)).expect("AGENT.md");
+
+        let snapshot = discover_in(&ws, None, &only(true, false, false));
+
+        let read: Vec<(&str, usize)> = snapshot
+            .rules
+            .iter()
+            .map(|r| (r.id.as_str(), r.content.len()))
+            .collect();
+        assert_eq!(read, vec![("agents.md", 1_048_576)]);
     }
 
     #[test]
