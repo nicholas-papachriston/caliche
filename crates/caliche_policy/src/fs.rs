@@ -478,6 +478,17 @@ mod tests {
         FsRoots::new(cwd, workspace)
     }
 
+    /// The root of an absolute path here: a rooted path with no drive is on
+    /// the current drive on Windows, so tests name one.
+    #[cfg(windows)]
+    const ROOT: &str = "C:";
+    #[cfg(not(windows))]
+    const ROOT: &str = "";
+
+    fn abs(path: &str) -> String {
+        format!("{ROOT}{path}")
+    }
+
     #[test]
     fn a_relative_path_joins_a_verbatim_windows_cwd_in_plain_form() {
         let resolved = resolve_with_home(".git/config", roots(r"\\?\C:\ws", r"\\?\C:\ws"), None)
@@ -512,9 +523,10 @@ mod tests {
 
     #[test]
     fn relative_dotdot_outside_the_workspace_is_outside() {
+        let (cwd, workspace) = (abs("/work/sub"), abs("/work"));
         let resolved =
-            resolve_with_home("../../secret", roots("/work/sub", "/work"), None).expect("path");
-        assert_eq!(resolved.canonical, "/secret");
+            resolve_with_home("../../secret", roots(&cwd, &workspace), None).expect("path");
+        assert_eq!(resolved.canonical, abs("/secret"));
         assert_eq!(resolved.place, PathPlace::Outside);
     }
 
@@ -529,9 +541,10 @@ mod tests {
 
     #[test]
     fn relative_file_inside_the_workspace_is_inside() {
+        let work = abs("/work");
         let resolved =
-            resolve_with_home("./src/../src/lib.rs", roots("/work", "/work"), None).expect("path");
-        assert_eq!(resolved.canonical, "/work/src/lib.rs");
+            resolve_with_home("./src/../src/lib.rs", roots(&work, &work), None).expect("path");
+        assert_eq!(resolved.canonical, abs("/work/src/lib.rs"));
         assert_eq!(resolved.place, PathPlace::Inside);
     }
 
@@ -580,9 +593,10 @@ mod tests {
 
     #[test]
     fn home_expansion_does_not_grant_the_workspace() {
-        let resolved = resolve_with_home("~/secret", roots("/work", "/work"), Some("/Users/me"))
-            .expect("home");
-        assert_eq!(resolved.canonical, "/Users/me/secret");
+        let (work, home) = (abs("/work"), abs("/Users/me"));
+        let resolved =
+            resolve_with_home("~/secret", roots(&work, &work), Some(&home)).expect("home");
+        assert_eq!(resolved.canonical, abs("/Users/me/secret"));
         assert_eq!(resolved.place, PathPlace::Outside);
     }
 
