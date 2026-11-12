@@ -760,8 +760,8 @@ mod tests {
 
     /// A FIFO at `caliche.toml` is skipped without blocking the load.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn a_fifo_project_toml_is_skipped_without_blocking() {
+    #[test]
+    fn a_fifo_project_toml_is_skipped_without_blocking() {
         let repo = tempfile::tempdir().expect("tempdir");
         let made = std::process::Command::new("mkfifo")
             .arg(repo.path().join("caliche.toml"))
@@ -772,12 +772,24 @@ mod tests {
             start: Some(repo.path().to_path_buf()),
         };
 
-        let loaded = tokio::time::timeout(std::time::Duration::from_secs(5), source.load())
-            .await
-            .expect("a FIFO must not block the load")
-            .expect("load");
+        // The load runs on its own thread, so a read that blocks on the FIFO
+        // fails the test after five seconds instead of hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let loaded = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(source.load())
+                .expect("load")
+                .map(|c| c.banner);
+            let _ = tx.send(loaded);
+        });
+        let loaded = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO must not block the load");
 
-        assert_eq!(loaded.map(|c| c.banner), None);
+        assert_eq!(loaded, None);
     }
 
     /// A cloned repository's config must not run host commands or pull
