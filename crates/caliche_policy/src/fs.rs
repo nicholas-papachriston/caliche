@@ -135,8 +135,10 @@ pub fn annotate_fs_action(action: &mut Action, roots: FsRoots<'_>) {
 #[must_use]
 pub fn raw_paths_from_args(args: &Value) -> Vec<String> {
     let mut paths = Vec::new();
-    if let Some(path) = args.get("path").and_then(Value::as_str) {
-        paths.push(path.to_owned());
+    for key in ["path", "file", "root", "project_root"] {
+        if let Some(path) = args.get(key).and_then(Value::as_str) {
+            paths.push(path.to_owned());
+        }
     }
     if let Some(list) = args.get("paths").and_then(Value::as_array) {
         for item in list {

@@ -194,9 +194,24 @@ fn shadow_action(tool: &str, args: &Value) -> Action {
     Action::tool(class, tool, facts)
 }
 
+/// Tools that read the files or directories their arguments name and
+/// return what they read. Each is a filesystem read, so a path outside the
+/// workspace gets the same decision as an `fs` read of it.
+const READ_PATH_TOOLS: [&str; 8] = [
+    "ast",
+    "lsp_diagnostics",
+    "lsp_hover",
+    "lsp_symbols",
+    "process_document",
+    "rag",
+    "semantic_search",
+    "verify_integration",
+];
+
 fn tool_class_from_name(tool: &str) -> ToolClass {
     match tool {
         "fs" | "edit_file" | "lsp" => ToolClass::Fs,
+        read if READ_PATH_TOOLS.contains(&read) => ToolClass::Fs,
         "bash" | "shell" | "powershell" | "pwsh" | "cmd" => ToolClass::Shell,
         "http" => ToolClass::Http,
         "web_fetch" | "web_search" => ToolClass::WebFetch,
@@ -213,7 +228,7 @@ fn tool_class_from_name(tool: &str) -> ToolClass {
 fn facts_from_args(class: ToolClass, tool: &str, args: &Value) -> ToolFacts {
     match class {
         ToolClass::Fs => ToolFacts::Fs {
-            op: fs_op_from_args(args),
+            op: fs_op_from_args(tool, args),
             paths: paths_from_args(args),
         },
         ToolClass::Patch => ToolFacts::Patch {
@@ -243,7 +258,10 @@ fn mcp_facts(tool: &str) -> ToolFacts {
     }
 }
 
-fn fs_op_from_args(args: &Value) -> FsOp {
+fn fs_op_from_args(tool: &str, args: &Value) -> FsOp {
+    if READ_PATH_TOOLS.contains(&tool) {
+        return FsOp::Read;
+    }
     match args.get("op").and_then(Value::as_str) {
         Some("read" | "grep" | "glob") => FsOp::Read,
         Some("write" | "edit" | "append") => FsOp::Write,
@@ -617,6 +635,85 @@ mod tests {
                 assert_eq!(closed.reason.code(), ReasonCode::NoApprover);
             }
         }
+    }
+
+    #[test]
+    fn a_read_path_tool_outside_the_workspace_asks_or_is_denied() {
+        for (tool, args) in [
+            (
+                "ast",
+                serde_json::json!({"operation": "parse", "path": "../../notes.rs"}),
+            ),
+            (
+                "ast",
+                serde_json::json!({"operation": "build_code_graph", "root": "../.."}),
+            ),
+            (
+                "lsp_diagnostics",
+                serde_json::json!({"path": "../../notes.rs"}),
+            ),
+            (
+                "lsp_hover",
+                serde_json::json!({"path": "../../notes.rs", "line": 1}),
+            ),
+            ("lsp_symbols", serde_json::json!({"path": "../../notes.rs"})),
+            (
+                "process_document",
+                serde_json::json!({"path": "../../notes.pdf"}),
+            ),
+            (
+                "rag",
+                serde_json::json!({"operation": "index", "path": "../../notes"}),
+            ),
+            (
+                "semantic_search",
+                serde_json::json!({"operation": "index_file", "file": "../../notes.rs"}),
+            ),
+            (
+                "verify_integration",
+                serde_json::json!({"project_root": "../.."}),
+            ),
+            (
+                "verify_integration",
+                serde_json::json!({"paths": ["../../notes.rs"]}),
+            ),
+        ] {
+            for overlay in [
+                crate::posture::ModeOverlay::Default,
+                crate::posture::ModeOverlay::AcceptAll,
+            ] {
+                let asked = gate(
+                    tool,
+                    &args,
+                    overlay,
+                    crate::principal::ApprovalWaiter::Present(HumanChannel::CliTty),
+                    "/work",
+                );
+                assert_eq!(asked.effect, Effect::Ask, "{tool} {args} {overlay:?}");
+                assert_eq!(asked.reason.code(), ReasonCode::OutsideWorkspace);
+                let closed = gate(
+                    tool,
+                    &args,
+                    overlay,
+                    crate::principal::ApprovalWaiter::Absent,
+                    "/work",
+                );
+                assert_eq!(closed.effect, Effect::Deny, "{tool} {args} {overlay:?}");
+                assert_eq!(closed.reason.code(), ReasonCode::NoApprover);
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_path_tool_inside_the_workspace_is_allowed() {
+        let decision = gate(
+            "ast",
+            &serde_json::json!({"operation": "parse", "path": "src/lib.rs"}),
+            crate::posture::ModeOverlay::Default,
+            crate::principal::ApprovalWaiter::Absent,
+            "/work",
+        );
+        assert_eq!(decision.effect, Effect::Allow);
     }
 
     #[test]
