@@ -116,9 +116,13 @@ impl ContextResolver {
         }
     }
 
-    /// Refuse a file or directory reference outside the workspace, for text
-    /// that comes from the workspace, such as a project command, rather
-    /// than from the user.
+    /// Read only what the workspace holds, for text that comes from the
+    /// workspace, such as a project command, rather than from the user.
+    ///
+    /// A file or directory reference outside the workspace is refused, and
+    /// so are URL and clipboard references: the workspace's author must not
+    /// be able to fetch a host's internal URL or the user's clipboard into
+    /// the prompt.
     #[must_use]
     pub fn workspace_only(mut self) -> Self {
         self.outside_reads = false;
@@ -132,6 +136,17 @@ impl ContextResolver {
             anyhow::bail!(
                 "'{}' is outside the workspace, and text from the workspace can name only files inside it",
                 path.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Refuse a reference to `what` when this resolver reads only what the
+    /// workspace holds.
+    fn check_from_user(&self, what: &str) -> anyhow::Result<()> {
+        if !self.outside_reads {
+            anyhow::bail!(
+                "text from the workspace cannot attach {what}; type the reference yourself to attach it"
             );
         }
         Ok(())
@@ -217,11 +232,17 @@ impl ContextResolver {
                 self.check_place(path)?;
                 resolve_directory(&self.workspace_root, path).await
             }
-            ContextReference::Url(url) => resolve_url(url).await,
+            ContextReference::Url(url) => {
+                self.check_from_user("a URL")?;
+                resolve_url(url).await
+            }
             ContextReference::Symbol(symbol) => Ok(ResolvedItem::text(format!(
                 "[Reference to symbol: {symbol}]"
             ))),
-            ContextReference::Clipboard => resolve_clipboard(),
+            ContextReference::Clipboard => {
+                self.check_from_user("the clipboard")?;
+                resolve_clipboard()
+            }
             ContextReference::GitDiff => resolve_git(["diff", "HEAD"], "Git Diff").await,
             ContextReference::GitStatus => resolve_git(["status", "--short"], "Git Status").await,
             ContextReference::Artifact(selector) => self.resolve_artifact(selector).await,

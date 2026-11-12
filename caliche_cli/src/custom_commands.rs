@@ -521,6 +521,101 @@ mod link_tests {
         );
     }
 
+    /// A project command's `@` reference to a directory outside the
+    /// workspace is refused, so its entries are not listed into the prompt.
+    #[tokio::test]
+    async fn a_project_command_lists_no_directory_outside_the_workspace() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("OUTSIDE-ENTRY.txt"), OUTSIDE).expect("outside file");
+        let dir = ws.join(".caliche/commands");
+        fs::create_dir_all(&dir).expect("commands dir");
+        fs::write(dir.join("list.md"), format!("list @{}/", outside.display())).expect("list.md");
+        let resolver = crate::context_refs::ContextResolver::new(ws.clone(), None, Vec::new());
+
+        let mut commands = load_project_commands(&ws);
+        assert_eq!(commands.len(), 1);
+        let resolved = commands.remove(0).resolve_prompt(&[], resolver).await;
+
+        assert!(
+            resolved.message.ends_with(&format!(
+                "[Error loading @{}/: '{}/' is outside the workspace, and text from the workspace can name only files inside it]",
+                outside.display(),
+                outside.display()
+            )),
+            "{}",
+            resolved.message
+        );
+        assert!(
+            !resolved.message.contains("OUTSIDE-ENTRY"),
+            "{}",
+            resolved.message
+        );
+    }
+
+    /// Serve `body` to every request on a loopback port, the stand-in for an
+    /// internal service a project command must not reach.
+    fn serve_loopback(body: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        port
+    }
+
+    /// A project command cannot attach a URL or the clipboard: a URL could
+    /// be an internal service on the host. The same text in a user command
+    /// fetches the URL, since the user wrote it.
+    #[tokio::test]
+    async fn a_project_command_attaches_no_url_or_clipboard() {
+        const INTERNAL: &str = "INTERNAL-SERVICE-BODY";
+        let port = serve_loopback(INTERNAL);
+        let (_ws_dir, ws) = canonical_dir();
+        let dir = ws.join(".caliche/commands");
+        fs::create_dir_all(&dir).expect("commands dir");
+        fs::write(
+            dir.join("fetch.md"),
+            format!("summarize @http://127.0.0.1:{port}/meta and @clipboard"),
+        )
+        .expect("fetch.md");
+        let resolver = || crate::context_refs::ContextResolver::new(ws.clone(), None, Vec::new());
+
+        let mut commands = load_project_commands(&ws);
+        assert_eq!(commands.len(), 1);
+        let project = commands.remove(0);
+        let resolved = project.resolve_prompt(&[], resolver()).await;
+        let mut user = project.clone();
+        user.name = "user:fetch".to_string();
+        user.prompt = format!("summarize @http://127.0.0.1:{port}/meta");
+        let from_user = user.resolve_prompt(&[], resolver()).await;
+
+        assert!(!resolved.message.contains(INTERNAL), "{}", resolved.message);
+        assert!(
+            resolved.message.ends_with(&format!(
+                "[Error loading @http://127.0.0.1:{port}/meta: text from the workspace cannot attach a URL; type the reference yourself to attach it]\n\n\
+                 [context 2: clipboard]\n[Error loading @clipboard: text from the workspace cannot attach the clipboard; type the reference yourself to attach it]"
+            )),
+            "{}",
+            resolved.message
+        );
+        assert!(
+            from_user.message.contains(INTERNAL),
+            "{}",
+            from_user.message
+        );
+    }
+
     /// A project command's `@` reference to a file outside the workspace is
     /// refused, while one inside it is attached. The same text in a user
     /// command reads the outside file, since the user wrote it.
