@@ -250,6 +250,7 @@ WINDOWS_TEST_COMMANDS=(
   "cargo test --locked -p caliche_cli --test windows_server_registry"
   "cargo test --locked -p dripstone --lib"
   "cargo test --locked -p caliche --lib"
+  "cargo test --locked -p caliche_policy --lib"
 )
 
 # Run WINDOWS_TEST_COMMANDS on a Windows host (Git Bash). The output is the
