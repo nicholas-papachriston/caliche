@@ -7,7 +7,9 @@ use crate::traits::command::{CommandContext, CommandHandler, CommandResult};
 use crate::utils::find_git_root;
 use anyhow::Result;
 use async_trait::async_trait;
-use caliche::agent::profile::{AgentProfile, default_search_path, load_profiles_from_search_path};
+use caliche::agent::profile::{
+    AgentProfile, ProfileDir, default_search_path, load_profiles_from_search_path,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -43,14 +45,14 @@ impl CommandHandler for AgentHandler {
 }
 
 /// Build profile search path: default dirs + config.agents_dirs.
-async fn profile_search_path() -> Result<Vec<PathBuf>> {
+async fn profile_search_path() -> Result<Vec<ProfileDir>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let git_root = find_git_root(&cwd);
     let mut paths = default_search_path(git_root.as_ref());
     let mut manager = ConfigManager::with_standard_sources();
     if let Ok(config) = manager.load().await {
         if let Some(ref dirs) = config.agents_dirs {
-            paths.extend(dirs.iter().cloned());
+            paths.extend(dirs.iter().cloned().map(ProfileDir::user));
         }
     }
     Ok(paths)

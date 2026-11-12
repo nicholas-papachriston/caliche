@@ -2,7 +2,6 @@ use axum::extract::Path as AxumPath;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 use super::shared::internal_error;
 
@@ -214,7 +213,8 @@ pub(crate) struct AgentProfileDto {
     extra: serde_norway::Value,
 }
 
-pub(crate) async fn agent_profile_search_path() -> Result<Vec<PathBuf>, (StatusCode, String)> {
+pub(crate) async fn agent_profile_search_path()
+-> Result<Vec<caliche::agent::profile::ProfileDir>, (StatusCode, String)> {
     use crate::config::ConfigManager;
     use crate::utils::find_git_root;
     use caliche::agent::profile::default_search_path;
@@ -226,7 +226,11 @@ pub(crate) async fn agent_profile_search_path() -> Result<Vec<PathBuf>, (StatusC
     if let Ok(config) = manager.load().await
         && let Some(dirs) = &config.agents_dirs
     {
-        paths.extend(dirs.iter().cloned());
+        paths.extend(
+            dirs.iter()
+                .cloned()
+                .map(caliche::agent::profile::ProfileDir::user),
+        );
     }
     Ok(paths)
 }
