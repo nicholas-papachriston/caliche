@@ -1295,7 +1295,7 @@ mod tests {
             .to_string_lossy()
             .to_uppercase();
         let lexical = root.with_file_name(name).join("escape");
-        super::set_tool_workspace_root(Some(root.clone()));
+        super::set_tool_workspace_root(Some(root));
         super::set_tool_host_fs_unlocked(false);
 
         let refused = super::path::refuse_link_out_of_workspace(&lexical, &outside);

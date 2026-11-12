@@ -428,7 +428,8 @@ fn sanitize_prompt_prefix(prompt: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod link_tests {
     use super::{ArtifactMetadata, ArtifactSelector, ArtifactStore};
     use std::os::unix::fs::symlink;
