@@ -87,8 +87,26 @@ impl BinaryFileSessionStore {
     fn path_for(&self, session_id: &str) -> std::path::PathBuf {
         self.dir.join(format!(
             "{}{SESSION_FILE_SUFFIX}",
-            encode_session_id(session_id)
+            encode_session_id(session_id, Case::Escaped)
         ))
+    }
+
+    /// Earlier names `session_id` may be stored under, newest first, each
+    /// different from [`Self::path_for`]. A file under one of them is used
+    /// only if it holds that exact ID.
+    fn legacy_paths_for(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        let mut paths = Vec::with_capacity(2);
+        // Before uppercase letters were escaped: "Main" and "main" shared
+        // one file on a case-insensitive file system.
+        let case_kept = self.dir.join(format!(
+            "{}{SESSION_FILE_SUFFIX}",
+            encode_session_id(session_id, Case::Kept)
+        ));
+        if case_kept != self.path_for(session_id) {
+            paths.push(case_kept);
+        }
+        paths.push(self.legacy_path_for(session_id));
+        paths
     }
 
     /// Where the old scheme stored `session_id`: `/`, `\\` and `.` became
@@ -100,43 +118,75 @@ impl BinaryFileSessionStore {
         self.dir.join(format!("{sanitized}.cls1"))
     }
 
-    /// The old-scheme file for `session_id`, if it holds that session.
-    async fn read_legacy(&self, session_id: &str) -> Option<(std::path::PathBuf, SessionSnapshot)> {
-        let path = self.legacy_path_for(session_id);
-        if !path.is_file() {
-            return None;
+    /// Every earlier-name file that holds `session_id`, newest scheme first.
+    async fn read_legacy(&self, session_id: &str) -> Vec<(std::path::PathBuf, SessionSnapshot)> {
+        let mut found = Vec::new();
+        for path in self.legacy_paths_for(session_id) {
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(data) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            if let Ok(snapshot) = decode_session_snapshot_v1(&data)
+                && snapshot.session_id == session_id
+            {
+                found.push((path, snapshot));
+            }
         }
-        let data = tokio::fs::read(&path).await.ok()?;
-        let snapshot = decode_session_snapshot_v1(&data).ok()?;
-        (snapshot.session_id == session_id).then_some((path, snapshot))
+        found
     }
 }
 
 /// Write `bytes` to `path` in `dir` so a crash leaves either the old file or
 /// the whole new one: write a temp file in `dir`, sync it, rename it over
-/// `path`, then sync `dir` (on Unix) so the rename is durable.
+/// `path`, then sync `dir` (on Unix only; Windows has no directory sync) so
+/// the rename is durable.
 fn write_durably(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    write_durably_with(dir, path, bytes, || Ok(()))
+}
+
+/// [`write_durably`], calling `before_rename` once the temp file is synced.
+/// Tests inject a crash there.
+fn write_durably_with(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+    before_rename: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // pid and time alone can repeat: two saves in one process within the
+    // clock's resolution.
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     use std::io::Write as _;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
-    let temp = dir.join(format!(".session-{}-{nanos}.tmp", std::process::id()));
+    let temp = dir.join(format!(
+        ".session-{}-{nanos}-{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Only a temp file this call created is removed on failure.
+    let mut created = false;
     let written = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp)
             .with_context(|| format!("create {}", temp.display()))?;
+        created = true;
         file.write_all(bytes)?;
         file.sync_all()?;
+        before_rename()?;
         std::fs::rename(&temp, path)
             .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;
         #[cfg(unix)]
         std::fs::File::open(dir)?.sync_all()?;
         Ok(())
     })();
-    if written.is_err() {
+    if written.is_err() && created {
         let _ = std::fs::remove_file(&temp);
     }
     written
@@ -149,15 +199,29 @@ const SESSION_FILE_SUFFIX: &str = ".id.cls1";
 /// Windows device names, reserved in a file name with any extension.
 const WINDOWS_DEVICE_NAMES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
 
+/// Whether [`encode_session_id`] keeps uppercase ASCII letters.
+#[derive(Clone, Copy)]
+enum Case {
+    /// The current scheme: uppercase letters become `%XX`.
+    Escaped,
+    /// The scheme before it, read only to move old files.
+    Kept,
+}
+
 /// A file-name stem for `session_id` that no other ID shares and every
-/// platform accepts: ASCII letters, digits, `-` and `_` stay, every other
-/// byte (`%` and `.` included) becomes `%XX`, and the first character of a
-/// Windows device name (`CON`, `COM1`) is encoded too.
-fn encode_session_id(session_id: &str) -> String {
+/// platform accepts, even with a case-insensitive file system: lowercase
+/// ASCII letters, digits, `-` and `_` stay, every other byte (uppercase
+/// letters, `%` and `.` included) becomes `%XX`, and the first character of
+/// a Windows device name (`con`, `com1`) is encoded too.
+fn encode_session_id(session_id: &str, case: Case) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(session_id.len());
     for byte in session_id.bytes() {
-        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+        let kept_letter = match case {
+            Case::Escaped => byte.is_ascii_lowercase(),
+            Case::Kept => byte.is_ascii_alphabetic(),
+        };
+        if kept_letter || byte.is_ascii_digit() || byte == b'-' || byte == b'_' {
             out.push(char::from(byte));
         } else {
             let _ = write!(out, "%{byte:02X}");
@@ -195,7 +259,7 @@ impl SessionStore for BinaryFileSessionStore {
         // The session's own file is now durable; only then drop its
         // old-scheme copy, so it is listed once. A failure before this point
         // leaves the old copy in place.
-        if let Some((legacy, _)) = self.read_legacy(&snapshot.session_id).await {
+        for (legacy, _) in self.read_legacy(&snapshot.session_id).await {
             tokio::fs::remove_file(legacy).await?;
         }
         Ok(())
@@ -210,6 +274,8 @@ impl SessionStore for BinaryFileSessionStore {
         Ok(self
             .read_legacy(session_id)
             .await
+            .into_iter()
+            .next()
             .map(|(_, snapshot)| snapshot))
     }
 
@@ -236,7 +302,7 @@ impl SessionStore for BinaryFileSessionStore {
         if path.is_file() {
             tokio::fs::remove_file(path).await?;
         }
-        if let Some((legacy, _)) = self.read_legacy(session_id).await {
+        for (legacy, _) in self.read_legacy(session_id).await {
             tokio::fs::remove_file(legacy).await?;
         }
         Ok(())
@@ -320,13 +386,14 @@ mod tests {
             ("a\\b", "a%5Cb.id.cls1"),
             ("a.b", "a%2Eb.id.cls1"),
             ("a:b", "a%3Ab.id.cls1"),
-            ("a%2Fb", "a%252Fb.id.cls1"),
+            ("a%2Fb", "a%252%46b.id.cls1"),
             ("*?\"<>|", "%2A%3F%22%3C%3E%7C.id.cls1"),
-            ("CON", "%43ON.id.cls1"),
+            ("Main", "%4Dain.id.cls1"),
+            ("CON", "%43%4F%4E.id.cls1"),
             ("nul", "%6Eul.id.cls1"),
-            ("COM1", "%43OM1.id.cls1"),
+            ("COM1", "%43%4F%4D1.id.cls1"),
             ("lpt9", "%6Cpt9.id.cls1"),
-            ("COM10", "COM10.id.cls1"),
+            ("com10", "com10.id.cls1"),
             ("trail.", "trail%2E.id.cls1"),
             ("trail ", "trail%20.id.cls1"),
             ("caf\u{e9}", "caf%C3%A9.id.cls1"),
@@ -341,6 +408,96 @@ mod tests {
     #[tokio::test]
     async fn ids_that_differ_only_in_a_reserved_character_keep_separate_files() -> Result<()> {
         assert_each_has_its_own_file(&["a/b", "a_b", "a.b", "a\\b", "a:b", "a%2Fb", "a*b"]).await
+    }
+
+    /// IDs that differ only in letter case keep their own files on a
+    /// case-insensitive file system (APFS, NTFS), and deleting one keeps the
+    /// others.
+    #[tokio::test]
+    async fn ids_that_differ_only_in_case_keep_separate_files() -> Result<()> {
+        assert_each_has_its_own_file(&["Ab", "ab", "Main", "main", "MAIN"]).await?;
+
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        store.save_session(&tagged_snapshot("Main")?).await?;
+        store.save_session(&tagged_snapshot("main")?).await?;
+        store.delete_session("Main").await?;
+
+        assert!(store.load_session("Main").await?.is_none());
+        let kept = store
+            .load_session("main")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("deleting Main removed main"))?;
+        assert_eq!(kept.conversation_history[0].as_text(), Some("main"));
+        Ok(())
+    }
+
+    /// A session saved before uppercase letters were escaped loads, moves to
+    /// its new name on save, and is listed once.
+    #[tokio::test]
+    async fn a_session_under_its_case_kept_name_is_read_and_moved() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        let case_kept = dir.path().join("Main.id.cls1");
+        std::fs::write(
+            &case_kept,
+            encode_session_snapshot_v1(&tagged_snapshot("Main")?)?,
+        )?;
+
+        let loaded = store
+            .load_session("Main")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("expected the case-kept session"))?;
+        assert_eq!(loaded.conversation_history[0].as_text(), Some("Main"));
+
+        store.save_session(&tagged_snapshot("Main")?).await?;
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<_>>()?;
+        names.sort();
+        assert_eq!(names, vec!["%4Dain.id.cls1".to_string()]);
+        Ok(())
+    }
+
+    /// Deleting a session that exists only under its old name removes that
+    /// file, so it does not come back on the next load.
+    #[tokio::test]
+    async fn deleting_a_session_removes_its_old_name_copy() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        let legacy = dir.path().join("a_b.cls1");
+        std::fs::write(
+            &legacy,
+            encode_session_snapshot_v1(&tagged_snapshot("a/b")?)?,
+        )?;
+
+        store.delete_session("a/b").await?;
+
+        assert!(!legacy.exists(), "the old-name copy is still there");
+        assert!(store.load_session("a/b").await?.is_none());
+        Ok(())
+    }
+
+    /// A crash after the temp file is written and before the rename leaves
+    /// the old file whole and no temp file behind.
+    #[test]
+    fn a_crash_before_the_rename_keeps_the_old_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s.id.cls1");
+        std::fs::write(&path, b"old snapshot")?;
+
+        let err = write_durably_with(dir.path(), &path, b"new snapshot", || {
+            anyhow::bail!("injected crash before rename")
+        })
+        .expect_err("injected crash");
+
+        assert_eq!(err.to_string(), "injected crash before rename");
+        assert_eq!(std::fs::read(&path)?, b"old snapshot");
+        let names: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<_>>()?;
+        assert_eq!(names, vec!["s.id.cls1".to_string()]);
+        Ok(())
     }
 
     /// Windows device names and trailing dots or spaces save, load and list.
