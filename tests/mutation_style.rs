@@ -1,6 +1,7 @@
 //! Integration coverage for mutation style and apply_patch XOR.
 
 use caliche::agent::service::ToolRegistryBuilder;
+use caliche::agent::tools::common::set_tool_workspace_root;
 use caliche::agent::tools::{ApplyPatchTool, FsTool, MutationStyle, Tool, apply_hunks_to_cwd};
 use caliche::llm::ProviderType;
 use serde_json::json;
@@ -9,6 +10,7 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn apply_patch_tool_mutates_files() {
     let dir = tempdir().expect("tempdir");
+    set_tool_workspace_root(Some(dir.path().to_path_buf()));
     let target = dir.path().join("note.txt");
     let patch = format!(
         "*** Begin Patch\n*** Add File: {}\n+alpha\n+beta\n*** End Patch\n",
@@ -60,6 +62,7 @@ async fn registry_builder_xor_is_consistent_at_runtime() {
 #[tokio::test]
 async fn apply_hunks_update_relative_to_cwd() {
     let dir = tempdir().expect("tempdir");
+    set_tool_workspace_root(Some(dir.path().to_path_buf()));
     std::fs::write(dir.path().join("f.txt"), "old\n").expect("write");
     let patch = "*** Begin Patch\n*** Update File: f.txt\n@@\n-old\n+new\n*** End Patch\n";
     apply_hunks_to_cwd(patch, Some(dir.path()))
