@@ -56,6 +56,10 @@ impl std::fmt::Debug for ToolRegistry {
 impl ToolRegistry {
     /// Resolve canonical ergonomic aliases to their registered tool names.
     ///
+    /// This is the name a call runs as, so the policy gate and hooks decide
+    /// on this name too: surrounding space is trimmed, and `memory`, `web`,
+    /// `shell` and `session` become the tools they run.
+    ///
     /// Note: bare `search` is intentionally not aliased to `semantic_search` — it
     /// collided with MCP code-mode `search` and pulled RAG tools into coding sessions.
     /// Use `fs` op=grep for codebase search, or request `semantic_search` explicitly.
@@ -63,7 +67,8 @@ impl ToolRegistry {
     /// `session` resolves to `sessions_send` for get/execute lookup. Active-set
     /// filters expand `session` to the full sessions_* family via
     /// [`Self::expand_tool_alias_names`].
-    fn resolve_tool_alias(name: &str) -> &str {
+    #[must_use]
+    pub fn canonical_tool_name(name: &str) -> &str {
         let trimmed = name.trim();
         if trimmed.eq_ignore_ascii_case("shell") {
             "bash"
@@ -92,7 +97,7 @@ impl ToolRegistry {
                 "sessions_spawn".to_string(),
             ];
         }
-        vec![Self::resolve_tool_alias(trimmed).to_string()]
+        vec![Self::canonical_tool_name(trimmed).to_string()]
     }
 
     #[must_use]
@@ -137,7 +142,7 @@ impl ToolRegistry {
 
     /// Returns true when the tool is registered and currently active.
     pub fn is_active(&self, name: &str) -> bool {
-        let canonical = Self::resolve_tool_alias(name);
+        let canonical = Self::canonical_tool_name(name);
         if !self.tools.read().contains_key(canonical) {
             return false;
         }
@@ -258,13 +263,13 @@ impl ToolRegistry {
     /// Returns a clone of the `Arc` to avoid holding the read lock across
     /// await points.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        let canonical = Self::resolve_tool_alias(name);
+        let canonical = Self::canonical_tool_name(name);
         self.tools.read().get(canonical).cloned()
     }
 
     /// Returns `true` if the named tool is read-only and safe in Plan/Ask modes.
     pub fn is_readonly(&self, name: &str) -> bool {
-        let canonical = Self::resolve_tool_alias(name);
+        let canonical = Self::canonical_tool_name(name);
         self.tools.read().get(canonical).map_or_else(
             || !crate::agent::modes::is_write_tool(name),
             |tool| tool.is_readonly(),
@@ -313,7 +318,7 @@ impl ToolRegistry {
         metrics: Option<&Arc<ToolMetrics>>,
     ) -> ToolResult {
         let start = metrics.is_some().then(Instant::now);
-        let canonical_name = Self::resolve_tool_alias(name);
+        let canonical_name = Self::canonical_tool_name(name);
 
         // Clone the Arc (O(1)) before any await to avoid holding the read lock.
         let Some(tool) = self.get(canonical_name) else {
@@ -369,7 +374,7 @@ impl ToolRegistry {
         metrics: Option<&Arc<ToolMetrics>>,
     ) -> ToolResult {
         let start = metrics.is_some().then(Instant::now);
-        let canonical_name = Self::resolve_tool_alias(name);
+        let canonical_name = Self::canonical_tool_name(name);
 
         // Clone the Arc (O(1)) before any await to avoid holding the read lock.
         let Some(tool) = self.get(canonical_name) else {
@@ -498,7 +503,7 @@ impl ToolRegistry {
         name: &str,
         arguments: &serde_json::Value,
     ) -> serde_json::Value {
-        let canonical_name = Self::resolve_tool_alias(name);
+        let canonical_name = Self::canonical_tool_name(name);
         let mut normalized = match arguments {
             serde_json::Value::String(s) => {
                 Self::parse_relaxed_argument_string(s).unwrap_or_else(|| arguments.clone())
@@ -539,7 +544,7 @@ impl ToolRegistry {
     ///
     /// Returns `Ok(())` if valid, or an error message describing what is wrong.
     pub fn validate_tool_call(&self, name: &str, arguments: &serde_json::Value) -> Result<()> {
-        let canonical_name = Self::resolve_tool_alias(name);
+        let canonical_name = Self::canonical_tool_name(name);
         let arguments = Self::normalize_tool_arguments(canonical_name, arguments);
         let tool = match self.get(canonical_name) {
             Some(t) => t,

@@ -18,6 +18,21 @@ pub struct ToolExecutionContext<'a> {
     pub call_id: &'a str,
 }
 
+impl<'a> ToolExecutionContext<'a> {
+    /// This call under the name the registry runs it as, so the gate and
+    /// hooks see the tool that runs (" fs" is `fs`, `memory` is `workspace`).
+    #[must_use]
+    pub fn as_run(&self) -> ToolExecutionContext<'a> {
+        ToolExecutionContext {
+            tool_name: crate::agent::tools::registry::ToolRegistry::canonical_tool_name(
+                self.tool_name,
+            ),
+            arguments: self.arguments,
+            call_id: self.call_id,
+        }
+    }
+}
+
 #[async_trait]
 pub trait ToolExecutionMiddleware: Send + Sync {
     async fn before_execute(
@@ -313,6 +328,7 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
         &self,
         ctx: &ToolExecutionContext<'_>,
     ) -> Result<(), Cow<'static, str>> {
+        let ctx = &ctx.as_run();
         let outcome = self.evaluate_pre_tool_hooks(ctx).await;
         crate::agent::hooks::policy_shadow::observe_live_outcome(
             ctx.tool_name,
@@ -326,6 +342,7 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
         &self,
         ctx: &ToolExecutionContext<'_>,
     ) -> Result<(), Cow<'static, str>> {
+        let ctx = &ctx.as_run();
         let Some(held) = lock_grants(&self.grants).remove(ctx.call_id) else {
             return Ok(());
         };
@@ -347,6 +364,7 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
     }
 
     async fn after_execute(&self, ctx: &ToolExecutionContext<'_>, result: &mut ToolResult) {
+        let ctx = &ctx.as_run();
         let matching_hooks = self.hooks.get_matching(ctx.tool_name);
         let hook_ctx = HookContext::new(ctx.tool_name, ctx.arguments, ctx.call_id);
         for hook in &matching_hooks {
@@ -785,6 +803,50 @@ mod tests {
             .await
             .expect_err("the floor denies a vendor auth read");
         assert!(err.contains("vendor auth"));
+    }
+
+    /// The registry runs " fs" as `fs`, `memory` as `workspace` and `web` as
+    /// `http`, so the gate decides on those tools: the vendor auth floor, the
+    /// outside-workspace check and the SSRF floor all apply.
+    #[tokio::test]
+    async fn a_tool_name_is_gated_as_the_tool_it_runs() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let middleware =
+            HookExecutionMiddleware::new(HookRegistry::new()).with_workspace(cwd.to_string_lossy());
+        for (name, args) in [
+            (
+                " fs",
+                serde_json::json!({"op": "read", "path": "/tmp/.codex/auth.json"}),
+            ),
+            (
+                "fs ",
+                serde_json::json!({"op": "read", "path": "/etc/passwd"}),
+            ),
+            (
+                " fs",
+                serde_json::json!({"op": "read", "path": "/etc/passwd"}),
+            ),
+            (
+                "memory",
+                serde_json::json!({"action": "config", "path": "/etc"}),
+            ),
+            (
+                " workspace",
+                serde_json::json!({"action": "structure", "path": "/etc"}),
+            ),
+            (
+                "web",
+                serde_json::json!({"method": "GET", "url": "http://169.254.169.254/latest"}),
+            ),
+        ] {
+            let ctx = ToolExecutionContext {
+                tool_name: name,
+                arguments: &args,
+                call_id: "call-alias",
+            };
+            let denied = middleware.before_execute(&ctx).await;
+            assert!(denied.is_err(), "{name:?} {args} was allowed");
+        }
     }
 
     #[tokio::test]
