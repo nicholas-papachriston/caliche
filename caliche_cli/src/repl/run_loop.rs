@@ -2,7 +2,7 @@
 
 use super::{InputResult, ReplEngine};
 use crate::cancellation::CancellationToken;
-use crate::context_refs::ResolvedContext;
+use crate::context_refs::{ContextResolver, ResolvedContext};
 use crate::core::session::SessionManager;
 use crate::core::slash_commands::{SlashCommandExecutor, SlashCommandResult};
 use crate::core::traits::{InputSource, OutputRenderer};
@@ -321,15 +321,15 @@ impl<I: InputSource + Clone + 'static, R: OutputRenderer> ReplEngine<I, R> {
         Ok(Step::Continue)
     }
 
-    /// Resolve `@` references in `text` and run it as a turn without decomposition
-    /// or a turn notification (custom commands and editor content).
-    async fn run_resolved_turn(
+    /// Run a prompt whose `@` references are already resolved as a turn,
+    /// without decomposition or a turn notification (custom commands and
+    /// editor content).
+    async fn run_resolved_context(
         &mut self,
         ctx: &mut LoopContext<'_>,
         service: &mut AgentService,
-        text: &str,
+        resolved: ResolvedContext,
     ) -> Result<()> {
-        let resolved = Self::resolve_context_for_message(service, text).await;
         self.run_message_turn(
             ctx.harness.as_mut(),
             service,
@@ -347,13 +347,22 @@ impl<I: InputSource + Clone + 'static, R: OutputRenderer> ReplEngine<I, R> {
         .await
     }
 
-    async fn custom_command_prompt(&self, msg: &str) -> Option<String> {
+    /// The custom command `msg` names, rendered with its arguments and its
+    /// `@` references resolved.
+    async fn custom_command_context(
+        &self,
+        service: &AgentService,
+        msg: &str,
+    ) -> Option<ResolvedContext> {
         let cmd_parts: Vec<&str> = msg.split_whitespace().collect();
         let cmd_name = cmd_parts.first().unwrap_or(&"");
-        let registry = self.custom_commands.read().await;
-        let custom_cmd = registry.get(cmd_name)?;
+        let custom_cmd = self.custom_commands.read().await.get(cmd_name)?.clone();
         let args: Vec<&str> = cmd_parts.get(1..).unwrap_or(&[]).to_vec();
-        Some(custom_cmd.render_prompt(&args))
+        Some(
+            custom_cmd
+                .resolve_prompt(&args, ContextResolver::from_service(service))
+                .await,
+        )
     }
 
     async fn handle_slash_command(
@@ -368,8 +377,8 @@ impl<I: InputSource + Clone + 'static, R: OutputRenderer> ReplEngine<I, R> {
         )
         .await;
 
-        if let Some(prompt) = self.custom_command_prompt(msg).await {
-            Box::pin(self.run_resolved_turn(ctx, service, &prompt)).await?;
+        if let Some(resolved) = self.custom_command_context(service, msg).await {
+            Box::pin(self.run_resolved_context(ctx, service, resolved)).await?;
             return Ok(Step::Continue);
         }
 
@@ -438,7 +447,8 @@ impl<I: InputSource + Clone + 'static, R: OutputRenderer> ReplEngine<I, R> {
 
         // Handle editor content specially (parse @ refs like main flow)
         if let SlashCommandResult::EditorContent(content) = result {
-            Box::pin(self.run_resolved_turn(ctx, service, &content)).await?;
+            let resolved = Self::resolve_context_for_message(service, &content).await;
+            Box::pin(self.run_resolved_context(ctx, service, resolved)).await?;
             return Ok(Step::Continue);
         }
 

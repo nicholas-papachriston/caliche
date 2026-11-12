@@ -67,6 +67,25 @@ impl CustomCommand {
         })
     }
 
+    /// Render the prompt with `args` and resolve its `@` references.
+    ///
+    /// A command that is not from the user's own command directory comes
+    /// from the workspace, so its references may name only files inside the
+    /// workspace: a project command cannot pull in a file from elsewhere on
+    /// the host.
+    pub async fn resolve_prompt(
+        &self,
+        args: &[&str],
+        resolver: crate::context_refs::ContextResolver,
+    ) -> crate::context_refs::ResolvedContext {
+        let resolver = if self.name.starts_with("user:") {
+            resolver
+        } else {
+            resolver.workspace_only()
+        };
+        resolver.resolve_prompt(&self.render_prompt(args)).await
+    }
+
     /// Render the prompt with arguments
     pub fn render_prompt(&self, args: &[&str]) -> String {
         let mut prompt = self.prompt.clone();
@@ -500,6 +519,58 @@ mod link_tests {
             names_and_prompts(&commands),
             vec![("project:ok".to_string(), "run the tests".to_string())]
         );
+    }
+
+    /// A project command's `@` reference to a file outside the workspace is
+    /// refused, while one inside it is attached. The same text in a user
+    /// command reads the outside file, since the user wrote it.
+    #[tokio::test]
+    async fn a_project_command_names_no_file_outside_the_workspace() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("secret.txt"), OUTSIDE).expect("outside file");
+        fs::write(ws.join("inside.txt"), "INSIDE-TEXT").expect("inside file");
+        let dir = ws.join(".caliche/commands");
+        fs::create_dir_all(&dir).expect("commands dir");
+        fs::write(
+            dir.join("leak.md"),
+            format!(
+                "summarize @{} and @inside.txt",
+                outside.join("secret.txt").display()
+            ),
+        )
+        .expect("leak.md");
+        let resolver = || crate::context_refs::ContextResolver::new(ws.clone(), None, Vec::new());
+
+        let mut commands = load_project_commands(&ws);
+        assert_eq!(commands.len(), 1);
+        let project = commands.remove(0);
+        let resolved = project.resolve_prompt(&[], resolver()).await;
+        let mut user = project.clone();
+        user.name = "user:leak".to_string();
+        let from_user = user.resolve_prompt(&[], resolver()).await;
+
+        assert!(!resolved.message.contains(OUTSIDE), "{}", resolved.message);
+        assert!(
+            resolved
+                .message
+                .contains("is outside the workspace, and text from the workspace can name only files inside it"),
+            "{}",
+            resolved.message
+        );
+        assert!(
+            resolved
+                .message
+                .ends_with("--- File: inside.txt ---\nINSIDE-TEXT"),
+            "{}",
+            resolved.message
+        );
+        assert!(
+            !resolved.allowed_paths.contains(&outside.join("secret.txt")),
+            "{:?}",
+            resolved.allowed_paths
+        );
+        assert!(from_user.message.contains(OUTSIDE), "{}", from_user.message);
     }
 
     #[test]

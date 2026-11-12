@@ -98,6 +98,7 @@ pub struct ContextResolver {
     workspace_root: PathBuf,
     artifact_store: Option<Arc<caliche::ArtifactStore>>,
     mcp_clients: Vec<Arc<caliche::mcp::McpClient>>,
+    outside_reads: bool,
 }
 
 impl ContextResolver {
@@ -111,7 +112,29 @@ impl ContextResolver {
             workspace_root: workspace_root.into(),
             artifact_store,
             mcp_clients,
+            outside_reads: true,
         }
+    }
+
+    /// Refuse a file or directory reference outside the workspace, for text
+    /// that comes from the workspace, such as a project command, rather
+    /// than from the user.
+    #[must_use]
+    pub fn workspace_only(mut self) -> Self {
+        self.outside_reads = false;
+        self
+    }
+
+    /// Refuse `path` when it is outside the workspace and this resolver
+    /// reads only inside it.
+    fn check_place(&self, path: &Path) -> anyhow::Result<()> {
+        if !self.outside_reads && below_workspace(&self.workspace_root, path)?.is_none() {
+            anyhow::bail!(
+                "'{}' is outside the workspace, and text from the workspace can name only files inside it",
+                path.display()
+            );
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -186,8 +209,12 @@ impl ContextResolver {
         reference: &ContextReference,
     ) -> anyhow::Result<ResolvedItem> {
         match reference {
-            ContextReference::File(path) => self.resolve_file(path).await,
+            ContextReference::File(path) => {
+                self.check_place(path)?;
+                self.resolve_file(path).await
+            }
             ContextReference::Directory(path) => {
+                self.check_place(path)?;
                 resolve_directory(&self.workspace_root, path).await
             }
             ContextReference::Url(url) => resolve_url(url).await,
