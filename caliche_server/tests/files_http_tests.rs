@@ -102,3 +102,97 @@ async fn read_of_a_directory_is_400_with_the_error_as_json() {
         json!({ "error": caliche_server::handlers::files::NOT_A_FILE })
     );
 }
+
+/// `/api/files/list?path=<root>/<rel>`.
+fn list_path(root: &std::path::Path, rel: &str) -> String {
+    format!("/api/files/list?path={}", root.join(rel).to_string_lossy())
+}
+
+#[tokio::test]
+#[serial]
+async fn list_returns_the_directory_as_json() {
+    let (_dir, root) = workspace();
+    std::fs::create_dir(root.join("sub")).expect("sub");
+    std::fs::write(root.join("sub/a.txt"), "abc").expect("a.txt");
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and runs on a current-thread runtime; the
+    // blocking list task reads no environment variable.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_FILE_BROWSING", "true");
+    env.set("CALICHE_WORKSPACE", &root);
+
+    let (status, body) = get(&list_path(&root, "sub")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({
+            "path": root.join("sub").to_string_lossy(),
+            "parent": root.to_string_lossy(),
+            "entries": [{
+                "name": "a.txt",
+                "path": root.join("sub/a.txt").to_string_lossy(),
+                "is_dir": false,
+                "is_file": true,
+                "size": 3,
+                "extension": "txt"
+            }]
+        })
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn list_is_403_while_file_browsing_is_off() {
+    let (_dir, root) = workspace();
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and runs on a current-thread runtime; the
+    // blocking list task reads no environment variable.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.remove("CALICHE_FILE_BROWSING");
+    env.set("CALICHE_WORKSPACE", &root);
+
+    let (status, body) = get(&list_path(&root, "")).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        json!({
+            "error": "File browsing is not enabled. Set CALICHE_FILE_BROWSING=true to enable."
+        })
+    );
+}
+
+/// A missing directory fails validation (403). The 404 for one removed after
+/// validation is a unit test in `handlers::files`.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn list_of_a_missing_directory_is_403_and_of_a_file_is_400() {
+    let (_dir, root) = workspace();
+    std::fs::write(root.join("file.txt"), "x").expect("file");
+    #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+    // SAFETY: this test is serial and runs on a current-thread runtime; the
+    // blocking list task reads no environment variable.
+    let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+    env.set("CALICHE_FILE_BROWSING", "true");
+    env.set("CALICHE_WORKSPACE", &root);
+
+    let missing = get(&list_path(&root, "missing")).await;
+    let file = get(&list_path(&root, "file.txt")).await;
+
+    assert_eq!(
+        missing,
+        (
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Failed to resolve path" })
+        )
+    );
+    assert_eq!(
+        file,
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Failed to read directory: Not a directory (os error 20)" })
+        )
+    );
+}

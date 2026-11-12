@@ -495,18 +495,28 @@ mod tests {
     fn read_of_a_file_swapped_for_a_fifo_after_validation_is_400() {
         let (_dir, root) = workspace();
         file_of_len(&root, "swapped", 3);
-        AFTER_VALIDATE.with(|cell| {
-            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
-                std::fs::remove_file(validated).expect("remove");
-                let made = std::process::Command::new("mkfifo")
-                    .arg(validated)
-                    .status()
-                    .expect("mkfifo");
-                assert!(made.success(), "mkfifo failed");
-            }));
+        // The read runs on its own thread (the hook is thread-local), so a
+        // read that blocks on the FIFO fails here instead of hanging.
+        let (sent, received) = std::sync::mpsc::channel();
+        let ws = root.clone();
+        std::thread::spawn(move || {
+            AFTER_VALIDATE.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                    std::fs::remove_file(validated).expect("remove");
+                    let made = std::process::Command::new("mkfifo")
+                        .arg(validated)
+                        .status()
+                        .expect("mkfifo");
+                    assert!(made.success(), "mkfifo failed");
+                }));
+            });
+            let _ = sent.send(read_workspace_file(&ws, Path::new("swapped"), 10));
         });
+        let result = received
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the read blocked on the FIFO");
 
-        let Err((status, error)) = read_workspace_file(&root, Path::new("swapped"), 10) else {
+        let Err((status, error)) = result else {
             panic!("a FIFO must be refused");
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -607,6 +617,56 @@ mod tests {
             })
         );
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_of_a_directory_removed_after_validation_is_404() {
+        let (_dir, root) = workspace();
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        let sub = root.join("sub");
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                std::fs::remove_dir(validated).expect("remove sub");
+            }));
+        });
+
+        let (status, body) = status_and_json(list_workspace_dir(
+            root.clone(),
+            Some(sub.to_string_lossy().to_string()),
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, serde_json::json!({ "error": LIST_NOT_FOUND }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_of_a_directory_swapped_for_a_file_after_validation_is_400() {
+        let (_dir, root) = workspace();
+        std::fs::create_dir(root.join("sub")).expect("sub");
+        let sub = root.join("sub");
+        AFTER_VALIDATE.with(|cell| {
+            *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
+                std::fs::remove_dir(validated).expect("remove sub");
+                std::fs::write(validated, b"now a file").expect("file");
+            }));
+        });
+
+        let (status, body) = status_and_json(list_workspace_dir(
+            root.clone(),
+            Some(sub.to_string_lossy().to_string()),
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, serde_json::json!({ "error": LIST_NOT_A_DIRECTORY }));
+    }
+
+    /// The list 404 body for a directory that is gone.
+    const LIST_NOT_FOUND: &str = "Failed to read directory: No such file or directory (os error 2)";
+    /// The list 400 body for a path that is a file.
+    const LIST_NOT_A_DIRECTORY: &str = "Failed to read directory: Not a directory (os error 20)";
 
     #[cfg(unix)]
     #[test]
