@@ -136,13 +136,19 @@ impl BinaryFileSessionStore {
     /// Before `session_id` is saved or deleted, move a file at its name that
     /// holds another ID to that ID's own name, so it is not overwritten or
     /// removed. If that ID already has a file there, refuse and leave both.
+    /// A file there that cannot be read or decoded may be another ID's, so
+    /// that refuses too.
     async fn move_other_session_away(&self, session_id: &str) -> Result<()> {
         let path = self.path_for(session_id);
-        let other = match self.read_at_own_name(session_id).await {
-            Ok(Some((snapshot, false))) => snapshot.session_id,
-            // Absent, this ID's own, or not a session file: it is this
-            // ID's name, as before.
-            Ok(_) | Err(_) => return Ok(()),
+        let other = match self.read_at_own_name(session_id).await.with_context(|| {
+            format!(
+                "{} cannot be read as a session, so it may hold another ID; leaving it",
+                path.display()
+            )
+        })? {
+            Some((snapshot, false)) => snapshot.session_id,
+            // Absent or this ID's own.
+            None | Some((_, true)) => return Ok(()),
         };
         let target = self.path_for(&other);
         let dir = self.dir.clone();
@@ -565,6 +571,50 @@ mod tests {
 
         assert_eq!(loaded_text(&store, "main").await?, None);
         assert_eq!(loaded_text(&store, "Main").await?, Some("Main".to_string()));
+        Ok(())
+    }
+
+    /// A file at "main"'s name that cannot be read may hold another ID
+    /// ("Main", stored before uppercase letters were escaped). Saving or
+    /// deleting "main" refuses and leaves it as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_file_at_this_name_is_not_overwritten_or_deleted() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "main.id.cls1", "Main", "Main")?;
+        let path = dir.path().join("main.id.cls1");
+        let before = std::fs::read(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200))?;
+
+        let saved = store.save_session(&tagged_snapshot("main")?).await;
+        let deleted = store.delete_session("main").await;
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        assert!(saved.is_err(), "save over an unreadable file must refuse");
+        assert!(deleted.is_err(), "delete of an unreadable file must refuse");
+        assert_eq!(std::fs::read(&path)?, before);
+        Ok(())
+    }
+
+    /// The same holds for a file at that name that does not decode.
+    #[tokio::test]
+    async fn an_undecodable_file_at_this_name_is_not_overwritten_or_deleted() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        let path = dir.path().join("main.id.cls1");
+        std::fs::write(&path, b"not a session")?;
+
+        let saved = store.save_session(&tagged_snapshot("main")?).await;
+        let deleted = store.delete_session("main").await;
+
+        assert!(saved.is_err(), "save over an undecodable file must refuse");
+        assert!(
+            deleted.is_err(),
+            "delete of an undecodable file must refuse"
+        );
+        assert_eq!(std::fs::read(&path)?, b"not a session".to_vec());
         Ok(())
     }
 
