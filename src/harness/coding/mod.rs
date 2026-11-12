@@ -480,14 +480,16 @@ fn pyproject_mentions_pytest(root: &Path) -> bool {
     text.contains("pytest")
 }
 
-/// The repository work tree containing `root`, read with libgit2. It runs no
-/// command that repository config names (filters, hooks, fsmonitor), so a
-/// repository the model wrote cannot make the host run one.
+/// The work tree of the repository at `root`, read with libgit2 after its
+/// `.git` is checked (see `open_workspace_repository`). It runs no command
+/// that repository config names (filters, hooks, fsmonitor), so a
+/// repository the model wrote cannot make the host run one, and it opens no
+/// repository a gitfile names outside the workspace.
 #[cfg(feature = "tools-git")]
 async fn git_root(root: &Path) -> Option<PathBuf> {
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let repo = git2::Repository::discover(&root).ok()?;
+        let repo = crate::agent::tools::git::open_workspace_repository(&root).ok()?;
         repo.workdir()
             .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
     })
@@ -509,7 +511,7 @@ async fn git_root(_root: &Path) -> Option<PathBuf> {
 async fn git_dirty_files(root: &Path) -> Result<Vec<PathBuf>> {
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let Ok(repo) = git2::Repository::discover(&root) else {
+        let Ok(repo) = crate::agent::tools::git::open_workspace_repository(&root) else {
             return Ok(Vec::new());
         };
         let mut options = git2::StatusOptions::new();

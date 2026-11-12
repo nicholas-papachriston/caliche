@@ -16,16 +16,16 @@ pub use tool::GitTool;
 ///
 /// The path resolves against the tool workspace, not the process directory,
 /// and is refused outside the workspace unless host access is unlocked. A
-/// link inside the workspace may not lead out of it. The repository opened
-/// at a place inside the workspace must be the workspace's own repository
-/// (a linked worktree of it included) or one whose git dir is inside the
-/// workspace, so a committed git link cannot point a tool at another
-/// repository on the host.
+/// link inside the workspace may not lead out of it. Inside the workspace
+/// the `.git` is checked by [`caliche_sandbox::git_access::check_repository`]
+/// before git reads it, and the repository is opened at the checked git dir
+/// and work tree, so a committed gitfile or `commondir` cannot point a tool
+/// at another repository on the host.
 ///
 /// # Errors
 ///
 /// Returns a message for the tool result when the path is refused, the
-/// repository cannot be opened, or it is not the workspace's.
+/// repository cannot be opened, or its `.git` is refused.
 #[cfg(feature = "tools-git")]
 pub(crate) fn open_tool_repository(path_str: &str) -> Result<git2::Repository, String> {
     use crate::agent::tools::common::path::{
@@ -39,55 +39,54 @@ pub(crate) fn open_tool_repository(path_str: &str) -> Result<git2::Repository, S
     let workspace = get_current_dir()
         .and_then(|dir| Ok(dir.canonicalize()?))
         .map_err(|e| refused(&e))?;
-    let repo = git2::Repository::open_ext(
-        &canonical,
-        git2::RepositoryOpenFlags::NO_SEARCH,
-        std::iter::empty::<&std::ffi::OsStr>(),
-    )
-    .map_err(|e| refused(&e))?;
-    if canonical.starts_with(&workspace) {
-        check_workspace_repository(&repo, &workspace).map_err(|e| refused(&e))?;
+    if !canonical.starts_with(&workspace) {
+        return git2::Repository::open_ext(
+            &canonical,
+            git2::RepositoryOpenFlags::NO_SEARCH,
+            std::iter::empty::<&std::ffi::OsStr>(),
+        )
+        .map_err(|e| refused(&e));
     }
+    open_checked_repository(&workspace, &canonical).map_err(|e| refused(&e))
+}
+
+/// Open the repository whose `.git` is in `dir`, a canonical directory at or
+/// below the canonical `workspace`, after
+/// [`caliche_sandbox::git_access::check_repository`] accepts its layout.
+/// libgit2 opens the checked git dir with the checked work tree and does
+/// not search a parent directory.
+///
+/// # Errors
+///
+/// Returns the refusal, or the error libgit2 gave opening the checked dir.
+#[cfg(feature = "tools-git")]
+pub(crate) fn open_checked_repository(
+    workspace: &std::path::Path,
+    dir: &std::path::Path,
+) -> anyhow::Result<git2::Repository> {
+    let checked = caliche_sandbox::git_access::check_repository(workspace, dir)?;
+    let repo = git2::Repository::open_bare(&checked.git_dir)?;
+    repo.set_workdir(&checked.work_tree, false)?;
     Ok(repo)
 }
 
-/// Refuse `repo` unless it is the workspace's own repository or its git
-/// dir, common dir and work tree are all inside `workspace`.
+/// Open the repository at the root of `workspace`, checked as
+/// [`open_checked_repository`] checks it.
+///
+/// # Errors
+///
+/// Returns the error canonicalizing `workspace`, or that of
+/// [`open_checked_repository`].
 #[cfg(feature = "tools-git")]
-fn check_workspace_repository(
-    repo: &git2::Repository,
+pub(crate) fn open_workspace_repository(
     workspace: &std::path::Path,
-) -> std::io::Result<()> {
-    let git_dir = repo.path().canonicalize()?;
-    let common = repo.commondir().canonicalize()?;
-    let work_tree = repo
-        .workdir()
-        .map(std::path::Path::canonicalize)
-        .transpose()?;
-    let own_common = match caliche_policy::classify(workspace) {
-        Ok(caliche_policy::WorkspaceGit::Own { git_dir }) => {
-            Some(caliche_policy::common_dir(&git_dir)?.canonicalize()?)
-        }
-        _ => None,
-    };
-    let work_tree_inside = work_tree
-        .as_deref()
-        .is_none_or(|dir| dir.starts_with(workspace));
-    let own = own_common.as_deref() == Some(common.as_path());
-    let inside = git_dir.starts_with(workspace) && common.starts_with(workspace);
-    if work_tree_inside && (own || inside) {
-        return Ok(());
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        format!(
-            "it is a repository outside the workspace ('{}'), not the workspace's own",
-            common.display()
-        ),
-    ))
+) -> anyhow::Result<git2::Repository> {
+    let workspace = workspace.canonicalize()?;
+    open_checked_repository(&workspace, &workspace)
 }
 
-#[cfg(all(test, feature = "tools-git"))]
+#[cfg(test)]
+#[cfg(feature = "tools-git")]
 mod tests {
     use super::{GitBranchTool, GitDiffTool, GitLogTool, GitStatusTool, GitTool};
     use crate::agent::tools::Tool;
@@ -194,8 +193,11 @@ mod tests {
         assert_eq!(
             link_error,
             format!(
-                "Failed to open git repository at 'g': it is a repository outside the workspace ('{}'), not the workspace's own",
-                outside.join(".git").display()
+                "Failed to open git repository at 'g': {}",
+                caliche_sandbox::git_access::refusal::git_dir_outside(
+                    &ws.join("g/.git"),
+                    &outside.join(".git")
+                )
             )
         );
         assert!(own_log.content.contains("INSIDE-COMMIT"), "{own_log:?}");

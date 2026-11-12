@@ -248,9 +248,8 @@ impl ContextManager {
         // libgit2 runs no command that repository config names.
         #[cfg(feature = "tools-git")]
         {
-            use git2::Repository;
-
-            let repo = Repository::open(&self.workspace_root).ok()?;
+            let repo =
+                crate::agent::tools::git::open_workspace_repository(&self.workspace_root).ok()?;
 
             // Get current branch
             let head = repo.head().ok()?;

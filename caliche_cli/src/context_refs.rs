@@ -243,8 +243,12 @@ impl ContextResolver {
                 self.check_from_user("the clipboard")?;
                 resolve_clipboard()
             }
-            ContextReference::GitDiff => resolve_git(["diff", "HEAD"], "Git Diff").await,
-            ContextReference::GitStatus => resolve_git(["status", "--short"], "Git Status").await,
+            ContextReference::GitDiff => {
+                resolve_git(&self.workspace_root, ["diff", "HEAD"], "Git Diff").await
+            }
+            ContextReference::GitStatus => {
+                resolve_git(&self.workspace_root, ["status", "--short"], "Git Status").await
+            }
             ContextReference::Artifact(selector) => self.resolve_artifact(selector).await,
             ContextReference::Resource(selector) => self.resolve_resource(selector).await,
         }
@@ -556,11 +560,22 @@ fn resolve_clipboard() -> anyhow::Result<ResolvedItem> {
     }
 }
 
-async fn resolve_git<const N: usize>(args: [&str; N], title: &str) -> anyhow::Result<ResolvedItem> {
-    let output = tokio::process::Command::new("git")
-        .args(args)
-        .output()
-        .await?;
+/// Run `git args` in the repository at the workspace root. Its `.git` is
+/// checked first ([`check_repository`](caliche_sandbox::git_access::check_repository)),
+/// and `git` is pinned to the checked git dir and work tree, so it reads no
+/// repository a gitfile names outside the workspace and none above it.
+async fn resolve_git<const N: usize>(
+    workspace_root: &Path,
+    args: [&str; N],
+    title: &str,
+) -> anyhow::Result<ResolvedItem> {
+    let workspace = workspace_root.canonicalize()?;
+    let checked = caliche_sandbox::git_access::check_repository(&workspace, &workspace)?;
+    let mut command = checked.git_command();
+    command
+        .args(["-c", &format!("{}=false", caliche::policy::FSMONITOR_KEY)])
+        .args(args);
+    let output = tokio::process::Command::from(command).output().await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.is_empty() {
         Ok(ResolvedItem::text(format!("--- {title} ---\nNo changes")))
@@ -698,7 +713,8 @@ fn resolve_allowed_path(path: &Path, workspace_root: &Path) -> PathBuf {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod link_tests {
     use super::ContextResolver;
 
@@ -714,6 +730,62 @@ mod link_tests {
             .expect("file link");
         std::os::unix::fs::symlink(outside.path(), root.join("linked")).expect("dir link");
         (outside, ws, root)
+    }
+
+    fn git_init(dir: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .expect("git init");
+        assert!(status.success());
+    }
+
+    /// `@status` reads the workspace's own repository, and refuses a root
+    /// gitfile that names a repository outside the workspace.
+    #[tokio::test]
+    async fn git_status_reads_only_the_workspace_repository() {
+        let own = tempfile::tempdir().expect("own");
+        let own_root = own.path().canonicalize().expect("canonical own");
+        git_init(&own_root);
+        std::fs::write(own_root.join("inside.txt"), "x").expect("inside");
+        let outside = tempfile::tempdir().expect("outside");
+        let outside_root = outside.path().canonicalize().expect("canonical outside");
+        git_init(&outside_root);
+        std::fs::write(outside_root.join("OUTSIDE.txt"), "x").expect("outside file");
+        let linked = tempfile::tempdir().expect("linked");
+        let linked_root = linked.path().canonicalize().expect("canonical linked");
+        std::fs::write(
+            linked_root.join(".git"),
+            format!("gitdir: {}\n", outside_root.join(".git").display()),
+        )
+        .expect("gitfile");
+
+        let own_status = ContextResolver::new(own_root.clone(), None, Vec::new())
+            .resolve_prompt("@status")
+            .await;
+        let linked_status = ContextResolver::new(linked_root.clone(), None, Vec::new())
+            .resolve_prompt("@status")
+            .await;
+
+        assert!(
+            own_status
+                .message
+                .ends_with("--- Git Status ---\n?? inside.txt\n"),
+            "{}",
+            own_status.message
+        );
+        assert!(
+            linked_status.message.ends_with(&format!(
+                "[Error loading @status: {}]",
+                caliche_sandbox::git_access::refusal::git_dir_outside(
+                    &linked_root.join(".git"),
+                    &outside_root.join(".git")
+                )
+            )),
+            "{}",
+            linked_status.message
+        );
     }
 
     #[tokio::test]

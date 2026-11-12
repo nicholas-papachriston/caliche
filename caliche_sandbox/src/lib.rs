@@ -6,6 +6,8 @@ pub mod code_mode;
 pub mod config;
 mod cpu_rate;
 pub mod deferred;
+#[cfg(any(unix, windows))]
+pub mod git_access;
 #[cfg(any(
     feature = "docker",
     all(feature = "sandbox-linux", target_os = "linux"),
