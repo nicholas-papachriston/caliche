@@ -77,7 +77,9 @@ pub(crate) fn posix_single_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FormatterRule, posix_single_quote, run_formatter_if_match};
+    use super::posix_single_quote;
+    #[cfg(unix)]
+    use super::{FormatterRule, run_formatter_if_match};
 
     #[cfg(unix)]
     #[tokio::test]

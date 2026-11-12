@@ -3,8 +3,10 @@ use super::types::GatewayRuntimeRegistry;
 use caliche::security::SystemBinary;
 #[cfg(unix)]
 use std::process::Stdio;
+#[cfg(unix)]
 use std::time::Duration;
 use tokio::process::Command;
+#[cfg(unix)]
 use tokio::time::sleep;
 
 pub(super) async fn cleanup_dead(registry: &mut GatewayRuntimeRegistry) {
