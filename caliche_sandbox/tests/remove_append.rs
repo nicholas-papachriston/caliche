@@ -108,3 +108,51 @@ fn an_append_keeps_the_content_and_refuses_a_link_on_the_way() {
         "outside\n"
     );
 }
+
+/// The root itself is never removed, so `fs delete .` with recursive set
+/// cannot empty the workspace.
+#[test]
+fn the_root_itself_is_not_removed() {
+    let (_dir, root) = workspace();
+    std::fs::write(root.join("keep.txt"), "keep").expect("keep");
+
+    let refused = remove_beneath(&root, &root, true).expect_err("the root is refused");
+
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "'{}' names the sandbox root, not an entry below it",
+            root.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("keep.txt")).expect("keep stays"),
+        "keep"
+    );
+}
+
+/// An append to a file with a second hard link is refused: the other name
+/// can be a file outside the root.
+#[test]
+fn an_append_refuses_a_file_with_another_hard_link() {
+    let (_dir, root) = workspace();
+    let (_outside_dir, outside) = workspace();
+    std::fs::write(outside.join("log.txt"), "outside\n").expect("outside log");
+    std::fs::hard_link(outside.join("log.txt"), root.join("log.txt")).expect("hard link");
+
+    let refused = append_file_beneath(&root, &root.join("log.txt"))
+        .expect_err("a second hard link is refused");
+
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "refusing to write '{}': {}",
+            root.join("log.txt").display(),
+            caliche_sandbox::HARD_LINK_REFUSAL
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("log.txt")).expect("outside log"),
+        "outside\n"
+    );
+}

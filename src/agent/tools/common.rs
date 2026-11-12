@@ -1193,6 +1193,100 @@ mod tests {
         check_path_traversal("/absolute/ok.txt").expect("absolute without parent");
     }
 
+    /// On a file system that ignores case, a path that names the workspace
+    /// in other case is still inside it, so a link there leading out is
+    /// refused.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_link_out_named_in_other_case_is_refused() {
+        let ws = tempfile::tempdir().expect("ws");
+        let out = tempfile::tempdir().expect("outside");
+        let root = ws.path().canonicalize().expect("root");
+        let outside = out.path().canonicalize().expect("outside");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).expect("link");
+        let name = root
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .to_uppercase();
+        let lexical = root.with_file_name(name).join("escape");
+        super::set_tool_workspace_root(Some(root.clone()));
+        super::set_tool_host_fs_unlocked(false);
+
+        let refused = super::path::refuse_link_out_of_workspace(&lexical, &outside);
+
+        super::set_tool_workspace_root(None);
+        assert_eq!(
+            refused.map_err(|err| err.to_string()),
+            Err(format!(
+                "Path '{}' is inside the workspace but leads through a link to '{}', outside it",
+                lexical.display(),
+                outside.display()
+            ))
+        );
+    }
+
+    /// A path resolved inside the workspace and then swapped for a link to
+    /// an outside file is neither read nor written by the tool file helpers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_resolved_path_swapped_for_a_link_is_not_read_or_written() {
+        use super::path;
+        let ws = tempfile::tempdir().expect("ws");
+        let out = tempfile::tempdir().expect("outside");
+        let root = ws.path().canonicalize().expect("root");
+        let secret = out
+            .path()
+            .canonicalize()
+            .expect("outside")
+            .join("secret.txt");
+        std::fs::write(&secret, "OUTSIDE-SECRET").expect("secret");
+        std::fs::write(root.join("a.txt"), "inside").expect("a.txt");
+        super::set_tool_workspace_root(Some(root.clone()));
+        super::set_tool_host_fs_unlocked(false);
+        let resolved = path::validate_and_resolve_path("a.txt", Some(true))
+            .await
+            .expect("resolved inside");
+        std::fs::remove_file(root.join("a.txt")).expect("remove");
+        std::os::unix::fs::symlink(&secret, root.join("a.txt")).expect("swap");
+
+        let reached = [
+            (
+                "read_resolved_bytes_async",
+                path::read_resolved_bytes_async(&resolved).await.is_ok(),
+            ),
+            (
+                "read_resolved_text_async",
+                path::read_resolved_text_async(&resolved).await.is_ok(),
+            ),
+            ("read_tool_text", path::read_tool_text(&resolved).is_ok()),
+            (
+                "open_tool_file read",
+                path::open_tool_file(&resolved, path::ToolOpen::Read).is_ok(),
+            ),
+            (
+                "write_tool_file",
+                path::write_tool_file(&resolved, b"PWNED").is_ok(),
+            ),
+        ];
+        super::set_tool_workspace_root(None);
+
+        assert_eq!(
+            reached,
+            [
+                ("read_resolved_bytes_async", false),
+                ("read_resolved_text_async", false),
+                ("read_tool_text", false),
+                ("open_tool_file read", false),
+                ("write_tool_file", false),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&secret).expect("secret"),
+            "OUTSIDE-SECRET"
+        );
+    }
+
     #[test]
     fn resolve_path_for_tool_rejects_foreign_absolute() {
         super::set_tool_host_fs_unlocked(false);

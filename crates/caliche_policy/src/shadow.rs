@@ -382,6 +382,54 @@ mod tests {
         assert_eq!(decision.effect, Effect::Ask);
     }
 
+    /// Under the interactive overlay a git read runs and a git change asks,
+    /// whether the call names a git tool or `git` with an operation.
+    #[test]
+    fn interactive_asks_for_a_git_change_and_not_a_git_read() {
+        let cases = [
+            ("git_status", serde_json::json!({})),
+            ("git_diff", serde_json::json!({})),
+            ("git_log", serde_json::json!({})),
+            ("git_branch", serde_json::json!({})),
+            ("git", serde_json::json!({})),
+            ("git", serde_json::json!({"operation": "log"})),
+            (
+                "git",
+                serde_json::json!({"operation": "branch", "action": "list"}),
+            ),
+            (
+                "git_branch",
+                serde_json::json!({"action": "create", "branch_name": "x"}),
+            ),
+            ("git_commit", serde_json::json!({"message": "m"})),
+            (
+                "git",
+                serde_json::json!({"operation": "commit", "message": "m"}),
+            ),
+            (
+                "git",
+                serde_json::json!({"operation": "branch", "action": "delete"}),
+            ),
+        ];
+        let effects: Vec<_> = cases
+            .iter()
+            .map(|(tool, args)| {
+                evaluate_tool_gate(
+                    tool,
+                    args,
+                    crate::posture::ModeOverlay::Interactive,
+                    crate::principal::ApprovalWaiter::Present(HumanChannel::CliTty),
+                    crate::fs::FsRoots::new("/work", "/work"),
+                )
+                .effect
+            })
+            .collect();
+        assert_eq!(
+            effects,
+            [[Effect::Allow; 7].as_slice(), [Effect::Ask; 4].as_slice()].concat()
+        );
+    }
+
     #[test]
     fn default_overlay_allows_http_get() {
         let decision = evaluate_tool_gate(

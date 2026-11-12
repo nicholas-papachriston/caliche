@@ -80,7 +80,15 @@ impl TemplateLoader {
         dir: P,
     ) -> Result<Vec<AgentTemplate>> {
         let dir = dir.as_ref().to_path_buf();
-        let files = tokio::task::spawn_blocking(move || template_files(&dir)).await??;
+        let files = tokio::task::spawn_blocking(move || {
+            let base = if dir.is_absolute() {
+                PathBuf::new()
+            } else {
+                std::env::current_dir()?.canonicalize()?
+            };
+            template_files(&base, &dir)
+        })
+        .await??;
         let mut templates = Vec::new();
         for (path, content) in files {
             let loaded = String::from_utf8(content)
@@ -132,8 +140,9 @@ impl Default for TemplateLoader {
 }
 
 /// The anchor a template directory is walked below, and the directory as a
-/// path below that anchor.
-fn template_root(dir: &Path) -> Result<(PathBuf, PathBuf)> {
+/// path below that anchor. A relative `dir` is below `base`, the canonical
+/// current directory.
+fn template_root(base: &Path, dir: &Path) -> Result<(PathBuf, PathBuf)> {
     if dir.is_absolute() {
         let root = dir
             .canonicalize()
@@ -151,16 +160,15 @@ fn template_root(dir: &Path) -> Result<(PathBuf, PathBuf)> {
             dir.display()
         );
     }
-    let anchor = std::env::current_dir()?.canonicalize()?;
-    let target = anchor.join(dir).components().collect();
-    Ok((anchor, target))
+    let target = base.join(dir).components().collect();
+    Ok((base.to_path_buf(), target))
 }
 
 /// The path and bytes of every template file below `dir`, read without
-/// following a link.
-fn template_files(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+/// following a link. A relative `dir` is below `base`.
+fn template_files(base: &Path, dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     use std::io::Read as _;
-    let (anchor, root) = template_root(dir)?;
+    let (anchor, root) = template_root(base, dir)?;
     let mut files = Vec::new();
     let mut dirs_to_process = vec![root];
     while let Some(current_dir) = dirs_to_process.pop() {
@@ -170,8 +178,9 @@ fn template_files(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
             let path = current_dir.join(&entry.name);
             match entry.kind {
                 caliche_sandbox::EntryKind::Dir => dirs_to_process.push(path),
-                caliche_sandbox::EntryKind::Other => {}
-                caliche_sandbox::EntryKind::File => {
+                // A link or special file with a template name is refused by
+                // the read below, which follows no link.
+                caliche_sandbox::EntryKind::File | caliche_sandbox::EntryKind::Other => {
                     let ext = path.extension().and_then(|s| s.to_str());
                     if !matches!(ext, Some("yaml" | "yml" | "json")) {
                         continue;
@@ -197,6 +206,29 @@ mod link_tests {
     use super::TemplateLoader;
 
     const TEMPLATE: &str = include_str!("../../templates/tutor.yaml");
+
+    /// A relative template directory is walked below the current directory,
+    /// so a link at the directory itself, committed into the project, is
+    /// refused instead of loading the templates it points to.
+    #[test]
+    fn a_relative_template_dir_that_is_a_link_is_refused() {
+        let ws = tempfile::tempdir().expect("ws");
+        let base = ws.path().canonicalize().expect("canonical ws");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("leak.yaml"), TEMPLATE).expect("leak");
+        std::os::unix::fs::symlink(outside.path(), base.join("templates")).expect("dir link");
+
+        let loaded = super::template_files(&base, std::path::Path::new("templates"));
+
+        let err = loaded.expect_err("a linked template dir is refused");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Failed to read directory: {}",
+                base.join("templates").display()
+            )
+        );
+    }
 
     /// A template directory holding a link to an outside template file and
     /// a link to an outside directory of templates loads only its own file.

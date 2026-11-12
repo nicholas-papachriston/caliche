@@ -250,6 +250,29 @@ mod tests {
     use crate::scheduling::job::DeliveryTarget;
     use std::collections::HashMap;
 
+    /// A file delivery into a directory that is a link to an outside
+    /// directory writes nothing there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_delivery_writes_nothing_through_a_linked_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tempfile::tempdir().expect("outside");
+        let root = tmp.path().canonicalize().expect("canonical");
+        let outside = out.path().canonicalize().expect("outside");
+        std::os::unix::fs::symlink(&outside, root.join("reports")).expect("link");
+        let target = root.join("reports/today.txt");
+        crate::agent::tools::common::set_tool_workspace_root(Some(root.clone()));
+
+        let results = deliver("payload", &[DeliveryTarget::File { path: target }]).await;
+
+        crate::agent::tools::common::set_tool_workspace_root(None);
+        let written: Vec<_> = std::fs::read_dir(&outside).expect("outside").collect();
+        assert_eq!(
+            (results.len(), results[0].success, written.len()),
+            (1, false, 0)
+        );
+    }
+
     #[tokio::test]
     async fn file_delivery_refuses_git_metadata() {
         let tmp = tempfile::tempdir().expect("tempdir");

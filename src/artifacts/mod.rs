@@ -427,3 +427,134 @@ fn sanitize_prompt_prefix(prompt: &str) -> String {
     }
     out.trim_matches('-').to_string()
 }
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::{ArtifactMetadata, ArtifactSelector, ArtifactStore};
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+
+    const OUTSIDE: &[u8] = b"OUTSIDE-BYTES";
+
+    /// A canonical workspace with an empty `.caliche/artifacts/images`, and
+    /// an outside directory holding `secret.png` and `secret.json`.
+    fn layout() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf) {
+        let ws = tempfile::tempdir().expect("ws");
+        let out = tempfile::tempdir().expect("outside");
+        let root = ws.path().canonicalize().expect("root");
+        let outside = out.path().canonicalize().expect("outside");
+        std::fs::create_dir_all(root.join(".caliche/artifacts/images")).expect("images");
+        std::fs::write(outside.join("secret.png"), OUTSIDE).expect("secret png");
+        std::fs::write(outside.join("secret.json"), r#"{"prompt":"OUTSIDE"}"#)
+            .expect("secret json");
+        (ws, out, root, outside)
+    }
+
+    fn images(root: &std::path::Path) -> PathBuf {
+        root.join(".caliche/artifacts/images")
+    }
+
+    /// A link in the store is not listed as an artifact.
+    #[tokio::test]
+    async fn a_link_in_the_store_is_not_listed() {
+        let (_ws, _out, root, outside) = layout();
+        std::fs::write(images(&root).join("ok.png"), b"inside").expect("ok");
+        symlink(outside.join("secret.png"), images(&root).join("leak.png")).expect("link");
+        let store = ArtifactStore::for_workspace(&root, None);
+
+        let ids: Vec<String> = store
+            .list()
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|artifact| artifact.id)
+            .collect();
+
+        assert_eq!(ids, vec!["ok".to_string()]);
+    }
+
+    /// An artifact swapped for a link after it was listed is not read.
+    #[tokio::test]
+    async fn an_artifact_swapped_for_a_link_is_not_read() {
+        let (_ws, _out, root, outside) = layout();
+        let path = images(&root).join("ok.png");
+        std::fs::write(&path, b"inside").expect("ok");
+        let store = ArtifactStore::for_workspace(&root, None);
+        let artifact = store
+            .resolve(&ArtifactSelector::Latest)
+            .await
+            .expect("listed");
+        std::fs::remove_file(&path).expect("remove");
+        symlink(outside.join("secret.png"), &path).expect("swap");
+
+        let err = store.read(&artifact).await.expect_err("a link is refused");
+
+        assert_eq!(
+            err.to_string(),
+            format!("cannot read artifact {}", path.display())
+        );
+    }
+
+    /// A sidecar that is a link to an outside file is refused, not read.
+    #[tokio::test]
+    async fn a_linked_sidecar_is_refused() {
+        let (_ws, _out, root, outside) = layout();
+        std::fs::write(images(&root).join("ok.png"), b"inside").expect("ok");
+        let sidecar = images(&root).join("ok.json");
+        symlink(outside.join("secret.json"), &sidecar).expect("link");
+        let store = ArtifactStore::for_workspace(&root, None);
+
+        let err = store.list().await.expect_err("a linked sidecar is refused");
+
+        assert_eq!(
+            err.to_string(),
+            format!("cannot read artifact metadata {}", sidecar.display())
+        );
+    }
+
+    /// Saving into a store whose `images` is a link to an outside
+    /// directory writes nothing there.
+    #[tokio::test]
+    async fn a_save_writes_nothing_through_a_linked_images_dir() {
+        let (_ws, _out, root, outside) = layout();
+        std::fs::remove_dir(images(&root)).expect("remove images");
+        let drop_dir = outside.join("drop");
+        std::fs::create_dir(&drop_dir).expect("drop");
+        symlink(&drop_dir, images(&root)).expect("link");
+        let store = ArtifactStore::for_workspace(&root, None);
+        let image = crate::llm::GeneratedImage {
+            data: b"generated".to_vec(),
+            media_type: "image/png".to_string(),
+            revised_prompt: None,
+        };
+
+        let saved = store.save_image(&image, ArtifactMetadata::default()).await;
+
+        let written: Vec<_> = std::fs::read_dir(&drop_dir).expect("drop").collect();
+        assert!(saved.is_err(), "{saved:?}");
+        assert_eq!(written.len(), 0);
+    }
+
+    /// A relative artifact path with a parent component is refused before
+    /// any lookup.
+    #[tokio::test]
+    async fn a_relative_path_with_a_parent_is_refused() {
+        let (_ws, _out, root, _outside) = layout();
+        let store = ArtifactStore::for_workspace(&root, None);
+
+        let err = store
+            .resolve(&ArtifactSelector::RelativePath(PathBuf::from(
+                "images/../../../secret.png",
+            )))
+            .await
+            .expect_err("a parent component is refused");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Artifact path 'images/../../../secret.png' escapes artifact root '{}'",
+                root.join(".caliche/artifacts").display()
+            )
+        );
+    }
+}

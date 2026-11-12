@@ -658,6 +658,71 @@ mod tests {
         assert!(err.contains("needs review"));
     }
 
+    /// Records the tool name each hook call sees, and asks for approval
+    /// before the call.
+    #[derive(Debug, Default)]
+    struct NameRecordingHook {
+        seen: Mutex<Vec<(&'static str, String)>>,
+    }
+
+    #[async_trait]
+    impl LifecycleHook for NameRecordingHook {
+        async fn on_pre_tool_use(&self, ctx: &HookContext<'_>) -> HookResult {
+            self.seen
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(("pre", ctx.tool_name.to_string()));
+            HookResult::require_approval("needs review", None)
+        }
+
+        async fn on_post_tool_use(
+            &self,
+            ctx: &HookContext<'_>,
+            _result: &ToolResult,
+        ) -> HookResult {
+            self.seen
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(("post", ctx.tool_name.to_string()));
+            HookResult::allow()
+        }
+    }
+
+    /// A call named " shell " runs `bash`, so the `bash` hooks see `bash`
+    /// before and after it, and the approval granted before it is released
+    /// for the same call.
+    #[tokio::test]
+    async fn hooks_and_the_approval_see_the_tool_a_call_runs() {
+        let hook = Arc::new(NameRecordingHook::default());
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookMatcher::tool("bash"),
+            Arc::clone(&hook) as Arc<dyn LifecycleHook>,
+        );
+        let middleware = HookExecutionMiddleware::new(hooks).with_approval_resolver(Some(
+            Arc::new(RecordingResolver {
+                call_id: Mutex::new(None),
+            }),
+        ));
+        let args = serde_json::json!({"command": "git status"});
+        let ctx = ToolExecutionContext {
+            tool_name: " shell ",
+            arguments: &args,
+            call_id: "call-alias",
+        };
+
+        let before = middleware.before_execute(&ctx).await;
+        let admitted = middleware.admit_execution(&ctx).await;
+        let mut result = ToolResult::success("ok");
+        middleware.after_execute(&ctx, &mut result).await;
+
+        assert_eq!((before, admitted), (Ok(()), Ok(())));
+        assert_eq!(
+            *hook.seen.lock().unwrap_or_else(|err| err.into_inner()),
+            vec![("pre", "bash".to_string()), ("post", "bash".to_string())]
+        );
+    }
+
     #[tokio::test]
     async fn admit_accepts_the_approved_arguments() {
         let mut hooks = HookRegistry::new();
