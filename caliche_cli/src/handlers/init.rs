@@ -1000,8 +1000,9 @@ fn detect_build_commands(cwd: &Path, project_type: &str) -> String {
         }
         "node" | "typescript" | "javascript" => {
             if cwd.join("package.json").exists() {
-                // Try to read package.json scripts
-                if let Ok(content) = std::fs::read_to_string(cwd.join("package.json")) {
+                // Try to read package.json scripts, without following a
+                // link or blocking on a FIFO.
+                if let Some(content) = read_init_file(cwd, &cwd.join("package.json")) {
                     if content.contains("\"scripts\"") {
                         commands.push_str("- `npm install` - Install dependencies\n");
                         commands.push_str("- `npm run build` - Build (if script exists)\n");
@@ -1067,22 +1068,70 @@ mod tests {
             );
         }
 
-        #[tokio::test]
-        async fn a_fifo_agents_md_is_skipped_without_blocking() {
-            let (_ws_dir, ws) = canonical_dir();
-            let fifo = ws.join("AGENTS.md");
+        const NO_COMMANDS: &str = "<!-- Build commands will be detected here -->\n";
+
+        /// Run `work` on its own thread and wait at most five seconds for
+        /// it, so a read that blocks on a FIFO fails the test instead of
+        /// hanging it.
+        fn within_five_seconds<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(work());
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a FIFO must not block the read")
+        }
+
+        fn make_fifo(path: &Path) {
             let made = std::process::Command::new("mkfifo")
-                .arg(&fifo)
+                .arg(path)
                 .status()
                 .expect("mkfifo");
             assert!(made.success());
+        }
 
-            let found =
-                tokio::time::timeout(std::time::Duration::from_secs(5), find_project_file(&ws))
-                    .await
-                    .expect("a FIFO must not block the search");
+        #[test]
+        fn a_fifo_agents_md_is_skipped_without_blocking() {
+            let (_ws_dir, ws) = canonical_dir();
+            make_fifo(&ws.join("AGENTS.md"));
 
-            assert_eq!(found.map(|f| f.content), None);
+            let found = within_five_seconds(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(find_project_file(&ws))
+                    .map(|f| f.content)
+            });
+
+            assert_eq!(found, None);
+        }
+
+        #[test]
+        fn a_fifo_package_json_is_skipped_without_blocking() {
+            let (_ws_dir, ws) = canonical_dir();
+            make_fifo(&ws.join("package.json"));
+
+            let commands = within_five_seconds(move || detect_build_commands(&ws, "node"));
+
+            assert_eq!(commands, NO_COMMANDS);
+        }
+
+        #[test]
+        fn a_linked_package_json_is_not_read() {
+            let (_ws_dir, ws) = canonical_dir();
+            let (_out_dir, outside) = canonical_dir();
+            fs::write(outside.join("package.json"), "{\"scripts\": {}}").expect("outside");
+            symlink(outside.join("package.json"), ws.join("package.json")).expect("symlink");
+            let (_plain_dir, plain) = canonical_dir();
+            fs::write(plain.join("package.json"), "{\"scripts\": {}}").expect("plain");
+
+            assert_eq!(detect_build_commands(&ws, "node"), NO_COMMANDS);
+            assert!(
+                detect_build_commands(&plain, "node").starts_with("- `npm install`"),
+                "{}",
+                detect_build_commands(&plain, "node")
+            );
         }
 
         #[tokio::test]
