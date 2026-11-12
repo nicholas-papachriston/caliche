@@ -71,7 +71,9 @@ impl PathRestrictionHook {
 /// punctuation.  Returns a deduplicated list of resolved `PathBuf`s.
 #[must_use]
 pub fn extract_paths_from_text(text: &str) -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
 
@@ -83,13 +85,15 @@ pub fn extract_paths_from_text(text: &str) -> Vec<PathBuf> {
             continue;
         }
 
-        let expanded = if word.starts_with("~/") && !home.is_empty() {
+        let from_home = word.starts_with("~/") && !home.is_empty();
+        let expanded = if from_home {
             format!("{}/{}", home, &word[2..])
         } else {
             word.to_string()
         };
 
-        if expanded.starts_with('/') && expanded.len() > 1 {
+        // A Windows home (`C:\Users\...`) does not start with `/`.
+        if (from_home || expanded.starts_with('/')) && expanded.len() > 1 {
             let pb = PathBuf::from(&expanded);
             if seen.insert(pb.clone()) {
                 paths.push(pb);
