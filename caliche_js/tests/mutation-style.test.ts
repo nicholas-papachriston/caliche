@@ -37,12 +37,15 @@ describe("mutation style", () => {
   });
 
   test("apply_patch tool mutates file", () => {
+    // A tool used outside an agent works in the current directory.
     const dir = mkdtempSync(join(tmpdir(), "caliche-js-patch-"));
+    const previous = process.cwd();
+    process.chdir(dir);
     try {
       const target = join(dir, "note.txt");
       const patch =
         "*** Begin Patch\n" +
-        `*** Add File: ${target}\n` +
+        "*** Add File: note.txt\n" +
         "+alpha\n" +
         "+beta\n" +
         "*** End Patch\n";
@@ -52,6 +55,7 @@ describe("mutation style", () => {
       expect(result.success).toBe(true);
       expect(readFileSync(target, "utf8")).toBe("alpha\nbeta\n");
     } finally {
+      process.chdir(previous);
       rmSync(dir, { recursive: true, force: true });
     }
   });
