@@ -24,6 +24,9 @@ pub(super) enum Access {
     /// Create missing parent directories, then open or create the file and
     /// truncate it.
     Write,
+    /// As [`Access::Write`], but keep the content and position the file at
+    /// its end.
+    Append,
 }
 
 const DIR_FLAGS: libc::c_int =
@@ -67,15 +70,98 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
     let name = c_name(file_name)?;
     let file = match access {
         Access::Read => openat(&dir, &name, READ_FLAGS),
-        Access::Write => openat(&dir, &name, WRITE_FLAGS),
+        Access::Write | Access::Append => openat(&dir, &name, WRITE_FLAGS),
     }
     .map_err(|err| describe(err, &dir, file_name, target))?;
     let file = require_regular_file(File::from(file), target)?;
-    if access == Access::Write {
-        refuse_hard_links(&file, target)?;
-        file.set_len(0)?;
+    finish_write(file, access, target)
+}
+
+/// Refuse a write target with more than one hard link, then truncate it for
+/// [`Access::Write`] or move to its end for [`Access::Append`].
+fn finish_write(mut file: File, access: Access, target: &Path) -> io::Result<File> {
+    use std::io::Seek as _;
+    match access {
+        Access::Read => {}
+        Access::Write => {
+            refuse_hard_links(&file, target)?;
+            file.set_len(0)?;
+        }
+        Access::Append => {
+            refuse_hard_links(&file, target)?;
+            file.seek(std::io::SeekFrom::End(0))?;
+        }
     }
     Ok(file)
+}
+
+/// Remove `target`, a canonical absolute path strictly below the canonical
+/// `root`, following no link.
+///
+/// Every directory from `/` down to the parent is opened with `O_NOFOLLOW`
+/// relative to its parent, as in [`open_beneath`], and the entry is removed
+/// relative to the parent. A link is removed itself, never its target. A
+/// directory is removed only when `recursive` is set, together with
+/// everything in it, each entry relative to its own directory.
+pub(super) fn remove_beneath(root: &Path, target: &Path, recursive: bool) -> io::Result<()> {
+    if components_below(root, target)?.is_empty() {
+        return Err(invalid_input(format!(
+            "'{}' names the sandbox root, not an entry below it",
+            target.display()
+        )));
+    }
+    let names = absolute_components(target)?;
+    let Some((name, dir_names)) = names.split_last() else {
+        return Err(invalid_input(format!(
+            "'{}' has no file name",
+            target.display()
+        )));
+    };
+    let mut dir: OwnedFd = File::options()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open("/")?
+        .into();
+    for dir_name in dir_names {
+        dir = open_dir(&dir, dir_name, Access::Read, target)?;
+    }
+    remove_entry_at(&dir, name, recursive, target)
+}
+
+/// Remove the entry `name` of the open directory `dir`. A real directory,
+/// opened with `O_NOFOLLOW`, is emptied first; anything else, a link
+/// included, is unlinked itself.
+fn remove_entry_at(dir: &OwnedFd, name: &OsStr, recursive: bool, target: &Path) -> io::Result<()> {
+    let c = c_name(name)?;
+    match openat(dir, &c, DIR_FLAGS) {
+        Ok(child) => {
+            if !recursive {
+                return Err(io::Error::other(format!(
+                    "'{}' is a directory; removing it needs recursive",
+                    target.display()
+                )));
+            }
+            for entry in read_entries(child.try_clone()?)? {
+                remove_entry_at(&child, &entry.name, true, target)?;
+            }
+            unlinkat(dir, &c, libc::AT_REMOVEDIR)
+        }
+        Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) => {
+            unlinkat(dir, &c, 0)
+        }
+        Err(err) => Err(describe(err, dir, name, target)),
+    }
+}
+
+fn unlinkat(dir: &OwnedFd, name: &CString, flags: libc::c_int) -> io::Result<()> {
+    // SAFETY: `dir` is an open directory descriptor borrowed for the call and
+    // `name` is a NUL-terminated string that outlives it.
+    #[expect(unsafe_code, reason = "unlinkat relative to a directory descriptor")]
+    let status = unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) };
+    if status < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// List the directory `target`, the canonical `root` or a path below it.
@@ -299,7 +385,7 @@ fn components_below<'a>(root: &Path, target: &'a Path) -> io::Result<Vec<&'a OsS
 fn open_dir(parent: &OwnedFd, name: &OsStr, access: Access, target: &Path) -> io::Result<OwnedFd> {
     let c = c_name(name)?;
     match openat(parent, &c, DIR_FLAGS) {
-        Err(err) if access == Access::Write && err.kind() == io::ErrorKind::NotFound => {
+        Err(err) if access != Access::Read && err.kind() == io::ErrorKind::NotFound => {
             match mkdirat(parent, &c) {
                 Ok(()) => {}
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}

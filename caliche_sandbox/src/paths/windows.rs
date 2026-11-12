@@ -20,14 +20,14 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+    FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
+    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_NO_MORE_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE, RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
     GetFileInformationByHandle, GetFileInformationByHandleEx, SYNCHRONIZE,
@@ -46,6 +46,9 @@ pub(super) enum Access {
     /// Create missing parent directories, then open or create the file and
     /// truncate it.
     Write,
+    /// As [`Access::Write`], but keep the content and position the file at
+    /// its end.
+    Append,
 }
 
 /// Open `target`, which must lie strictly below the canonical `root`.
@@ -73,12 +76,86 @@ pub(super) fn open_beneath(root: &Path, target: &Path, access: Access) -> io::Re
 
     let file = open_file_child(&parent, file_name, access)?;
     refuse_reparse_point(&file, root, target)?;
-    if access == Access::Write {
-        refuse_hard_links(&file, target)?;
-        file.set_len(0)?;
-    }
+    let file = finish_write(file, access, target)?;
     drop(ancestors);
     Ok(file)
+}
+
+/// Refuse a write target with more than one hard link, then truncate it for
+/// [`Access::Write`] or move to its end for [`Access::Append`].
+fn finish_write(mut file: File, access: Access, target: &Path) -> io::Result<File> {
+    use std::io::Seek as _;
+    match access {
+        Access::Read => {}
+        Access::Write => {
+            refuse_hard_links(&file, target)?;
+            file.set_len(0)?;
+        }
+        Access::Append => {
+            refuse_hard_links(&file, target)?;
+            file.seek(std::io::SeekFrom::End(0))?;
+        }
+    }
+    Ok(file)
+}
+
+/// Remove `target`, which must lie strictly below the canonical `root`,
+/// following no reparse point below the root.
+///
+/// The walk to the parent is the one [`open_beneath`] uses. The entry is
+/// opened relative to its parent with `FILE_OPEN_REPARSE_POINT`, so a link or
+/// junction is removed itself, never its target. A directory is removed only
+/// when `recursive` is set, together with everything in it.
+pub(super) fn remove_beneath(root: &Path, target: &Path, recursive: bool) -> io::Result<()> {
+    let names = components_below(root, target)?;
+    let Some((file_name, dir_names)) = names.split_last() else {
+        return Err(invalid_input(format!(
+            "'{}' names the sandbox root, not an entry below it",
+            target.display()
+        )));
+    };
+    let mut ancestors = Vec::with_capacity(dir_names.len());
+    let mut parent = open_root(root)?;
+    for name in dir_names {
+        let dir = open_dir_child(&parent, name, Access::Read)?;
+        refuse_reparse_point(&dir, root, target)?;
+        ancestors.push(std::mem::replace(&mut parent, dir));
+    }
+    remove_child(&parent, file_name, recursive, target)?;
+    drop(ancestors);
+    Ok(())
+}
+
+/// Remove the entry `name` of the open directory `parent`. A directory that
+/// is not a reparse point is emptied first; anything else is deleted itself.
+fn remove_child(parent: &File, name: &OsStr, recursive: bool, target: &Path) -> io::Result<()> {
+    let entry = nt_open_relative(parent, name, GENERIC_READ | SYNCHRONIZE, FILE_OPEN, 0)?;
+    let attributes = entry.metadata()?.file_attributes();
+    let is_dir = attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0;
+    if is_dir {
+        if !recursive {
+            return Err(io::Error::other(format!(
+                "'{}' is a directory; removing it needs recursive",
+                target.display()
+            )));
+        }
+        for child in read_entries(&entry)? {
+            remove_child(&entry, &child.name, true, target)?;
+        }
+    }
+    // The handle above shares no delete access, so it is closed first.
+    drop(entry);
+    let kind = if is_dir { FILE_DIRECTORY_FILE } else { 0 };
+    let doomed = nt_open_relative(
+        parent,
+        name,
+        DELETE | SYNCHRONIZE,
+        FILE_OPEN,
+        kind | FILE_DELETE_ON_CLOSE,
+    )?;
+    drop(doomed);
+    Ok(())
 }
 
 /// List the directory `target`, the canonical `root` or a path below it.
@@ -212,7 +289,7 @@ fn open_root(root: &Path) -> io::Result<File> {
 fn open_dir_child(parent: &File, name: &OsStr, access: Access) -> io::Result<File> {
     let disposition = match access {
         Access::Read => FILE_OPEN,
-        Access::Write => FILE_OPEN_IF,
+        Access::Write | Access::Append => FILE_OPEN_IF,
     };
     // FILE_DIRECTORY_FILE fails the open when `name` is not a directory.
     nt_open_relative(
@@ -227,7 +304,9 @@ fn open_dir_child(parent: &File, name: &OsStr, access: Access) -> io::Result<Fil
 fn open_file_child(parent: &File, name: &OsStr, access: Access) -> io::Result<File> {
     let (desired, disposition) = match access {
         Access::Read => (GENERIC_READ | SYNCHRONIZE, FILE_OPEN),
-        Access::Write => (GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE, FILE_OPEN_IF),
+        Access::Write | Access::Append => {
+            (GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE, FILE_OPEN_IF)
+        }
     };
     nt_open_relative(parent, name, desired, disposition, FILE_NON_DIRECTORY_FILE)
 }

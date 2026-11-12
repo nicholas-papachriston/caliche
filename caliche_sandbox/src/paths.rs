@@ -462,6 +462,49 @@ pub fn create_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> 
     }
 }
 
+/// Open or create a file below `root` for appending, following no link below
+/// it, as [`create_file_beneath`] does, but keeping its content and placing
+/// the file position at its end.
+///
+/// # Errors
+///
+/// As [`create_file_beneath`].
+#[cfg(any(unix, windows))]
+pub fn append_file_beneath(root: &Path, target: &Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    {
+        unix::open_beneath(root, target, unix::Access::Append)
+    }
+    #[cfg(windows)]
+    {
+        windows::open_beneath(root, target, windows::Access::Append)
+    }
+}
+
+/// Remove `target`, below the canonical `root`, following no link below it.
+///
+/// The directories down to `target`'s parent are opened one at a time as in
+/// [`open_file_beneath`]. A link or junction at `target` is removed itself,
+/// never what it points to. A directory is removed only when `recursive` is
+/// set, together with its content, which is removed the same way.
+///
+/// # Errors
+///
+/// Returns an error when `target` is not strictly below `root`, a directory
+/// on the way is a link, `target` is a directory and `recursive` is not set,
+/// or an entry cannot be removed.
+#[cfg(any(unix, windows))]
+pub fn remove_beneath(root: &Path, target: &Path, recursive: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        unix::remove_beneath(root, target, recursive)
+    }
+    #[cfg(windows)]
+    {
+        windows::remove_beneath(root, target, recursive)
+    }
+}
+
 /// The reason a write through a hard link is refused. The full message is
 /// `refusing to write '<path>': ` followed by this text.
 pub const HARD_LINK_REFUSAL: &str = "it has more than one hard link";
