@@ -172,15 +172,16 @@ impl ProcessDocumentTool {
             );
         }
 
-        // Tesseract writes the text to its standard output, so no file is
-        // created where another process could plant a link.
-        let output = Command::new("tesseract")
-            .arg(path.to_str().unwrap_or(""))
-            .arg("stdout")
-            .arg("-l")
-            .arg(language)
-            .output()
-            .await;
+        // The image is read here without following a link below the
+        // workspace and given to tesseract on its standard input, so a link
+        // swapped in after the path was checked cannot point it elsewhere.
+        // It writes the text to its standard output, so no file is created
+        // where another process could plant a link.
+        let image = match path::read_resolved_bytes_async(path).await {
+            Ok(bytes) => bytes,
+            Err(e) => return ToolResult::error(format!("Failed to read image file: {e}")),
+        };
+        let output = run_with_input("tesseract", &["stdin", "stdout", "-l", language], image).await;
 
         match output {
             Ok(result) => {
@@ -236,28 +237,30 @@ impl ProcessDocumentTool {
     }
 
     async fn extract_pdf_text(path: &Path) -> ToolResult {
+        // The PDF is read here without following a link below the workspace,
+        // so a link swapped in after the path was checked cannot point the
+        // extraction elsewhere.
+        let bytes = match path::read_resolved_bytes_async(path).await {
+            Ok(bytes) => bytes,
+            Err(e) => return ToolResult::error(format!("Failed to read PDF file: {e}")),
+        };
+
         // Try using pdftotext if available (part of poppler-utils)
         let pdftotext_check = Command::new("pdftotext").arg("-v").output().await;
 
         if pdftotext_check.is_ok() {
-            return Self::extract_pdf_with_pdftotext(path).await;
+            return Self::extract_pdf_with_pdftotext(bytes).await;
         }
 
         // Fallback to lopdf crate
-        match path::read_resolved_bytes_async(path).await {
-            Ok(bytes) => Self::extract_pdf_with_lopdf(&bytes),
-            Err(e) => ToolResult::error(format!("Failed to read PDF file: {e}")),
-        }
+        Self::extract_pdf_with_lopdf(&bytes)
     }
 
-    async fn extract_pdf_with_pdftotext(path: &Path) -> ToolResult {
-        // `-` sends the text to standard output, so no file is created where
-        // another process could plant a link.
-        let output = Command::new("pdftotext")
-            .arg(path.to_str().unwrap_or(""))
-            .arg("-")
-            .output()
-            .await;
+    async fn extract_pdf_with_pdftotext(pdf: Vec<u8>) -> ToolResult {
+        // The first `-` reads the PDF from standard input; the second sends
+        // the text to standard output, so no file is created where another
+        // process could plant a link.
+        let output = run_with_input("pdftotext", &["-", "-"], pdf).await;
 
         match output {
             Ok(result) => {
@@ -317,6 +320,36 @@ impl ProcessDocumentTool {
 /// Reads the width, height and color type from the image header without decoding the
 /// pixels. The decoded size is still checked against the default limits, as a full
 /// decode would, so an image too large to decode reports the same error.
+/// Run `program` with `args`, write `input` to its standard input, and
+/// collect its output. The input is written from another task so a program
+/// that fills its output pipe before reading all its input cannot stall.
+async fn run_with_input(
+    program: &str,
+    args: &[&str],
+    input: Vec<u8>,
+) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("no standard input"))?;
+    let writer = tokio::spawn(async move {
+        // A program that stops reading early closes the pipe; its exit
+        // status reports the failure.
+        let _ = stdin.write_all(&input).await;
+    });
+    let output = child.wait_with_output().await;
+    let _ = writer.await;
+    output
+}
+
 fn read_image_header(data: &[u8]) -> image::ImageResult<(u32, u32, image::ColorType)> {
     let decoder = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()?
@@ -397,6 +430,65 @@ mod temp_output_tests {
             objects.len() + 1
         ));
         pdf.into_bytes()
+    }
+
+    /// A document checked as inside the workspace and then swapped for a
+    /// link to an outside file is not given to pdftotext or tesseract.
+    #[tokio::test]
+    async fn a_document_swapped_for_a_link_after_the_check_is_not_read() {
+        use crate::agent::tools::common::{path, set_tool_workspace_root};
+        let ws_dir = tempfile::tempdir().expect("ws");
+        let out_dir = tempfile::tempdir().expect("outside");
+        let ws = ws_dir.path().canonicalize().expect("ws");
+        let outside = out_dir.path().canonicalize().expect("outside");
+        std::fs::write(outside.join("secret.pdf"), hello_pdf()).expect("outside pdf");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([255, 255, 255]))
+            .save(outside.join("secret.png"))
+            .expect("outside png");
+        std::fs::write(ws.join("doc.pdf"), b"inside").expect("pdf");
+        std::fs::write(ws.join("scan.png"), b"inside").expect("png");
+        set_tool_workspace_root(Some(ws.clone()));
+        let pdf = path::validate_and_resolve_path("doc.pdf", Some(true))
+            .await
+            .expect("pdf checked");
+        let png = path::validate_and_resolve_path("scan.png", Some(true))
+            .await
+            .expect("png checked");
+        for (name, secret) in [("doc.pdf", "secret.pdf"), ("scan.png", "secret.png")] {
+            std::fs::remove_file(ws.join(name)).expect("remove");
+            std::os::unix::fs::symlink(outside.join(secret), ws.join(name)).expect("swap");
+        }
+
+        let text = ProcessDocumentTool::extract_pdf_text(&pdf).await;
+        let ocr = ProcessDocumentTool::perform_ocr(&png, "eng").await;
+        set_tool_workspace_root(None);
+
+        let seen: Vec<_> = [text, ocr]
+            .into_iter()
+            .map(|result| {
+                let error = result.error.unwrap_or_default();
+                (
+                    result.success,
+                    result.content,
+                    error.split(':').next().map(str::to_owned),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    false,
+                    String::new(),
+                    Some("Failed to read PDF file".to_string())
+                ),
+                (
+                    false,
+                    String::new(),
+                    Some("Failed to read image file".to_string())
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
