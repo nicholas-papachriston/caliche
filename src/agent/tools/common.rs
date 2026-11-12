@@ -810,10 +810,15 @@ mod tests {
 
     #[test]
     fn resolve_path_for_tool_allows_host_fs_when_unlocked() {
+        // An absolute path outside the workspace on each platform.
+        #[cfg(not(windows))]
+        let (outside, expected) = ("/etc/passwd", "/etc/passwd");
+        #[cfg(windows)]
+        let (outside, expected) = (r"C:\Windows\win.ini", "C:/Windows/win.ini");
         super::set_tool_host_fs_unlocked(true);
-        let resolved = super::path::resolve_path_for_tool("/etc/passwd").expect("unlocked");
+        let resolved = super::path::resolve_path_for_tool(outside).expect("unlocked");
         super::set_tool_host_fs_unlocked(false);
-        assert_eq!(resolved, PathBuf::from("/etc/passwd"));
+        assert_eq!(resolved, PathBuf::from(expected));
     }
 
     #[test]

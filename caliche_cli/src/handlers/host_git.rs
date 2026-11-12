@@ -432,6 +432,17 @@ mod tests {
         marker
     }
 
+    /// Whether this `git` knows `safe.bareRepository` (2.38 and later).
+    fn git_honors_safe_bare_repository() -> bool {
+        let version = git_reports(Path::new("."), &["version"]);
+        let mut numbers = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .map_while(|part| part.parse::<u32>().ok());
+        let (major, minor) = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
+        (major, minor) >= (2, 38)
+    }
+
     /// Set in the child of [`rerun_without_git_config`].
     const ISOLATED: &str = "CALICHE_HOST_GIT_TEST_ISOLATED";
 
@@ -551,6 +562,18 @@ mod tests {
         let marker = planted_bare_repository(&root, &bare);
         let ws = bare.join("ws");
         std::fs::create_dir(&ws).expect("ws");
+        if !git_honors_safe_bare_repository() {
+            // Git before 2.38 ignores `safe.bareRepository`, so `command()`
+            // alone would use the bare repository. Every caller reaches
+            // `command()` through `open`, which refuses it on any version.
+            let allow_bare = format!("{SAFE_BARE_REPOSITORY_KEY}=all");
+            let bare_git_dir =
+                git_reports(&ws, &["-c", &allow_bare, "rev-parse", "--absolute-git-dir"]);
+            let err = HostGit::open(&ws).await.err().expect("refused");
+            assert_eq!(err.to_string(), no_work_tree(&ws, &bare_git_dir));
+            assert!(!marker.exists(), "planted diff.external ran");
+            return;
+        }
         let git = HostGit { dir: ws };
 
         let output = git
