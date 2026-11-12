@@ -33,9 +33,11 @@ def test_create_fs_tool_apply_patch_style_strips_write_edit():
     assert "apply_patch" in (result.get("error") or "")
 
 
-def test_create_apply_patch_tool_mutates_file(tmp_path: Path):
+def test_create_apply_patch_tool_mutates_file(tmp_path: Path, monkeypatch):
+    # A tool used outside an agent works in the current directory.
+    monkeypatch.chdir(tmp_path)
     target = tmp_path / "note.txt"
-    patch = f"*** Begin Patch\n*** Add File: {target}\n+alpha\n+beta\n*** End Patch\n"
+    patch = "*** Begin Patch\n*** Add File: note.txt\n+alpha\n+beta\n*** End Patch\n"
     tool = create_apply_patch_tool()
     assert tool.name() == "apply_patch"
     result = tool.execute({"patch": patch})
