@@ -420,7 +420,7 @@ fn skill_dir_in(root: &Path, skill_path: &str) -> Result<PathBuf> {
     } else {
         root.join(skill_path)
     };
-    if !dir.join(SKILL_FILE).is_file() {
+    if !is_skill_dir(root, &dir) {
         bail!("no {SKILL_FILE} at {}", dir.display());
     }
     Ok(dir)
@@ -818,7 +818,7 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod link_tests {
-    use super::{SKILL_FILE, find_skill_dirs};
+    use super::{SKILL_FILE, find_skill_dirs, skill_dir_in};
 
     #[test]
     fn a_skill_reached_through_a_link_in_the_checkout_is_not_found() {
@@ -839,8 +839,22 @@ mod link_tests {
 
         let found = find_skill_dirs(checkout.path(), None).expect("one real skill");
         let named = find_skill_dirs(checkout.path(), Some("skills/dir_link"));
+        let updated = skill_dir_in(checkout.path(), "skills/dir_link");
+        let updated_file = skill_dir_in(checkout.path(), "skills/file_link");
 
         assert_eq!(found, [skills.join("real")]);
+        assert_eq!(
+            updated
+                .expect_err("an update through a linked skill dir")
+                .to_string(),
+            format!("no {SKILL_FILE} at {}", skills.join("dir_link").display())
+        );
+        assert_eq!(
+            updated_file
+                .expect_err("an update through a linked SKILL.md")
+                .to_string(),
+            format!("no {SKILL_FILE} at {}", skills.join("file_link").display())
+        );
         assert_eq!(
             named.expect_err("a linked skill dir").to_string(),
             format!("no {SKILL_FILE} at {}", skills.join("dir_link").display())
