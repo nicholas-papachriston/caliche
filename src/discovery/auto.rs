@@ -200,19 +200,34 @@ fn env_is_true(name: &str) -> bool {
 }
 
 pub fn discover_all(options: &DiscoveryOptions) -> DiscoverySnapshot {
+    let Ok(cwd) = std::env::current_dir() else {
+        return DiscoverySnapshot::default();
+    };
+    let home_dir = std::env::var("HOME").ok().map(PathBuf::from);
+    discover_from(&cwd, home_dir.as_deref(), options)
+}
+
+/// Discover from `cwd` and `home_dir` as the process sees them, either of
+/// which may be reached through a link.
+fn discover_from(
+    cwd: &Path,
+    home_dir: Option<&Path>,
+    options: &DiscoveryOptions,
+) -> DiscoverySnapshot {
     // Canonical, so the no-link walk below the workspace starts from a path
     // with no link of its own (macOS `/tmp` is one). Plain, not verbatim, on
     // Windows: discovered paths reach the model and the tools it runs.
-    let cwd = match std::env::current_dir().and_then(|cwd| cwd.canonicalize()) {
+    let cwd = match cwd.canonicalize() {
         Ok(v) => caliche_sandbox::external_tool_path(&v),
         Err(_) => return DiscoverySnapshot::default(),
     };
     // Canonical too, so a home that is or holds the workspace is told apart
     // by a plain prefix check.
-    let home_dir = std::env::var("HOME").ok().map(|home| {
-        let home = PathBuf::from(home);
-        home.canonicalize()
-            .map_or(home, |v| caliche_sandbox::external_tool_path(&v))
+    let home_dir = home_dir.map(|home| {
+        home.canonicalize().map_or_else(
+            |_| home.to_path_buf(),
+            |v| caliche_sandbox::external_tool_path(&v),
+        )
     });
     discover_in(&cwd, home_dir.as_deref(), options)
 }
@@ -1443,6 +1458,27 @@ mod link_tests {
         symlink(outside.join("secret.md"), commands.join("evil.md")).expect("symlink");
 
         let snapshot = discover_in(&ws, Some(&ws), &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), vec!["ok"]);
+        assert!(!mentions_outside(&snapshot));
+    }
+
+    /// HOME set to a link to the workspace (as `/var` is to `/private/var`
+    /// on macOS) is still seen as the workspace.
+    #[test]
+    fn a_symlinked_command_is_skipped_when_home_is_a_link_to_the_workspace() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        let (_link_dir, links) = canonical_dir();
+        fs::write(outside.join("secret.md"), OUTSIDE).expect("outside file");
+        let commands = ws.join(".caliche/commands");
+        fs::create_dir_all(&commands).expect("commands dir");
+        fs::write(commands.join("ok.md"), "run the tests").expect("ok.md");
+        symlink(outside.join("secret.md"), commands.join("evil.md")).expect("symlink");
+        let home = links.join("home");
+        symlink(&ws, &home).expect("home link");
+
+        let snapshot = discover_from(&home, Some(&home), &only(false, true, false));
 
         assert_eq!(command_names(&snapshot), vec!["ok"]);
         assert!(!mentions_outside(&snapshot));
