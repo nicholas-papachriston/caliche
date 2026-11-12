@@ -1093,9 +1093,15 @@ mod swap_tests {
 
         let err = write_validated_file(&workspace, &config, "linked.txt", b"evil")
             .expect_err("a hard-linked file must not be written");
-        assert!(
-            err.to_string().contains("hard link"),
-            "unexpected error: {err:#}"
+        let linked = workspace.join("linked.txt");
+        assert_eq!(
+            format!("{err:#}"),
+            format!(
+                "write '{}': refusing to write '{}': {}",
+                linked.display(),
+                linked.display(),
+                super::HARD_LINK_REFUSAL
+            )
         );
         assert_eq!(std::fs::read(&outside_file).expect("read"), b"orig");
         assert_eq!(
