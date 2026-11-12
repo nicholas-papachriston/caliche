@@ -68,8 +68,12 @@ fn raw_env_mutations(root: &Path) -> Vec<String> {
                 .iter()
                 .any(|pattern| compact.contains(pattern))
             {
-                let shown = file.strip_prefix(root).unwrap_or(&file);
-                hits.push(format!("{}:{}", shown.display(), index + 1));
+                let shown = file
+                    .strip_prefix(root)
+                    .unwrap_or(&file)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                hits.push(format!("{shown}:{}", index + 1));
             }
         }
     }
