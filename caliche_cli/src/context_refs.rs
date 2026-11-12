@@ -119,10 +119,10 @@ impl ContextResolver {
     /// Read only what the workspace holds, for text that comes from the
     /// workspace, such as a project command, rather than from the user.
     ///
-    /// A file or directory reference outside the workspace is refused, and
-    /// so are URL and clipboard references: the workspace's author must not
-    /// be able to fetch a host's internal URL or the user's clipboard into
-    /// the prompt.
+    /// A file or directory reference outside the workspace is refused, a
+    /// URL goes through the egress guard, and the clipboard is refused: the
+    /// workspace's author must not be able to fetch a host's internal URL or
+    /// the user's clipboard into the prompt.
     #[must_use]
     pub fn workspace_only(mut self) -> Self {
         self.outside_reads = false;
@@ -232,10 +232,7 @@ impl ContextResolver {
                 self.check_place(path)?;
                 resolve_directory(&self.workspace_root, path).await
             }
-            ContextReference::Url(url) => {
-                self.check_from_user("a URL")?;
-                resolve_url(url).await
-            }
+            ContextReference::Url(url) => resolve_url(url, !self.outside_reads).await,
             ContextReference::Symbol(symbol) => Ok(ResolvedItem::text(format!(
                 "[Reference to symbol: {symbol}]"
             ))),
@@ -518,8 +515,18 @@ async fn resolve_directory(workspace_root: &Path, path: &Path) -> anyhow::Result
     })
 }
 
-async fn resolve_url(url: &str) -> anyhow::Result<ResolvedItem> {
-    let response = reqwest::get(url).await?;
+/// Fetch `url` for the prompt. A URL in text from the workspace goes
+/// through the egress guard the other fetches use: no loopback, private or
+/// link-local address, checked after DNS, with the connection pinned to the
+/// checked address and no redirect followed. A URL the user typed is
+/// fetched as given.
+async fn resolve_url(url: &str, from_workspace: bool) -> anyhow::Result<ResolvedItem> {
+    let response = if from_workspace {
+        let (client, checked) = caliche::security::HttpPolicy::from_env()?.egress_client(url)?;
+        client.get(checked).send().await?
+    } else {
+        reqwest::get(url).await?
+    };
     let text = response.text().await?;
     let truncated = if text.len() > 10000 {
         format!(

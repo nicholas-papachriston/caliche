@@ -479,7 +479,8 @@ Do something useful."#;
 }
 
 /// Project commands are read without following links.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod link_tests {
     use super::*;
     use std::fs;
@@ -574,9 +575,9 @@ mod link_tests {
         port
     }
 
-    /// A project command cannot attach a URL or the clipboard: a URL could
-    /// be an internal service on the host. The same text in a user command
-    /// fetches the URL, since the user wrote it.
+    /// A project command's URL goes through the egress guard, so a loopback
+    /// service is not fetched, and it cannot attach the clipboard. The same
+    /// URL in a user command is fetched, since the user wrote it.
     #[tokio::test]
     async fn a_project_command_attaches_no_url_or_clipboard() {
         const INTERNAL: &str = "INTERNAL-SERVICE-BODY";
@@ -603,7 +604,7 @@ mod link_tests {
         assert!(!resolved.message.contains(INTERNAL), "{}", resolved.message);
         assert!(
             resolved.message.ends_with(&format!(
-                "[Error loading @http://127.0.0.1:{port}/meta: text from the workspace cannot attach a URL; type the reference yourself to attach it]\n\n\
+                "[Error loading @http://127.0.0.1:{port}/meta: plugin http url targets a blocked host: 127.0.0.1]\n\n\
                  [context 2: clipboard]\n[Error loading @clipboard: text from the workspace cannot attach the clipboard; type the reference yourself to attach it]"
             )),
             "{}",
