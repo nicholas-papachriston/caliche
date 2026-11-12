@@ -17,6 +17,36 @@ use time::OffsetDateTime;
 
 pub use cache::Cache;
 
+/// A spawned background task that stops when this guard drops.
+///
+/// Dropping a `JoinHandle` detaches its task, so a periodic task that holds
+/// its own clones of a backend's stores keeps writing after the owner is
+/// gone. The owner holds this guard instead; dropping it aborts the task at
+/// its next await point.
+#[derive(Debug)]
+#[must_use = "dropping the guard stops the task"]
+pub struct BackgroundTask(tokio::task::AbortHandle);
+
+impl BackgroundTask {
+    /// Spawn `task` on the current Tokio runtime.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime, as `tokio::spawn` does.
+    pub fn spawn<F>(task: F) -> Self
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        Self(tokio::spawn(task).abort_handle())
+    }
+}
+
+impl Drop for BackgroundTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Access metrics for tracking vector usage patterns
 #[derive(Debug, Clone)]
 pub struct AccessMetrics {

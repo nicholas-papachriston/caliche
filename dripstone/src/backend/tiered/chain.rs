@@ -26,7 +26,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
-use crate::backend::shared::{AccessTracker, build_composite_key, parse_composite_key};
+use crate::backend::shared::{
+    AccessTracker, BackgroundTask, build_composite_key, parse_composite_key,
+};
 use crate::core::{Capabilities, Chunk, FullTextQuery, SearchQuery, SearchResult};
 use crate::errors::DripstoneError;
 use crate::traits::Backend;
@@ -237,7 +239,10 @@ impl TieredChainInner {
     }
 
     /// Periodic hot-to-cold copy; see module docs for cost model and when to enable.
-    fn start_background_sync(inner: &Self) {
+    ///
+    /// The task holds its own clones of the tiers, so it runs until the
+    /// returned guard drops.
+    fn start_background_sync(inner: &Self) -> Option<BackgroundTask> {
         let interval = std::time::Duration::from_secs(inner.config.sync_interval_secs);
         let tiers: Vec<Arc<dyn Backend>> = inner.tiers.iter().map(Arc::clone).collect();
 
@@ -249,10 +254,10 @@ impl TieredChainInner {
                 "TieredChainBackend::start_background_sync called outside a Tokio runtime; \
                  background tier sync will not run"
             );
-            return;
+            return None;
         }
 
-        tokio::spawn(async move {
+        Some(BackgroundTask::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Skip the immediate first tick so we start by waiting `interval`.
@@ -302,13 +307,15 @@ impl TieredChainInner {
                 }
                 tracing::debug!("Completed background sync");
             }
-        });
+        }))
     }
 }
 
 /// N-tier chain backend: ordered list of backends from cold (index 0) to hot (last).
 pub struct TieredChainBackend {
     inner: Arc<TieredChainInner>,
+    /// Stops the background sync when the backend drops.
+    _sync: Option<BackgroundTask>,
 }
 
 impl TieredChainBackend {
@@ -346,11 +353,13 @@ impl TieredChainBackend {
             promotion_batch_gate: Arc::new(Semaphore::new(promotion_permits)),
         });
 
-        if inner.config.background_sync {
-            TieredChainInner::start_background_sync(&inner);
-        }
+        let sync = if inner.config.background_sync {
+            TieredChainInner::start_background_sync(&inner)
+        } else {
+            None
+        };
 
-        Ok(Self { inner })
+        Ok(Self { inner, _sync: sync })
     }
 
     /// Convert a per-tier search error into either an empty result (best-effort
@@ -819,5 +828,81 @@ mod tier_error_policy_tests {
         let res: Result<Option<SearchResult>, _> =
             TieredChainBackend::handle_tier_error(policy, 2, "cold", DripstoneError::storage("e"));
         assert!(matches!(res, Ok(None)));
+    }
+}
+
+#[cfg(all(test, feature = "memory-backend"))]
+mod background_sync_tests {
+    use super::*;
+    use crate::backend::memory::MemoryBackend;
+    use crate::backend::tiered::config::TierConfig;
+    use std::time::Duration;
+
+    const INTERVAL_SECS: u64 = 60;
+    const NAMESPACE: &str = "ns";
+
+    /// A cold and a hot tier, with one chunk only in the hot tier.
+    #[expect(
+        clippy::expect_used,
+        reason = "test setup fails the test when seeding fails"
+    )]
+    async fn tiers() -> (Arc<MemoryBackend>, Vec<Arc<dyn Backend>>) {
+        let cold = Arc::new(MemoryBackend::new());
+        let hot = Arc::new(MemoryBackend::new());
+        let chunk = Chunk::new(
+            "doc",
+            0,
+            "hot only",
+            vec![1.0_f32],
+            0,
+            8,
+            1,
+            serde_json::json!({}),
+            Some(NAMESPACE.to_string()),
+        );
+        hot.upsert(&[chunk]).await.expect("seed hot tier");
+        let tiers: Vec<Arc<dyn Backend>> = vec![cold.clone(), hot];
+        (cold, tiers)
+    }
+
+    fn syncing() -> TieredChainConfig {
+        TieredChainConfig::new(vec![TierConfig::new("cold"), TierConfig::new("hot")])
+            .background_sync(true)
+            .sync_interval_secs(INTERVAL_SECS)
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "test helper fails the test when listing fails"
+    )]
+    async fn cold_ids(cold: &MemoryBackend) -> Vec<String> {
+        cold.list(Some(NAMESPACE), None)
+            .await
+            .expect("list cold tier")
+            .into_iter()
+            .map(|chunk| chunk.id)
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_backend_copies_hot_chunks_to_the_cold_tier() {
+        let (cold, tiers) = tiers().await;
+        let backend = TieredChainBackend::new(tiers, syncing()).expect("backend");
+
+        tokio::time::sleep(Duration::from_secs(INTERVAL_SECS + 1)).await;
+
+        assert_eq!(cold_ids(&cold).await, vec!["doc#0".to_string()]);
+        drop(backend);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_backend_writes_nothing_after_three_intervals() {
+        let (cold, tiers) = tiers().await;
+        let backend = TieredChainBackend::new(tiers, syncing()).expect("backend");
+
+        drop(backend);
+        tokio::time::sleep(Duration::from_secs(3 * INTERVAL_SECS + 1)).await;
+
+        assert_eq!(cold_ids(&cold).await, Vec::<String>::new());
     }
 }

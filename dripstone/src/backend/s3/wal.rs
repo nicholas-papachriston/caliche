@@ -36,6 +36,7 @@ use time::OffsetDateTime;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::time::interval;
 
+use crate::backend::shared::BackgroundTask;
 use crate::storage::ObjectStore;
 
 /// WAL entry operation type
@@ -920,18 +921,20 @@ impl WalCompactor {
         Ok(keys.len())
     }
 
-    /// Start background compaction task
-    #[must_use]
+    /// Start background compaction every `interval_secs`.
+    ///
+    /// The task holds its own clone of the store and runs until the returned
+    /// guard drops.
     pub fn start_background_compaction(
         &self,
         interval_secs: u64,
         keep_latest_n: usize,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> BackgroundTask {
         let config = self.config.clone();
         let namespace = self.namespace.clone();
 
         let store = Arc::clone(&self.store);
-        tokio::spawn(async move {
+        BackgroundTask::spawn(async move {
             let mut tick = interval(Duration::from_secs(interval_secs));
 
             loop {
@@ -1039,6 +1042,85 @@ fn decompress_bytes(data: &[u8]) -> Result<Vec<u8>, DripstoneError> {
         .read_to_end(&mut decompressed)
         .map_err(|e| DripstoneError::storage(format!("Decompression failed: {e}")))?;
     Ok(decompressed)
+}
+
+#[cfg(test)]
+mod background_compaction_tests {
+    use super::*;
+    use crate::storage::{MemoryObjectStore, ObjectInfo, ObjectMetadata};
+    use async_trait::async_trait;
+    use std::sync::atomic::AtomicUsize;
+
+    const INTERVAL_SECS: u64 = 60;
+
+    /// A memory store that counts compaction passes: each pass lists the WAL.
+    #[derive(Default)]
+    struct CountingStore {
+        inner: MemoryObjectStore,
+        lists: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ObjectStore for CountingStore {
+        async fn get_object(&self, bucket: &str, key: &str) -> Result<Bytes, DripstoneError> {
+            self.inner.get_object(bucket, key).await
+        }
+        async fn put_object(
+            &self,
+            bucket: &str,
+            key: &str,
+            data: Bytes,
+            content_type: Option<&str>,
+        ) -> Result<(), DripstoneError> {
+            self.inner.put_object(bucket, key, data, content_type).await
+        }
+        async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), DripstoneError> {
+            self.inner.delete_object(bucket, key).await
+        }
+        async fn head_object(
+            &self,
+            bucket: &str,
+            key: &str,
+        ) -> Result<ObjectMetadata, DripstoneError> {
+            self.inner.head_object(bucket, key).await
+        }
+        async fn list_objects(
+            &self,
+            bucket: &str,
+            prefix: Option<&str>,
+        ) -> Result<Vec<ObjectInfo>, DripstoneError> {
+            self.lists.fetch_add(1, Ordering::SeqCst);
+            self.inner.list_objects(bucket, prefix).await
+        }
+    }
+
+    fn compactor(store: &Arc<CountingStore>) -> WalCompactor {
+        let store: Arc<dyn ObjectStore> = store.clone();
+        WalCompactor::new(store, WalConfig::default(), None)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_held_guard_compacts_once_per_interval() {
+        let store = Arc::new(CountingStore::default());
+        let task = compactor(&store).start_background_compaction(INTERVAL_SECS, 1);
+
+        tokio::time::sleep(Duration::from_secs(3 * INTERVAL_SECS + 1)).await;
+
+        // The first tick fires at once, then one per interval.
+        assert_eq!(store.lists.load(Ordering::SeqCst), 4);
+        drop(task);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_guard_compacts_nothing_after_three_intervals() {
+        let store = Arc::new(CountingStore::default());
+        let task = compactor(&store).start_background_compaction(INTERVAL_SECS, 1);
+
+        drop(task);
+        tokio::time::sleep(Duration::from_secs(3 * INTERVAL_SECS + 1)).await;
+
+        assert_eq!(store.lists.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[cfg(test)]

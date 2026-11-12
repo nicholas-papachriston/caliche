@@ -293,7 +293,7 @@ caliche_test_env = { path = "../crates/caliche_test_env" }
 bytes = "1.11"
 serial_test = "3.0"
 tempfile = "3.27"
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 aws-sdk-s3 = { version = "1.124", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 aws-sdk-sts = { version = "1.93", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3vectors = { version = "1.23", default-features = false, features = ["default-https-client", "rt-tokio"] }
