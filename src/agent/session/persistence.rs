@@ -118,6 +118,59 @@ impl BinaryFileSessionStore {
         self.dir.join(format!("{sanitized}.cls1"))
     }
 
+    /// The session in the file at [`Self::path_for`] `session_id`, and
+    /// whether it is that ID's. On a case-insensitive file system that name
+    /// is also the name another ID had before uppercase letters were escaped
+    /// (`main.id.cls1` is the same file as `Main.id.cls1`, which held
+    /// "Main"), so the stored ID decides.
+    async fn read_at_own_name(&self, session_id: &str) -> Result<Option<(SessionSnapshot, bool)>> {
+        let path = self.path_for(session_id);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let snapshot = decode_session_snapshot_v1(&tokio::fs::read(&path).await?)?;
+        let own = snapshot.session_id == session_id;
+        Ok(Some((snapshot, own)))
+    }
+
+    /// Before `session_id` is saved or deleted, move a file at its name that
+    /// holds another ID to that ID's own name, so it is not overwritten or
+    /// removed. If that ID already has a file there, refuse and leave both.
+    async fn move_other_session_away(&self, session_id: &str) -> Result<()> {
+        let path = self.path_for(session_id);
+        let other = match self.read_at_own_name(session_id).await {
+            Ok(Some((snapshot, false))) => snapshot.session_id,
+            // Absent, this ID's own, or not a session file: it is this
+            // ID's name, as before.
+            Ok(_) | Err(_) => return Ok(()),
+        };
+        let target = self.path_for(&other);
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            // A hard link fails if the target exists, so a file another save
+            // puts there meanwhile is never replaced.
+            match std::fs::hard_link(&path, &target) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
+                    "{} holds session {other:?}, which also has {}; leaving both",
+                    path.display(),
+                    target.display()
+                ),
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("link {} to {}", path.display(), target.display())
+                    });
+                }
+            }
+            std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            #[cfg(unix)]
+            std::fs::File::open(&dir)?.sync_all()?;
+            Ok(())
+        })
+        .await
+        .context("session move task failed")?
+    }
+
     /// Every earlier-name file that holds `session_id`, newest scheme first.
     async fn read_legacy(&self, session_id: &str) -> Vec<(std::path::PathBuf, SessionSnapshot)> {
         let mut found = Vec::new();
@@ -246,6 +299,7 @@ fn is_windows_device_name(stem: &str) -> bool {
 impl SessionStore for BinaryFileSessionStore {
     async fn save_session(&self, snapshot: &SessionSnapshot) -> Result<()> {
         tokio::fs::create_dir_all(&self.dir).await?;
+        self.move_other_session_away(&snapshot.session_id).await?;
         let path = self.path_for(&snapshot.session_id);
         let bytes = encode_session_snapshot_v1(snapshot)?;
         let dir = self.dir.clone();
@@ -266,10 +320,8 @@ impl SessionStore for BinaryFileSessionStore {
     }
 
     async fn load_session(&self, session_id: &str) -> Result<Option<SessionSnapshot>> {
-        let path = self.path_for(session_id);
-        if path.is_file() {
-            let data = tokio::fs::read(&path).await?;
-            return decode_session_snapshot_v1(&data).map(Some);
+        if let Some((snapshot, true)) = self.read_at_own_name(session_id).await? {
+            return Ok(Some(snapshot));
         }
         Ok(self
             .read_legacy(session_id)
@@ -298,6 +350,7 @@ impl SessionStore for BinaryFileSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
+        self.move_other_session_away(session_id).await?;
         let path = self.path_for(session_id);
         if path.is_file() {
             tokio::fs::remove_file(path).await?;
@@ -456,6 +509,135 @@ mod tests {
             .collect::<std::io::Result<_>>()?;
         names.sort();
         assert_eq!(names, vec!["%4Dain.id.cls1".to_string()]);
+        Ok(())
+    }
+
+    /// Write `id`'s session, tagged with `text`, under the file name `name`,
+    /// as an earlier version stored it.
+    fn plant(dir: &std::path::Path, name: &str, id: &str, text: &str) -> Result<()> {
+        let mut snapshot = tagged_snapshot(id)?;
+        snapshot.conversation_history = vec![Message::user(text)];
+        std::fs::write(dir.join(name), encode_session_snapshot_v1(&snapshot)?)?;
+        Ok(())
+    }
+
+    /// The text of `id`'s loaded session, or `None` if it has none.
+    async fn loaded_text(store: &BinaryFileSessionStore, id: &str) -> Result<Option<String>> {
+        Ok(store
+            .load_session(id)
+            .await?
+            .map(|snapshot| snapshot.conversation_history[0].as_text().unwrap_or("").to_string()))
+    }
+
+    /// Whether `dir` treats names that differ only in case as one file.
+    fn case_insensitive(dir: &std::path::Path) -> Result<bool> {
+        std::fs::write(dir.join("case-probe"), b"")?;
+        let insensitive = dir.join("CASE-PROBE").exists();
+        std::fs::remove_file(dir.join("case-probe"))?;
+        Ok(insensitive)
+    }
+
+    /// "Main" saved before uppercase letters were escaped is at
+    /// `Main.id.cls1`, which on APFS or NTFS is also `main.id.cls1`, the new
+    /// name of "main". Loading "main" does not return "Main".
+    #[tokio::test]
+    async fn a_name_holding_another_id_is_not_loaded_as_this_id() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "Main.id.cls1", "Main", "Main")?;
+
+        assert_eq!(loaded_text(&store, "main").await?, None);
+        assert_eq!(loaded_text(&store, "Main").await?, Some("Main".to_string()));
+        Ok(())
+    }
+
+    /// Saving "main" over a file that holds an earlier "Main" moves "Main"
+    /// to its own name first, so both are kept.
+    #[tokio::test]
+    async fn saving_an_id_keeps_another_id_stored_at_its_name() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "Main.id.cls1", "Main", "Main")?;
+
+        store.save_session(&tagged_snapshot("main")?).await?;
+
+        assert_eq!(loaded_text(&store, "Main").await?, Some("Main".to_string()));
+        assert_eq!(loaded_text(&store, "main").await?, Some("main".to_string()));
+        let mut ids: Vec<String> = Vec::new();
+        for name in std::fs::read_dir(dir.path())? {
+            let data = std::fs::read(name?.path())?;
+            ids.push(decode_session_snapshot_v1(&data)?.session_id);
+        }
+        ids.sort();
+        assert_eq!(ids, vec!["Main".to_string(), "main".to_string()]);
+        Ok(())
+    }
+
+    /// Deleting "main", never saved, keeps an earlier "Main" whose file is
+    /// at the same name.
+    #[tokio::test]
+    async fn deleting_an_id_keeps_another_id_stored_at_its_name() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "Main.id.cls1", "Main", "Main")?;
+
+        store.delete_session("main").await?;
+
+        assert_eq!(loaded_text(&store, "Main").await?, Some("Main".to_string()));
+        assert_eq!(loaded_text(&store, "main").await?, None);
+        Ok(())
+    }
+
+    /// The same holds when the IDs differ in the case of an escape's hex
+    /// digits: "%4D" was stored at `%254D.id.cls1`, and "%4d" is now
+    /// `%254d.id.cls1`.
+    #[tokio::test]
+    async fn ids_that_differ_in_hex_digit_case_keep_their_sessions() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "%254D.id.cls1", "%4D", "upper")?;
+
+        assert_eq!(loaded_text(&store, "%4d").await?, None);
+        store.save_session(&tagged_snapshot("%4d")?).await?;
+
+        assert_eq!(loaded_text(&store, "%4D").await?, Some("upper".to_string()));
+        assert_eq!(loaded_text(&store, "%4d").await?, Some("%4d".to_string()));
+        Ok(())
+    }
+
+    /// If the other ID also has a file at its own name, saving refuses and
+    /// both files stay as they were.
+    #[tokio::test]
+    async fn saving_refuses_when_the_other_id_has_both_names() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = BinaryFileSessionStore::new(dir.path());
+        plant(dir.path(), "Main.id.cls1", "Main", "old Main")?;
+        plant(dir.path(), "%4Dain.id.cls1", "Main", "new Main")?;
+
+        let saved = store.save_session(&tagged_snapshot("main")?).await;
+
+        if case_insensitive(dir.path())? {
+            let err = saved.expect_err("the save must refuse");
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{} holds session \"Main\", which also has {}; leaving both",
+                    store.path_for("main").display(),
+                    store.path_for("Main").display()
+                )
+            );
+            assert_eq!(
+                decode_session_snapshot_v1(&std::fs::read(store.path_for("main"))?)?
+                    .conversation_history[0]
+                    .as_text(),
+                Some("old Main")
+            );
+        } else {
+            // Without case folding the names are different files.
+            saved?;
+            assert_eq!(loaded_text(&store, "main").await?, Some("main".to_string()));
+        }
+        assert_eq!(loaded_text(&store, "Main").await?, Some("new Main".to_string()));
         Ok(())
     }
 
