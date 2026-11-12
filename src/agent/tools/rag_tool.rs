@@ -1011,7 +1011,7 @@ async fn read_file_for_indexing(path_str: &str, max_size: usize) -> anyhow::Resu
     path::validate_file_size(&normalized_path, max_size as u64)
         .map_err(|e| anyhow::anyhow!("File size validation failed: {e}"))?;
 
-    let bytes = path::read_canonical_bytes(&normalized_path)
+    let bytes = path::read_resolved_bytes_async(&normalized_path)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read file '{path_str}': {e}"))?;
 

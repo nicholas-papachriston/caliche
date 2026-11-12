@@ -86,6 +86,9 @@ pub mod workspace;
 mod write_file;
 
 #[cfg(test)]
+#[cfg(unix)]
+mod gate_race_tests;
+#[cfg(test)]
 mod git_metadata_guard_tests;
 #[cfg(test)]
 mod hotpath_perf;

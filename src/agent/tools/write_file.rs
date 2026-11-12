@@ -39,15 +39,9 @@ fn write_file_sync(
     create_dirs: bool,
     append: bool,
 ) -> Result<(), String> {
-    if create_dirs {
-        if let Some(parent) = file_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            return Err(format!(
-                "Failed to create parent directories for '{path_str}': {e}"
-            ));
-        }
-    } else if let Some(parent) = file_path.parent()
+    // The open below creates missing directories, following no link.
+    if !create_dirs
+        && let Some(parent) = file_path.parent()
         && !parent.exists()
     {
         return Err(format!(
@@ -57,10 +51,7 @@ fn write_file_sync(
     }
 
     if append {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file_path)
+        let mut file = path::open_tool_file(file_path, path::ToolOpen::Append)
             .map_err(|e| errors::format_file_error("open", path_str, &e.to_string()))?;
         file.write_all(content)
             .map_err(|e| errors::format_file_error("write", path_str, &e.to_string()))?;
@@ -68,7 +59,7 @@ fn write_file_sync(
             .map_err(|e| errors::format_file_error("write", path_str, &e.to_string()))?;
         return Ok(());
     }
-    std::fs::write(file_path, content)
+    path::write_tool_file(file_path, content)
         .map_err(|e| errors::format_file_error("write", path_str, &e.to_string()))
 }
 
@@ -197,7 +188,7 @@ impl Tool for WriteFileTool {
         let write_path = file_path.clone();
         let write_content = content;
         let path_for_io = path_str.clone();
-        let io = tokio::task::spawn_blocking(move || {
+        let io = crate::agent::tools::common::spawn_tool_blocking(move || {
             write_file_sync(
                 &write_path,
                 &path_for_io,

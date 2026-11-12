@@ -177,9 +177,11 @@ pub async fn apply_hunks_to_cwd(patch: &str, cwd: Option<&Path>) -> Result<Strin
                 super::super::file_mutation_queue::with_path_lock(&resolved, || {
                     let resolved = resolved.clone();
                     async move {
-                        tokio::task::spawn_blocking(move || apply_add_sync(&resolved, &contents))
-                            .await
-                            .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
+                        crate::agent::tools::common::spawn_tool_blocking(move || {
+                            apply_add_sync(&resolved, &contents)
+                        })
+                        .await
+                        .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
                     }
                 })
                 .await?;
@@ -190,9 +192,11 @@ pub async fn apply_hunks_to_cwd(patch: &str, cwd: Option<&Path>) -> Result<Strin
                 super::super::file_mutation_queue::with_path_lock(&resolved, || {
                     let resolved = resolved.clone();
                     async move {
-                        tokio::task::spawn_blocking(move || apply_delete_sync(&resolved))
-                            .await
-                            .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
+                        crate::agent::tools::common::spawn_tool_blocking(move || {
+                            apply_delete_sync(&resolved)
+                        })
+                        .await
+                        .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
                     }
                 })
                 .await?;
@@ -242,20 +246,16 @@ fn resolve_hunk_path(path: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn apply_add_sync(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create dirs for {}", path.display()))?;
-    }
-    std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
+    // The open creates missing directories, following no link.
+    path::write_tool_file(path, contents.as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
 fn apply_delete_sync(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        std::fs::remove_dir_all(path).with_context(|| format!("delete dir {}", path.display()))?;
-    } else {
-        std::fs::remove_file(path).with_context(|| format!("delete {}", path.display()))?;
-    }
+    let recursive = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    path::remove_tool_path(path, recursive)
+        .with_context(|| format!("delete {}", path.display()))?;
     Ok(())
 }
 
@@ -267,9 +267,11 @@ async fn apply_update(
     let path = path.to_path_buf();
     let dest = move_path.map(Path::to_path_buf);
     let chunks = chunks.to_vec();
-    tokio::task::spawn_blocking(move || apply_update_sync(&path, dest.as_deref(), &chunks))
-        .await
-        .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
+    crate::agent::tools::common::spawn_tool_blocking(move || {
+        apply_update_sync(&path, dest.as_deref(), &chunks)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("apply_patch worker failed: {e}"))?
 }
 
 fn apply_update_sync(
@@ -278,7 +280,7 @@ fn apply_update_sync(
     chunks: &[UpdateFileChunk],
 ) -> Result<String> {
     let original =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        path::read_tool_text(path).with_context(|| format!("read {}", path.display()))?;
     let mut original_lines: Vec<String> = original.split('\n').map(String::from).collect();
     if original_lines.last().is_some_and(String::is_empty) {
         original_lines.pop();
@@ -292,16 +294,12 @@ fn apply_update_sync(
     let new_contents = new_lines.join("\n");
 
     let write_path = move_path.unwrap_or(path);
-    if let Some(parent) = write_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create dirs for {}", write_path.display()))?;
-    }
-    std::fs::write(write_path, &new_contents)
+    path::write_tool_file(write_path, new_contents.as_bytes())
         .with_context(|| format!("write {}", write_path.display()))?;
     if let Some(dest) = move_path
         && dest != path
     {
-        std::fs::remove_file(path)
+        path::remove_tool_path(path, false)
             .with_context(|| format!("remove moved source {}", path.display()))?;
         return Ok(format!("Updated {} -> {}", path.display(), dest.display()));
     }

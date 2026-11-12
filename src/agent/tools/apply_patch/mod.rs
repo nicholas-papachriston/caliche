@@ -48,6 +48,7 @@ mod tests {
     #[tokio::test]
     async fn applies_add_update_and_delete() {
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let gone = dir.path().join("gone.txt");
         fs::write(&gone, "bye").expect("write gone");
 
@@ -80,6 +81,7 @@ mod tests {
     #[tokio::test]
     async fn update_requires_unique_context_match() {
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("dup.txt");
         fs::write(&path, "same\nsame\n").expect("write");
 
@@ -103,6 +105,7 @@ mod tests {
     #[tokio::test]
     async fn plus_only_hunk_inserts_after_context_not_eof() {
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("lib.rs");
         fs::write(&path, "fn alpha() {}\nfn beta() {}\nfn omega() {}\n").expect("write");
 
@@ -127,6 +130,7 @@ mod tests {
     #[tokio::test]
     async fn underindented_patch_adopts_file_indent() {
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("lib.rs");
         fs::write(&path, "impl Foo {\n    fn a() {}\n}\n").expect("write");
 
@@ -150,6 +154,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_updates_to_the_same_file_both_apply() {
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("lib.rs");
         fs::write(&path, "fn alpha() {}\nfn beta() {}\n").expect("write");
         let first = format!(

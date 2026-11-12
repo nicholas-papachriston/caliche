@@ -242,9 +242,7 @@ impl LspManager {
             .get_language_for_path(path)
             .ok_or_else(|| anyhow!("No LSP server configured for file: {}", path.display()))?
             .to_string();
-        let content = crate::agent::tools::common::path::read_canonical_text(path)
-            .await
-            .context(format!("Failed to read file for LSP: {}", path.display()))?;
+        let content = read_document(path).await?;
         self.open_document(path, &language, &content).await?;
         self.save_document(path, &language).await
     }
@@ -256,9 +254,7 @@ impl LspManager {
             .get_language_for_path(path)
             .ok_or_else(|| anyhow!("No LSP server configured for file: {}", path.display()))?
             .to_string();
-        let content = crate::agent::tools::common::path::read_canonical_text(path)
-            .await
-            .context(format!("Failed to read file for LSP: {}", path.display()))?;
+        let content = read_document(path).await?;
         self.open_document(path, &language, &content).await?;
         let workspace = self.workspace_root_for(path, &language);
         let client_arc = self.get_or_start_server(&workspace, &language).await?;
@@ -463,6 +459,19 @@ impl Default for LspManager {
     fn default() -> Self {
         Self::new(LspConfig::default())
     }
+}
+
+/// The text of `path` for the language server: resolved inside the
+/// workspace as a tool path is, and read following no link, so a link
+/// swapped in after the policy gate decided is not read.
+async fn read_document(path: &Path) -> Result<String> {
+    use crate::agent::tools::common::path::{read_resolved_text_async, validate_and_resolve_path};
+    let resolved = validate_and_resolve_path(&path.to_string_lossy(), Some(true))
+        .await
+        .with_context(|| format!("Failed to read file for LSP: {}", path.display()))?;
+    read_resolved_text_async(&resolved)
+        .await
+        .with_context(|| format!("Failed to read file for LSP: {}", path.display()))
 }
 
 fn normalize_path(path: &Path) -> Result<PathBuf> {

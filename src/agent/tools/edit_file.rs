@@ -618,7 +618,7 @@ async fn execute_edit_file(arguments: serde_json::Value) -> ToolResult {
         let path_str = path_str.clone();
         let operations = operations.clone();
         async move {
-            match tokio::task::spawn_blocking(move || {
+            match crate::agent::tools::common::spawn_tool_blocking(move || {
                 apply_edit_sync(&file_path, &path_str, &operations)
             })
             .await
@@ -637,7 +637,7 @@ fn apply_edit_sync(
     operations: &[serde_json::Value],
 ) -> ToolResult {
     let mut perf = crate::observability::perf::span("edit.apply");
-    let content = match std::fs::read_to_string(file_path) {
+    let content = match path::read_tool_text(file_path) {
         Ok(c) => c,
         Err(e) => {
             return ToolResult::error(errors::format_file_error("read", path_str, &e.to_string()));
@@ -678,7 +678,7 @@ fn apply_edit_sync(
         content.push('\n');
     }
 
-    match std::fs::write(file_path, &content) {
+    match path::write_tool_file(file_path, content.as_bytes()) {
         Ok(()) => {
             if let Some(ref mut span) = perf {
                 span.set_file_count(1);

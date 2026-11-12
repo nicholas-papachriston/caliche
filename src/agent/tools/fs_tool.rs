@@ -584,8 +584,10 @@ async fn execute_delete(path_str: &str, recursive: bool) -> ToolResult {
         Err(e) => return ToolResult::error(enhance_path_error(path_str, &e)),
     };
     let path_label = path_str.to_string();
-    match tokio::task::spawn_blocking(move || delete_path_sync(&file_path, &path_label, recursive))
-        .await
+    match crate::agent::tools::common::spawn_tool_blocking(move || {
+        delete_path_sync(&file_path, &path_label, recursive)
+    })
+    .await
     {
         Ok(result) => result,
         Err(e) => ToolResult::error(format!("delete worker failed: {e}")),
@@ -609,9 +611,9 @@ fn delete_path_sync(file_path: &std::path::Path, path_str: &str, recursive: bool
                 "Path '{path_str}' is a directory; set recursive=true to delete directories"
             ));
         }
-        std::fs::remove_dir_all(file_path)
+        path::remove_tool_path(file_path, true)
     } else {
-        std::fs::remove_file(file_path)
+        path::remove_tool_path(file_path, false)
     };
 
     match res {

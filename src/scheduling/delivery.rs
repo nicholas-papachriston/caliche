@@ -2,8 +2,6 @@
 
 use crate::scheduling::job::{DeliveryTarget, RetryPolicy};
 use std::path::Path;
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, sleep};
 
 /// Result of delivering to one target.
@@ -160,21 +158,16 @@ async fn deliver_file(output: &str, path: &Path) -> (bool, Option<String>) {
         Ok(path) => path,
         Err(e) => return (false, Some(e.to_string())),
     };
-    if let Some(parent) = path.parent()
-        && let Err(e) = fs::create_dir_all(parent).await
+    // The write follows no link below the workspace and creates missing
+    // directories, so a link swapped in after the check cannot redirect it.
+    let output = output.to_string();
+    match crate::agent::tools::common::spawn_tool_blocking(move || {
+        crate::agent::tools::common::path::write_tool_file(&path, output.as_bytes())
+    })
+    .await
     {
-        return (false, Some(e.to_string()));
-    }
-    match fs::File::create(&path).await {
-        Ok(mut f) => {
-            if let Err(e) = f.write_all(output.as_bytes()).await {
-                return (false, Some(e.to_string()));
-            }
-            if let Err(e) = f.flush().await {
-                return (false, Some(e.to_string()));
-            }
-            (true, None)
-        }
+        Ok(Ok(())) => (true, None),
+        Ok(Err(e)) => (false, Some(e.to_string())),
         Err(e) => (false, Some(e.to_string())),
     }
 }

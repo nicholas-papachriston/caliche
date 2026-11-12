@@ -57,6 +57,7 @@ async fn fuzz_context_insert_stays_next_to_anchor() {
         let anchor = rng.usize(count);
         let new_name = format!("inserted_{trial}");
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("lib.rs");
         fs::write(&path, &original).expect("write");
 
@@ -120,6 +121,7 @@ async fn fuzz_large_independent_body_edits() {
             .collect();
         let original = join_functions(indent, &names, &bodies);
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join("mod.rs");
         fs::write(&path, &original).expect("write");
 
@@ -168,6 +170,7 @@ async fn fuzz_underindented_replacement_adopts_file_style() {
         let indent = indent_unit(1); // 4 spaces — patch will use none
         let original = format!("{indent}fn keep() {{}}\n{indent}fn target() {{}}\n");
         let dir = tempdir().expect("tempdir");
+        crate::agent::tools::common::set_tool_workspace_root(Some(dir.path().to_path_buf()));
         let path = dir.path().join(format!("t{trial}.rs"));
         fs::write(&path, &original).expect("write");
         let _ = rng.next();

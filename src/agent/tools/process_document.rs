@@ -116,7 +116,7 @@ impl ProcessDocumentTool {
 
     async fn perform_vision(path: &Path) -> ToolResult {
         // Read the image file
-        let image_data = match path::read_canonical_bytes(path).await {
+        let image_data = match path::read_resolved_bytes_async(path).await {
             Ok(data) => data,
             Err(e) => return ToolResult::error(format!("Failed to read image file: {e}")),
         };
@@ -201,7 +201,7 @@ impl ProcessDocumentTool {
 
     async fn extract_image_metadata(path: &Path) -> ToolResult {
         // Read the image file
-        let image_data = match path::read_canonical_bytes(path).await {
+        let image_data = match path::read_resolved_bytes_async(path).await {
             Ok(data) => data,
             Err(e) => return ToolResult::error(format!("Failed to read image file: {e}")),
         };
@@ -244,7 +244,7 @@ impl ProcessDocumentTool {
         }
 
         // Fallback to lopdf crate
-        match path::read_canonical_bytes(path).await {
+        match path::read_resolved_bytes_async(path).await {
             Ok(bytes) => Self::extract_pdf_with_lopdf(&bytes),
             Err(e) => ToolResult::error(format!("Failed to read PDF file: {e}")),
         }

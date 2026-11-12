@@ -30,6 +30,39 @@ fn host_fs_unlocked() -> bool {
     TOOL_HOST_FS_UNLOCKED.with(|cell| *cell.borrow())
 }
 
+/// [`tokio::task::spawn_blocking`] that carries this thread's tool
+/// workspace root and host file system setting into `f`, so a path helper
+/// that `f` calls resolves against the same workspace. The blocking thread's
+/// own settings are restored when `f` returns.
+pub fn spawn_tool_blocking<F, R>(f: F) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let root = TOOL_WORKSPACE_ROOT.with(|cell| cell.borrow().clone());
+    let unlocked = host_fs_unlocked();
+    tokio::task::spawn_blocking(move || {
+        let _restore = ToolSettingsRestore {
+            root: TOOL_WORKSPACE_ROOT.with(|cell| cell.replace(root)),
+            unlocked: TOOL_HOST_FS_UNLOCKED.with(|cell| cell.replace(unlocked)),
+        };
+        f()
+    })
+}
+
+/// Puts a blocking thread's own tool settings back, also when `f` panics.
+struct ToolSettingsRestore {
+    root: Option<PathBuf>,
+    unlocked: bool,
+}
+
+impl Drop for ToolSettingsRestore {
+    fn drop(&mut self) {
+        TOOL_WORKSPACE_ROOT.with(|cell| cell.replace(self.root.take()));
+        TOOL_HOST_FS_UNLOCKED.with(|cell| cell.replace(self.unlocked));
+    }
+}
+
 /// Path validation and resolution utilities
 pub mod path {
     use super::{Context, Path, PathBuf, Result, bail, env};
@@ -73,6 +106,7 @@ pub mod path {
         let normalized_path = path
             .canonicalize()
             .with_context(|| format!("Failed to resolve path '{path_str}'"))?;
+        refuse_link_out_of_workspace(&path, &normalized_path)?;
 
         if let Some(should_be_file) = must_be_file {
             let metadata = std::fs::metadata(&normalized_path)
@@ -246,31 +280,236 @@ pub mod path {
         Ok(bytes)
     }
 
-    /// Read the file `path` names as UTF-8 text: resolve it to its canonical
-    /// path, the path the policy gate decides on, and open that following no
-    /// link, so nothing swapped in after the resolution is read.
+    /// [`read_resolved_bytes`] on a blocking thread.
     ///
     /// # Errors
     ///
-    /// Returns an error when `path` cannot be resolved, or as
-    /// [`read_resolved_text`].
-    pub async fn read_canonical_text(path: &Path) -> std::io::Result<String> {
+    /// As [`read_resolved_bytes`].
+    pub async fn read_resolved_bytes_async(path: &Path) -> std::io::Result<Vec<u8>> {
         let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || read_resolved_text(&path.canonicalize()?))
+        tokio::task::spawn_blocking(move || read_resolved_bytes(&path))
             .await
             .map_err(std::io::Error::other)?
     }
 
-    /// Read the file `path` names as bytes, as [`read_canonical_text`] does.
+    /// [`read_resolved_text`] on a blocking thread.
     ///
     /// # Errors
     ///
-    /// As [`read_canonical_text`].
-    pub async fn read_canonical_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    /// As [`read_resolved_text`].
+    pub async fn read_resolved_text_async(path: &Path) -> std::io::Result<String> {
         let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || read_resolved_bytes(&path.canonicalize()?))
+        tokio::task::spawn_blocking(move || read_resolved_text(&path))
             .await
             .map_err(std::io::Error::other)?
+    }
+
+    /// Refuse `canonical`, the resolution of `lexical`, when `lexical` names
+    /// a place inside the workspace and `canonical` is outside it.
+    ///
+    /// The policy gate resolves the path the model gave and decides on that.
+    /// The tool resolves it again, and a link swapped in between those two
+    /// resolutions would take a path the gate allowed as inside the
+    /// workspace to a file outside it. A link inside the workspace that
+    /// leads out of it is refused for the same reason. With host file
+    /// system access unlocked, nothing is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the workspace cannot be resolved, or when
+    /// `lexical` is inside it and `canonical` is not.
+    pub fn refuse_link_out_of_workspace(lexical: &Path, canonical: &Path) -> Result<()> {
+        if super::host_fs_unlocked() {
+            return Ok(());
+        }
+        let workspace = get_current_dir()?;
+        let workspace_canonical = workspace
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve workspace '{}'", workspace.display()))?;
+        let names_inside =
+            names_place_in(lexical, &workspace) || names_place_in(lexical, &workspace_canonical);
+        if names_inside && !canonical.starts_with(&workspace_canonical) {
+            bail!(
+                "Path '{}' is inside the workspace but leads through a link to '{}', outside it",
+                lexical.display(),
+                canonical.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether `path` names a place in `dir`, comparing names without case
+    /// where the file system usually ignores it (macOS and Windows), so a
+    /// differently cased path to the workspace still counts as inside.
+    fn names_place_in(path: &Path, dir: &Path) -> bool {
+        if path.starts_with(dir) {
+            return true;
+        }
+        if !cfg!(any(target_os = "macos", windows)) {
+            return false;
+        }
+        let mut names = path.components();
+        dir.components().all(|want| {
+            names.next().is_some_and(|got| {
+                got.as_os_str()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .eq(&want.as_os_str().to_string_lossy().to_lowercase())
+            })
+        })
+    }
+
+    /// `path`, a path from [`resolve_path_for_tool`], as the canonical
+    /// workspace root and the same place below that root.
+    fn below_workspace(path: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
+        let workspace = get_current_dir().map_err(std::io::Error::other)?;
+        let canonical = workspace.canonicalize()?;
+        let below = path
+            .strip_prefix(&workspace)
+            .or_else(|_| path.strip_prefix(&canonical))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("'{}' is outside the workspace", path.display()),
+                )
+            })?;
+        let target = canonical.join(below);
+        Ok((canonical, target))
+    }
+
+    /// How a tool opens a file it was given by path.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ToolOpen {
+        /// Read an existing file.
+        Read,
+        /// Create or truncate the file, creating missing directories.
+        Write,
+        /// Create the file or add to its end, creating missing directories.
+        Append,
+    }
+
+    /// Open `path`, a path from [`resolve_path_for_tool`], following no link
+    /// below the workspace root, so a link swapped in after the policy gate
+    /// decided cannot take the read or write outside the workspace.
+    ///
+    /// A write or append creates missing directories. Only with host file
+    /// system access unlocked is a path outside the workspace opened, and
+    /// then by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` is outside the workspace and host access
+    /// is locked, a component below the workspace is a link, the file is not
+    /// a regular file (or, for a write, has more than one hard link), or it
+    /// cannot be opened.
+    pub fn open_tool_file(path: &Path, how: ToolOpen) -> std::io::Result<std::fs::File> {
+        match below_workspace(path) {
+            Ok((root, target)) => open_beneath(&root, &target, how),
+            Err(_) if super::host_fs_unlocked() => {
+                if how != ToolOpen::Read
+                    && let Some(parent) = path.parent()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                match how {
+                    ToolOpen::Read => std::fs::File::open(path),
+                    ToolOpen::Write => std::fs::File::create(path),
+                    ToolOpen::Append => std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path),
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn open_beneath(root: &Path, target: &Path, how: ToolOpen) -> std::io::Result<std::fs::File> {
+        #[cfg(any(unix, windows))]
+        {
+            match how {
+                ToolOpen::Read => caliche_sandbox::open_file_beneath(root, target),
+                ToolOpen::Write => caliche_sandbox::create_file_beneath(root, target),
+                ToolOpen::Append => caliche_sandbox::append_file_beneath(root, target),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (root, target, how);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no-link opens are not supported on this platform",
+            ))
+        }
+    }
+
+    /// Remove `path`, a path from [`resolve_path_for_tool`], following no
+    /// link below the workspace root: a link is removed itself, and a link
+    /// swapped in for a directory on the way is refused. A directory is
+    /// removed, with its content, only when `recursive` is set.
+    ///
+    /// Only with host file system access unlocked is a path outside the
+    /// workspace removed, and then by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` is outside the workspace and host access
+    /// is locked, a directory on the way is a link, `path` is a directory and
+    /// `recursive` is not set, or the removal fails.
+    pub fn remove_tool_path(path: &Path, recursive: bool) -> std::io::Result<()> {
+        match below_workspace(path) {
+            Ok((root, target)) => remove_beneath(&root, &target, recursive),
+            Err(_) if super::host_fs_unlocked() => {
+                if recursive && std::fs::symlink_metadata(path)?.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn remove_beneath(root: &Path, target: &Path, recursive: bool) -> std::io::Result<()> {
+        #[cfg(any(unix, windows))]
+        {
+            caliche_sandbox::remove_beneath(root, target, recursive)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (root, target, recursive);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no-link removal is not supported on this platform",
+            ))
+        }
+    }
+
+    /// Read `path`, a path from [`resolve_path_for_tool`], as UTF-8 text
+    /// through [`open_tool_file`].
+    ///
+    /// # Errors
+    ///
+    /// As [`open_tool_file`], or when the read fails or the bytes are not
+    /// UTF-8.
+    pub fn read_tool_text(path: &Path) -> std::io::Result<String> {
+        use std::io::Read as _;
+        let mut text = String::new();
+        open_tool_file(path, ToolOpen::Read)?.read_to_string(&mut text)?;
+        Ok(text)
+    }
+
+    /// Replace the content of `path`, a path from [`resolve_path_for_tool`],
+    /// with `bytes` through [`open_tool_file`].
+    ///
+    /// # Errors
+    ///
+    /// As [`open_tool_file`], or when the write fails.
+    pub fn write_tool_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let mut file = open_tool_file(path, ToolOpen::Write)?;
+        file.write_all(bytes)?;
+        file.flush()
     }
 
     /// Checks for path traversal attempts.
