@@ -6,8 +6,6 @@ use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use async_trait::async_trait;
 #[cfg(feature = "tools-git")]
 use serde_json::json;
-#[cfg(feature = "tools-git")]
-use std::path::PathBuf;
 
 const NAME: &str = "git_status";
 const DESCRIPTION: &str = "Get the status of a git repository. Shows modified, staged, untracked, and deleted files. Useful for understanding what changes have been made before committing.";
@@ -44,17 +42,6 @@ impl ToolMeta for GitStatusTool {
             },
             "required": []
         })
-    }
-}
-
-#[cfg(feature = "tools-git")]
-fn resolve_repo_path(path_str: &str) -> Result<PathBuf, String> {
-    if PathBuf::from(path_str).is_absolute() {
-        return Ok(PathBuf::from(path_str));
-    }
-    match std::env::current_dir() {
-        Ok(cwd) => Ok(cwd.join(path_str)),
-        Err(e) => Err(format!("Failed to get current directory: {e}")),
     }
 }
 
@@ -126,18 +113,9 @@ fn format_status_output(lists: &StatusLists) -> String {
 impl Tool for GitStatusTool {
     async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
-        let repo_path = match resolve_repo_path(&path_str) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e),
-        };
-
-        let repo = match git2::Repository::open(&repo_path) {
+        let repo = match super::open_tool_repository(&path_str) {
             Ok(r) => r,
-            Err(e) => {
-                return ToolResult::error(format!(
-                    "Failed to open git repository at '{path_str}': {e}"
-                ));
-            }
+            Err(e) => return ToolResult::error(e),
         };
 
         let mut status_opts = git2::StatusOptions::new();

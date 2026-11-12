@@ -6,8 +6,6 @@ use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use async_trait::async_trait;
 #[cfg(feature = "tools-git")]
 use serde_json::json;
-#[cfg(feature = "tools-git")]
-use std::path::PathBuf;
 
 const NAME: &str = "git_branch";
 const DESCRIPTION: &str = "List, create, or delete git branches. Useful for branch management and switching between branches.";
@@ -63,24 +61,9 @@ impl Tool for GitBranchTool {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let action = params::extract_string_or(&arguments, "action", "list");
 
-        let repo_path = if PathBuf::from(&path_str).is_absolute() {
-            PathBuf::from(&path_str)
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(&path_str),
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get current directory: {e}"));
-                }
-            }
-        };
-
-        let repo = match git2::Repository::open(&repo_path) {
+        let repo = match super::open_tool_repository(&path_str) {
             Ok(r) => r,
-            Err(e) => {
-                return ToolResult::error(format!(
-                    "Failed to open git repository at '{path_str}': {e}"
-                ));
-            }
+            Err(e) => return ToolResult::error(e),
         };
 
         match action.as_str() {

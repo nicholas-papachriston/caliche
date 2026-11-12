@@ -6,8 +6,6 @@ use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use async_trait::async_trait;
 #[cfg(feature = "tools-git")]
 use serde_json::json;
-#[cfg(feature = "tools-git")]
-use std::path::PathBuf;
 
 const NAME: &str = "git_log";
 const DESCRIPTION: &str = "Show git commit history. Can show log for specific files or the entire repository. Useful for understanding project history and finding when changes were made.";
@@ -65,24 +63,9 @@ impl Tool for GitLogTool {
             .map(std::string::ToString::to_string);
         let max_count = params::extract_number_or(&arguments, "max_count", 10) as usize;
 
-        let repo_path = if PathBuf::from(&path_str).is_absolute() {
-            PathBuf::from(&path_str)
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(&path_str),
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get current directory: {e}"));
-                }
-            }
-        };
-
-        let repo = match git2::Repository::open(&repo_path) {
+        let repo = match super::open_tool_repository(&path_str) {
             Ok(r) => r,
-            Err(e) => {
-                return ToolResult::error(format!(
-                    "Failed to open git repository at '{path_str}': {e}"
-                ));
-            }
+            Err(e) => return ToolResult::error(e),
         };
 
         let mut revwalk = match repo.revwalk() {
