@@ -196,51 +196,58 @@ impl BinaryFileSessionStore {
 /// `path`, then sync `dir` (on Unix only; Windows has no directory sync) so
 /// the rename is durable.
 fn write_durably(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    write_durably_with(dir, path, bytes, || Ok(()))
-}
-
-/// [`write_durably`], calling `before_rename` once the temp file is synced.
-/// Tests inject a crash there.
-fn write_durably_with(
-    dir: &std::path::Path,
-    path: &std::path::Path,
-    bytes: &[u8],
-    before_rename: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // pid and time alone can repeat: two saves in one process within the
-    // clock's resolution.
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    use std::io::Write as _;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
-    let temp = dir.join(format!(
+    write_durably_with(dir, &temp_path(dir, nanos), path, bytes, || Ok(()))
+}
+
+/// A temp file name in `dir` that no other save uses. The pid and the time
+/// alone can repeat (two saves in one process within the clock's
+/// resolution), so a per-process counter is added.
+fn temp_path(dir: &std::path::Path, nanos: u128) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    dir.join(format!(
         ".session-{}-{nanos}-{}.tmp",
         std::process::id(),
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-    ));
-    // Only a temp file this call created is removed on failure.
+    ))
+}
+
+/// [`write_durably`] through the temp file `temp`, calling `before_rename`
+/// once it is synced. Tests inject a crash there.
+fn write_durably_with(
+    dir: &std::path::Path,
+    temp: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+    before_rename: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    use std::io::Write as _;
+    // Only a temp file this call created is removed on failure: one that
+    // already exists is another save's, and removing it would fail that
+    // save's rename.
     let mut created = false;
     let written = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&temp)
+            .open(temp)
             .with_context(|| format!("create {}", temp.display()))?;
         created = true;
         file.write_all(bytes)?;
         file.sync_all()?;
         before_rename()?;
-        std::fs::rename(&temp, path)
+        std::fs::rename(temp, path)
             .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;
         #[cfg(unix)]
         std::fs::File::open(dir)?.sync_all()?;
         Ok(())
     })();
     if written.is_err() && created {
-        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(temp);
     }
     written
 }
@@ -523,10 +530,12 @@ mod tests {
 
     /// The text of `id`'s loaded session, or `None` if it has none.
     async fn loaded_text(store: &BinaryFileSessionStore, id: &str) -> Result<Option<String>> {
-        Ok(store
-            .load_session(id)
-            .await?
-            .map(|snapshot| snapshot.conversation_history[0].as_text().unwrap_or("").to_string()))
+        Ok(store.load_session(id).await?.map(|snapshot| {
+            snapshot.conversation_history[0]
+                .as_text()
+                .unwrap_or("")
+                .to_string()
+        }))
     }
 
     /// Whether `dir` treats names that differ only in case as one file.
@@ -637,7 +646,44 @@ mod tests {
             saved?;
             assert_eq!(loaded_text(&store, "main").await?, Some("main".to_string()));
         }
-        assert_eq!(loaded_text(&store, "Main").await?, Some("new Main".to_string()));
+        assert_eq!(
+            loaded_text(&store, "Main").await?,
+            Some("new Main".to_string())
+        );
+        Ok(())
+    }
+
+    /// Two temp names taken at the same time differ, so two saves in one
+    /// clock tick do not share a temp file.
+    #[test]
+    fn temp_names_taken_at_the_same_time_differ() {
+        let dir = std::path::Path::new("/sessions");
+        let first = temp_path(dir, 7);
+        let second = temp_path(dir, 7);
+
+        assert_ne!(first, second);
+        let prefix = format!(".session-{}-7-", std::process::id());
+        for temp in [&first, &second] {
+            let name = temp.file_name().map(|n| n.to_string_lossy().into_owned());
+            assert!(name.is_some_and(|n| n.starts_with(&prefix)), "{temp:?}");
+        }
+    }
+
+    /// A save whose temp name is already taken fails and leaves that file,
+    /// which belongs to another save, as it was.
+    #[test]
+    fn a_save_whose_temp_name_is_taken_leaves_that_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s.id.cls1");
+        let temp = dir.path().join(".session-taken.tmp");
+        std::fs::write(&temp, b"another save's bytes")?;
+
+        let err = write_durably_with(dir.path(), &temp, &path, b"new snapshot", || Ok(()))
+            .expect_err("the temp name is taken");
+
+        assert_eq!(err.to_string(), format!("create {}", temp.display()));
+        assert_eq!(std::fs::read(&temp)?, b"another save's bytes");
+        assert!(!path.exists());
         Ok(())
     }
 
@@ -668,7 +714,8 @@ mod tests {
         let path = dir.path().join("s.id.cls1");
         std::fs::write(&path, b"old snapshot")?;
 
-        let err = write_durably_with(dir.path(), &path, b"new snapshot", || {
+        let temp = temp_path(dir.path(), 0);
+        let err = write_durably_with(dir.path(), &temp, &path, b"new snapshot", || {
             anyhow::bail!("injected crash before rename")
         })
         .expect_err("injected crash");
