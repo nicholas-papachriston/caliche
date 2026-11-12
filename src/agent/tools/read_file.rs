@@ -264,13 +264,7 @@ impl Tool for ReadFileTool {
         let path_label = path_str.clone();
         let processed = match tokio::task::spawn_blocking(move || {
             let io_start = measure_start();
-            let content = std::fs::read_to_string(&path_for_io).map_err(|e| {
-                anyhow::anyhow!(errors::format_file_error(
-                    "read",
-                    &path_label,
-                    &e.to_string()
-                ))
-            })?;
+            let content = read_whole_file(&path_for_io, &path_label)?;
             let mut timings = timings;
             timings.io_ms = elapsed_opt(io_start);
             process_read_content(ReadProcessingInput {
@@ -611,6 +605,12 @@ fn read_cache_key(path: &std::path::Path, query: Option<&str>, num_chunks: usize
     }
 }
 
+/// Read the resolved file `path` whole, following no link.
+fn read_whole_file(path: &std::path::Path, label: &str) -> Result<String> {
+    path::read_resolved_text(path)
+        .map_err(|e| anyhow::anyhow!(errors::format_file_error("read", label, &e.to_string())))
+}
+
 fn read_line_range_streaming(
     path: &std::path::Path,
     start_line: Option<usize>,
@@ -620,7 +620,7 @@ fn read_line_range_streaming(
 ) -> Result<(String, serde_json::Value)> {
     let start = start_line.unwrap_or(1).max(1);
     let end_requested = end_line.unwrap_or(usize::MAX).max(start);
-    let file = std::fs::File::open(path)
+    let file = path::open_resolved_file(path)
         .with_context(|| format!("Failed to read file '{display_path}'"))?;
     let mut line_no = 0usize;
     let mut selected = Vec::new();
@@ -907,5 +907,39 @@ mod auto_outline_tests {
         assert!(result.output.contains("[BM25 search for: \"target\"]"));
         assert_eq!(result.timings.io_ms, 7);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod link_tests {
+    use super::{read_line_range_streaming, read_whole_file};
+
+    /// A workspace file `f.txt` that is a link to a file outside, as when it
+    /// is swapped for a link after the gate checked its canonical path.
+    fn swapped_file() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), "secret line\n").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("f.txt"))
+            .expect("file link");
+        let file = root.join("f.txt");
+        (outside, ws, file)
+    }
+
+    #[test]
+    fn a_whole_read_refuses_a_file_swapped_for_a_link() {
+        let (_outside, _ws, file) = swapped_file();
+        let err = read_whole_file(&file, "f.txt").expect_err("a link must not be read");
+        assert!(!err.to_string().contains("secret line"), "{err}");
+    }
+
+    #[test]
+    fn a_line_range_read_refuses_a_file_swapped_for_a_link() {
+        let (_outside, _ws, file) = swapped_file();
+        let err = read_line_range_streaming(&file, Some(1), Some(1), "f.txt", 12)
+            .expect_err("a link must not be read");
+        assert_eq!(err.to_string(), "Failed to read file 'f.txt'");
     }
 }

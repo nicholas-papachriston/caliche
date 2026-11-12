@@ -541,15 +541,15 @@ fn suggest_similar_paths(failed_path: &str) -> String {
     };
 
     let mut suggestions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&resolved_parent) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_lowercase();
+    if let Ok(entries) = path::list_workspace_dir(&resolved_parent) {
+        for entry in entries {
+            let name = entry.name.to_string_lossy().to_lowercase();
             // Simple similarity check: contains target or vice versa
             if name.contains(&target_name) || target_name.contains(&name) {
                 suggestions.push(format!(
                     "{}/{}",
                     parent.display(),
-                    entry.file_name().to_string_lossy()
+                    entry.name.to_string_lossy()
                 ));
             }
         }
@@ -949,6 +949,33 @@ mod sandbox_grep_notice {
         assert!(
             script.contains("-F"),
             "invalid regex must be searched as a fixed string: {script}"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod suggestion_link_tests {
+    use super::suggest_similar_paths;
+    use crate::agent::tools::common::set_tool_workspace_root;
+
+    #[test]
+    fn suggestions_name_workspace_files_and_not_files_behind_a_link() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret_key.txt"), "x").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(ws.path().join("real")).expect("real dir");
+        std::fs::write(ws.path().join("real").join("secret_key.txt"), "x").expect("inside");
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("linkdir")).expect("dir link");
+        set_tool_workspace_root(Some(ws.path().to_path_buf()));
+
+        let inside = suggest_similar_paths("real/secret_key");
+        let linked = suggest_similar_paths("linkdir/secret_key");
+        set_tool_workspace_root(None);
+
+        assert_eq!(inside, " Did you mean: real/secret_key.txt?");
+        assert_eq!(
+            linked,
+            " Try `fs op=list path=linkdir` to see available entries."
         );
     }
 }

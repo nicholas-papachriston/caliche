@@ -2,6 +2,7 @@ use crate::agent::tools::common::{params, path};
 use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use caliche_sandbox::EntryKind;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -175,23 +176,20 @@ impl ListDirectoryTool {
         let mut files = Vec::new();
         let mut extension_counts = std::collections::BTreeMap::<String, usize>::new();
 
-        for entry in std::fs::read_dir(path)
+        for entry in path::list_resolved_dir(path)
             .with_context(|| format!("Failed to read directory '{}'", path.display()))?
         {
             if *entry_count >= max_entries {
                 break;
             }
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_str().unwrap_or("?");
+            let file_name = entry.name.to_str().unwrap_or("?");
             if !include_hidden && file_name.starts_with('.') {
                 continue;
             }
             *entry_count = entry_count.saturating_add(1);
 
-            let file_type = entry.file_type()?;
-            let is_dir = file_type.is_dir();
-            let is_file = file_type.is_file();
+            let is_dir = entry.kind == EntryKind::Dir;
+            let is_file = entry.kind == EntryKind::File;
             let entry_type = if is_dir {
                 "dir "
             } else if is_file {
@@ -200,10 +198,9 @@ impl ListDirectoryTool {
                 "other"
             };
             let size = if is_file {
-                let len = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                let len = entry.len;
                 if extensions_summary {
-                    let ext = entry
-                        .path()
+                    let ext = Path::new(&entry.name)
                         .extension()
                         .and_then(|ext| ext.to_str())
                         .map_or_else(|| "[no extension]".to_string(), |ext| format!(".{ext}"));
@@ -279,24 +276,20 @@ impl ListDirectoryTool {
 
         let mut files = Vec::new();
         let mut dirs = Vec::new();
-        for entry in std::fs::read_dir(&path)
+        for entry in path::list_resolved_dir(&path)
             .with_context(|| format!("Failed to read directory '{}'", path.display()))?
         {
             if *entry_count >= max_entries {
                 break;
             }
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_string_lossy().into_owned();
+            let file_name = entry.name.to_string_lossy().into_owned();
             if !include_hidden && file_name.starts_with('.') {
                 continue;
             }
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                dirs.push((entry.path(), file_name));
+            if entry.kind == EntryKind::Dir {
+                dirs.push((path.join(&entry.name), file_name));
             } else {
-                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-                files.push((file_name, size));
+                files.push((file_name, entry.len));
             }
             *entry_count = entry_count.saturating_add(1);
         }
@@ -439,5 +432,58 @@ mod tests {
             .strip_suffix("\n\n[Output truncated - too large for context window]")
             .expect("truncation notice");
         assert_eq!(body.len(), 39_999);
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod link_tests {
+    use super::ListDirectoryTool;
+
+    /// A workspace whose `sub` is a link to a directory outside it, as when
+    /// `sub` is swapped for a link after the parent listing saw a directory.
+    fn swapped_sub() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), "x").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        std::os::unix::fs::symlink(outside.path(), root.join("sub")).expect("dir link");
+        let sub = root.join("sub");
+        (outside, ws, sub)
+    }
+
+    #[test]
+    fn a_recursive_listing_refuses_a_directory_swapped_for_a_link() {
+        let (_outside, _ws, sub) = swapped_sub();
+        let mut entry_count = 0usize;
+        let listed = ListDirectoryTool::list_directory_recursive(
+            sub,
+            1,
+            3,
+            100,
+            &mut entry_count,
+            false,
+            true,
+        );
+        let err = listed.expect_err("a link must not be listed");
+        assert!(!format!("{err:#}").contains("secret.txt"), "{err:#}");
+        assert_eq!(entry_count, 0);
+    }
+
+    #[test]
+    fn a_listing_refuses_a_directory_swapped_for_a_link() {
+        let (_outside, _ws, sub) = swapped_sub();
+        let mut entry_count = 0usize;
+        let listed = ListDirectoryTool::list_directory_simple(
+            &sub,
+            100,
+            &mut entry_count,
+            false,
+            true,
+            false,
+        );
+        let err = listed.expect_err("a link must not be listed");
+        assert!(!format!("{err:#}").contains("secret.txt"), "{err:#}");
+        assert_eq!(entry_count, 0);
     }
 }

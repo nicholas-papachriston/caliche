@@ -601,6 +601,7 @@ fn run_grep_search(job: GrepSearchJob) -> Result<GrepRun, String> {
 
     if is_file {
         match GrepTool::search_file(
+            None,
             &job.normalized_path,
             &job.compiled_pattern,
             job.context_lines,
@@ -608,7 +609,6 @@ fn run_grep_search(job: GrepSearchJob) -> Result<GrepRun, String> {
             &mut total_matches,
             job.max_matches,
             &mut lines_scanned,
-            false,
         ) {
             Ok(file_matches) => {
                 files_scanned += 1;
@@ -755,7 +755,12 @@ struct SearchCounters<'a> {
 
 #[cfg(feature = "tools-grep")]
 impl GrepTool {
+    /// Search `file_path`, opened below `root` without following a link.
+    ///
+    /// `root` is the walked directory, or `None` for a file the caller named
+    /// and resolved, which is opened from the file system root.
     fn search_file(
+        root: Option<&Path>,
         file_path: &Path,
         compiled_pattern: &RegexMatcher,
         context_lines: usize,
@@ -763,25 +768,26 @@ impl GrepTool {
         total_matches: &mut usize,
         max_matches: usize,
         lines_scanned: &mut usize,
-        size_already_checked: bool,
     ) -> Result<Vec<String>, String> {
-        if !size_already_checked {
-            let metadata = std::fs::metadata(file_path)
-                .map_err(|e| format!("Failed to get file metadata: {e}"))?;
-            if metadata.len() > max_file_size {
-                return Err(format!(
-                    "file too large to search ({} bytes, max {max_file_size}): {}",
-                    metadata.len(),
-                    file_path.display()
-                ));
-            }
-        }
-
-        let file = match std::fs::File::open(file_path) {
+        let opened = match root {
+            Some(root) => path::open_walked_file(root, file_path),
+            None => path::open_resolved_file(file_path),
+        };
+        let file = match opened {
             Ok(file) => file,
             Err(e) if e.kind() == ErrorKind::InvalidData => return Ok(vec![]),
             Err(e) => return Err(format!("Failed to read file: {e}")),
         };
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("Failed to get file metadata: {e}"))?;
+        if metadata.len() > max_file_size {
+            return Err(format!(
+                "file too large to search ({} bytes, max {max_file_size}): {}",
+                metadata.len(),
+                file_path.display()
+            ));
+        }
         let path_str = file_path.display().to_string();
         search_reader(
             file,
@@ -832,7 +838,9 @@ impl GrepTool {
             };
 
             let entry_path = entry.path();
-            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            // The walk does not follow links, so a link reports its own
+            // type here and is skipped with directories and other non-files.
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
             if options
@@ -843,6 +851,7 @@ impl GrepTool {
             }
 
             match Self::search_file(
+                Some(dir_path),
                 entry_path,
                 options.matcher,
                 options.context_lines,
@@ -850,7 +859,6 @@ impl GrepTool {
                 counters.total_matches,
                 options.max_matches,
                 counters.lines_scanned,
-                true,
             ) {
                 Ok(file_matches) => {
                     *counters.files_scanned += 1;
@@ -1153,15 +1161,16 @@ mod tests {
         std::fs::write(&path, vec![b'x'; 64]).expect("write");
         let mut total_matches = 0usize;
         let mut lines_scanned = 0usize;
+        let root = root.canonicalize().expect("canonical fixture dir");
         let err = GrepTool::search_file(
-            &path,
+            Some(&root),
+            &root.join("big.rs"),
             &matcher("x"),
             0,
             16,
             &mut total_matches,
             100,
             &mut lines_scanned,
-            false,
         )
         .expect_err("oversize must error");
         assert!(err.contains("too large"), "{err}");
@@ -1466,6 +1475,54 @@ mod tests {
             before.abs_diff(window_len / 3) <= 1,
             "match at {before} of {window_len}: expected 1/3 before, 2/3 after"
         );
+    }
+}
+
+#[cfg(all(test, unix, feature = "tools-grep"))]
+mod link_tests {
+    use super::GrepTool;
+    use crate::agent::tools::Tool;
+    use serde_json::json;
+
+    /// File names named in a grep result, in result order.
+    fn named_files(content: &str) -> Vec<String> {
+        let mut names: Vec<String> = content
+            .lines()
+            .filter_map(|line| line.split(':').next())
+            .filter_map(|path| std::path::Path::new(path).file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".txt"))
+            .collect();
+        names.dedup();
+        names
+    }
+
+    #[tokio::test]
+    async fn a_directory_grep_does_not_read_a_linked_file() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), "needle outside\n").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::fs::write(ws.path().join("ok.txt"), "needle inside\n").expect("ok");
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            ws.path().join("leak.txt"),
+        )
+        .expect("file link");
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("linked_dir")).expect("dir link");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+
+        let result = GrepTool
+            .execute(json!({ "pattern": "needle", "path": root.to_string_lossy() }))
+            .await;
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(
+            named_files(&result.content),
+            ["ok.txt"],
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("outside"), "{}", result.content);
     }
 }
 

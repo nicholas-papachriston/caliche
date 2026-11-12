@@ -276,7 +276,11 @@ impl SandboxInstance for WasmtimeSandboxInstance {
         }
         let resolved = self.resolve_user_path(path);
         self.validate_sandbox_path(&resolved, false)?;
-        std::fs::read(&resolved).with_context(|| format!("failed to read {}", resolved.display()))
+        let canonical = std::fs::canonicalize(&resolved)
+            .with_context(|| format!("failed to read {}", resolved.display()))?;
+        self.validate_sandbox_path(&canonical, false)?;
+        read_canonical_no_link(&canonical)
+            .with_context(|| format!("failed to read {}", resolved.display()))
     }
 
     async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
@@ -302,6 +306,17 @@ impl SandboxInstance for WasmtimeSandboxInstance {
         self.alive.store(false, Ordering::Relaxed);
         Ok(())
     }
+}
+
+/// Read the canonical file `path`, opening every component from the file
+/// system root without following a link, so a link swapped in after the
+/// path was validated is refused.
+fn read_canonical_no_link(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let root = path.ancestors().last().unwrap_or(path);
+    let mut bytes = Vec::new();
+    crate::paths::open_file_beneath(root, path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {

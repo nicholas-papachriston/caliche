@@ -120,6 +120,159 @@ pub mod path {
         bail!("S3 support is not enabled. Enable the 's3' feature to use S3 URIs: {s3_uri}");
     }
 
+    /// Open the file at `path`, a path from [`validate_and_resolve_path`],
+    /// following no link.
+    ///
+    /// The policy gate decides on that canonical path. A read by path would
+    /// follow a link swapped in after the check, so this opens every
+    /// component from the file system root, refuses a link, and refuses a
+    /// file that is not a regular file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a component is a link, the path is not a
+    /// regular file, or it cannot be opened.
+    pub fn open_resolved_file(path: &Path) -> std::io::Result<std::fs::File> {
+        open_walked_file(fs_root(path), path)
+    }
+
+    /// The file system root above `path`: `/`, or a drive or share root.
+    fn fs_root(path: &Path) -> &Path {
+        path.ancestors().last().unwrap_or(path)
+    }
+
+    /// Open `file`, which a walk of the canonical directory `root` found,
+    /// following no link below `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `file` is not below `root`, a component is a
+    /// link, `file` is not a regular file, or it cannot be opened.
+    pub fn open_walked_file(root: &Path, file: &Path) -> std::io::Result<std::fs::File> {
+        #[cfg(any(unix, windows))]
+        {
+            caliche_sandbox::open_file_beneath(root, file)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (root, file);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no-link reads are not supported on this platform",
+            ))
+        }
+    }
+
+    /// Read `file` as UTF-8 text through [`open_walked_file`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the open fails, the read fails, or the bytes are
+    /// not UTF-8.
+    pub fn read_walked_text(root: &Path, file: &Path) -> std::io::Result<String> {
+        use std::io::Read;
+        let mut text = String::new();
+        open_walked_file(root, file)?.read_to_string(&mut text)?;
+        Ok(text)
+    }
+
+    /// Read `path`, a path from [`validate_and_resolve_path`], as UTF-8
+    /// text following no link.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_walked_text`].
+    pub fn read_resolved_text(path: &Path) -> std::io::Result<String> {
+        read_walked_text(fs_root(path), path)
+    }
+
+    /// List the directory `path`, a path from [`validate_and_resolve_path`]
+    /// or a directory a listing of one found, following no link.
+    ///
+    /// Each entry is described without following it: a link is
+    /// [`caliche_sandbox::EntryKind::Other`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a component is a link, `path` is not a
+    /// directory, or it cannot be read.
+    pub fn list_resolved_dir(
+        path: &Path,
+    ) -> std::io::Result<Vec<caliche_sandbox::DirEntryBeneath>> {
+        #[cfg(any(unix, windows))]
+        {
+            caliche_sandbox::list_dir_beneath(fs_root(path), path)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no-link listings are not supported on this platform",
+            ))
+        }
+    }
+
+    /// List `dir`, a path from [`resolve_path_for_tool`] inside the
+    /// workspace, following no link below the workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `dir` is not inside the workspace, the
+    /// workspace cannot be resolved, or [`list_resolved_dir`] fails.
+    pub fn list_workspace_dir(
+        dir: &Path,
+    ) -> std::io::Result<Vec<caliche_sandbox::DirEntryBeneath>> {
+        let workspace = get_current_dir().map_err(std::io::Error::other)?;
+        let below = dir.strip_prefix(&workspace).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("'{}' is outside the workspace", dir.display()),
+            )
+        })?;
+        list_resolved_dir(&workspace.canonicalize()?.join(below))
+    }
+
+    /// Read `path`, a path from [`validate_and_resolve_path`], as bytes
+    /// following no link.
+    ///
+    /// # Errors
+    ///
+    /// As [`open_resolved_file`], or when the read fails.
+    pub fn read_resolved_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        open_resolved_file(path)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Read the file `path` names as UTF-8 text: resolve it to its canonical
+    /// path, the path the policy gate decides on, and open that following no
+    /// link, so nothing swapped in after the resolution is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` cannot be resolved, or as
+    /// [`read_resolved_text`].
+    pub async fn read_canonical_text(path: &Path) -> std::io::Result<String> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || read_resolved_text(&path.canonicalize()?))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// Read the file `path` names as bytes, as [`read_canonical_text`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_canonical_text`].
+    pub async fn read_canonical_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || read_resolved_bytes(&path.canonicalize()?))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
     /// Checks for path traversal attempts.
     ///
     /// Rejects interior NULs and `..` path components. A filename such as
