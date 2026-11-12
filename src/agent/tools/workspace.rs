@@ -144,28 +144,34 @@ impl ToolMeta for WorkspaceTool {
     }
 }
 
+/// The canonical directory a workspace tool `path` names, refused when it
+/// is outside the tool workspace (host access locked) or a link inside the
+/// workspace leads out of it.
+fn resolve_workspace_path(path_str: &str) -> Result<PathBuf, String> {
+    use crate::agent::tools::common::path::{refuse_link_out_of_workspace, resolve_path_for_tool};
+    let resolved = resolve_path_for_tool(path_str).map_err(|e| e.to_string())?;
+    let canonical = resolved
+        .canonicalize()
+        .map_err(|_| format!("Path does not exist: {path_str}"))?;
+    refuse_link_out_of_workspace(&resolved, &canonical).map_err(|e| e.to_string())?;
+    Ok(canonical)
+}
+
 #[async_trait]
 impl Tool for WorkspaceTool {
     async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let action = params::extract_string_or(&arguments, "action", "detect");
 
-        let workspace_path = if PathBuf::from(&path_str).is_absolute() {
-            PathBuf::from(&path_str)
-        } else {
-            match std::env::current_dir() {
-                Ok(dir) => dir.join(&path_str),
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get current directory: {e}"));
-                }
-            }
-        };
-
-        // Canonical, so the files below are read without following any link
-        // under it: a cloned repository can plant `README.md` as a link to an
-        // outside file, and its text would reach the model.
-        let Ok(canonical) = workspace_path.canonicalize() else {
-            return ToolResult::error(format!("Path does not exist: {path_str}"));
+        // Resolved in the tool workspace and inside it unless host access is
+        // unlocked. Canonical, so the files below are read without following
+        // any link under it: a cloned repository can plant `README.md` as a
+        // link to an outside file, and its text would reach the model. A
+        // link at the path itself, swapped in after the gate decided, may not
+        // lead out of the workspace.
+        let canonical = match resolve_workspace_path(&path_str) {
+            Ok(canonical) => canonical,
+            Err(e) => return ToolResult::error(e),
         };
         let workspace_path = caliche_sandbox::external_tool_path(&canonical);
 
@@ -587,6 +593,69 @@ mod tests {
         dir.path()
             .canonicalize()
             .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
+
+    /// The workspace tool reads the directory its `path` names in the tool
+    /// workspace: a relative path resolves there, not in the process
+    /// directory, and an outside path or a link leading out is refused.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_workspace_tool_reads_only_inside_the_workspace() {
+        use crate::agent::tools::common::set_tool_workspace_root;
+        let ws_dir = tempdir().expect("ws");
+        let out_dir = tempdir().expect("outside");
+        let ws = canonical(&ws_dir);
+        let outside = canonical(&out_dir);
+        fs::write(ws.join("go.mod"), "module inside\n").expect("go.mod");
+        fs::write(outside.join("pom.xml"), "<project/>").expect("pom.xml");
+        std::os::unix::fs::symlink(&outside, ws.join("swapped")).expect("link");
+        set_tool_workspace_root(Some(ws.clone()));
+
+        let mut seen = Vec::new();
+        for path in [
+            ".".to_string(),
+            "swapped".to_string(),
+            outside.display().to_string(),
+        ] {
+            let result = WorkspaceTool
+                .execute(serde_json::json!({"action": "detect", "path": path}))
+                .await;
+            seen.push((
+                result.success,
+                result.content,
+                result.error.unwrap_or_default(),
+            ));
+        }
+        set_tool_workspace_root(None);
+
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    true,
+                    "Detected project types: Go".to_string(),
+                    String::new()
+                ),
+                (
+                    false,
+                    String::new(),
+                    format!(
+                        "Path '{}' is inside the workspace but leads through a link to '{}', outside it",
+                        ws.join("swapped").display(),
+                        outside.display()
+                    )
+                ),
+                (
+                    false,
+                    String::new(),
+                    format!(
+                        "Path '{}' is outside workspace '{}'",
+                        outside.display(),
+                        ws.display()
+                    )
+                ),
+            ]
+        );
     }
 
     #[test]
