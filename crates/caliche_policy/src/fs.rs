@@ -174,7 +174,9 @@ fn lexical_path(raw: &str, cwd: &str, home: Option<&str>) -> Result<String, FsFa
     let joined = if is_absolute(&expanded) {
         expanded
     } else {
-        join_cwd(cwd, &expanded)
+        // A canonical Windows cwd is verbatim (`\\?\C:\...`); join onto its
+        // plain form, as the raw path above is.
+        join_cwd(&strip_namespace(&cwd.replace('\\', "/"))?, &expanded)
     };
     collapse(&joined)
 }
@@ -338,7 +340,17 @@ fn realpath_best_effort(lexical: &str) -> String {
     lexical.to_owned()
 }
 
+/// `path` with `/` separators, in plain form: a verbatim Windows prefix
+/// (`\\?\C:`) is shown as `C:`, so a canonical path and a lexical one compare.
 fn display_path(path: &Path) -> String {
+    let text = slashed_components(path);
+    match strip_namespace(&text) {
+        Ok(plain) => plain,
+        Err(_) => text,
+    }
+}
+
+fn slashed_components(path: &Path) -> String {
     let mut text = String::new();
     for component in path.components() {
         match component {
@@ -371,7 +383,8 @@ fn place_path(canonical: &str, workspace: &str) -> PathPlace {
     if workspace.is_empty() {
         return PathPlace::NoWorkspace;
     }
-    let workspace = realpath_best_effort(&workspace.replace('\\', "/"));
+    let slashed = workspace.replace('\\', "/");
+    let workspace = realpath_best_effort(&strip_namespace(&slashed).unwrap_or(slashed));
     if !paths_match(canonical, &workspace) {
         return PathPlace::Outside;
     }
@@ -463,6 +476,14 @@ mod tests {
 
     fn roots<'a>(cwd: &'a str, workspace: &'a str) -> FsRoots<'a> {
         FsRoots::new(cwd, workspace)
+    }
+
+    #[test]
+    fn a_relative_path_joins_a_verbatim_windows_cwd_in_plain_form() {
+        let resolved = resolve_with_home(".git/config", roots(r"\\?\C:\ws", r"\\?\C:\ws"), None)
+            .expect("path");
+        assert_eq!(resolved.canonical, "C:/ws/.git/config");
+        assert_eq!(resolved.place, PathPlace::GitMetadata);
     }
 
     #[test]
