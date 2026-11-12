@@ -807,4 +807,26 @@ mod link_tests {
         assert_eq!(result.content, "No entry points detected");
         Ok(())
     }
+
+    /// A source file that is a link to a file outside the workspace is not
+    /// read for an entry point; a plain one is.
+    #[cfg(feature = "tools-grep")]
+    #[tokio::test]
+    async fn entry_points_do_not_read_a_linked_source_file() -> anyhow::Result<()> {
+        let (_ws_dir, ws, _out_dir, outside) = workspace_and_outside("main.rs", "fn main() {}\n")?;
+        symlink(&outside, ws.join("leak.rs"))?;
+        let plain_dir = tempfile::tempdir()?;
+        let plain = plain_dir.path().canonicalize()?;
+        std::fs::write(plain.join("main.rs"), "fn main() {}\n")?;
+
+        let linked = run(&ws, "entry_points").await;
+        let own = run(&plain, "entry_points").await;
+
+        assert_eq!(linked.content, "No entry points detected");
+        assert_eq!(
+            own.content,
+            "Entry Points:\n=============\n\n  - Rust: main.rs (line 1)\n"
+        );
+        Ok(())
+    }
 }
