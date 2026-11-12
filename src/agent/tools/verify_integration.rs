@@ -1,7 +1,7 @@
 //! Tool to check that recently created or modified files are wired into the project.
 //! Surfaces likely integration gaps (exports not imported, components not registered).
 
-use crate::agent::tools::common::params;
+use crate::agent::tools::common::{params, path as tool_path};
 use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
@@ -59,11 +59,16 @@ impl Tool for VerifyIntegrationTool {
             Ok(dir) => dir.join(&project_root),
             Err(e) => return ToolResult::error(format!("Failed to get current directory: {e}")),
         };
-        if !root.exists() || !root.is_dir() {
-            return ToolResult::error(format!(
-                "Project root does not exist or is not a directory: {project_root}"
-            ));
-        }
+        // The walks below read files under this canonical root without
+        // following a link.
+        let root = match root.canonicalize() {
+            Ok(root) if root.is_dir() => root,
+            _ => {
+                return ToolResult::error(format!(
+                    "Project root does not exist or is not a directory: {project_root}"
+                ));
+            }
+        };
 
         let paths: Vec<String> = arguments
             .get("paths")
@@ -95,7 +100,7 @@ async fn run_checks(root: &std::path::Path, paths: &[String]) -> String {
                     root.join(p)
                 }
             })
-            .filter(|p| p.exists())
+            .filter_map(|p| p.canonicalize().ok())
             .collect()
     };
 
@@ -107,7 +112,7 @@ async fn run_checks(root: &std::path::Path, paths: &[String]) -> String {
     out.push_str("Integration check:\n");
     for path in &to_check {
         let rel = path.strip_prefix(root).unwrap_or(path);
-        let content = match tokio::fs::read_to_string(path).await {
+        let content = match read_checked_file(root, path).await {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -125,6 +130,25 @@ async fn run_checks(root: &std::path::Path, paths: &[String]) -> String {
         "\nResolve any [CHECK] items: add imports, registrations, or event handlers as needed.",
     );
     out
+}
+
+/// Read `path`, canonical, without following a link: below `root` when it
+/// is there, and from the file system root for a path the gate let through
+/// from outside it.
+async fn read_checked_file(
+    root: &std::path::Path,
+    path: &std::path::Path,
+) -> std::io::Result<String> {
+    let (root, path) = (root.to_path_buf(), path.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        if path.starts_with(&root) {
+            tool_path::read_walked_text(&root, &path)
+        } else {
+            tool_path::read_resolved_text(&path)
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 fn list_recent_files(root: &std::path::Path) -> Vec<PathBuf> {
@@ -163,8 +187,15 @@ fn list_recent_files(root: &std::path::Path) -> Vec<PathBuf> {
             if file_name.starts_with('.') || IGNORED_DIRS.contains(&file_name) {
                 continue;
             }
-            if p.is_dir() {
+            // The entry's own type: a link is neither, so it is skipped.
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 walk(&p, out, visited);
+                continue;
+            }
+            if !kind.is_file() {
                 continue;
             }
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -303,12 +334,15 @@ fn extract_export_symbol(line: &str) -> Option<String> {
     None
 }
 
+/// Count the files under the canonical `root` that contain `needle`. The walk
+/// follows no link, and each file is opened without following one.
 fn search_count_in_project(
     root: &std::path::Path,
     needle: &str,
     exclude: Option<&std::path::Path>,
 ) -> usize {
     fn walk(
+        root: &std::path::Path,
         dir: &std::path::Path,
         needle: &str,
         exclude: Option<&std::path::Path>,
@@ -324,15 +358,20 @@ fn search_count_in_project(
             {
                 continue;
             }
-            if p.is_dir() {
-                walk(&p, needle, exclude, count);
-            } else if p.extension().is_some_and(|e| {
-                matches!(e.to_str(), Some("lua" | "ts" | "tsx" | "js" | "jsx" | "rs"))
-            }) {
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                walk(root, &p, needle, exclude, count);
+            } else if kind.is_file()
+                && p.extension().is_some_and(|e| {
+                    matches!(e.to_str(), Some("lua" | "ts" | "tsx" | "js" | "jsx" | "rs"))
+                })
+            {
                 if exclude.is_some_and(|ex| p == ex) {
                     continue;
                 }
-                if let Ok(c) = std::fs::read_to_string(&p)
+                if let Ok(c) = tool_path::read_walked_text(root, &p)
                     && c.contains(needle)
                 {
                     *count += 1;
@@ -341,6 +380,47 @@ fn search_count_in_project(
         }
     }
     let mut n = 0;
-    walk(root, needle, exclude, &mut n);
+    walk(root, root, needle, exclude, &mut n);
     n
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod link_tests {
+    use super::{run_checks, search_count_in_project};
+
+    /// A canonical workspace with `ok.rs`, a file link `leak.rs`, and a
+    /// directory link `linked`, both to files outside that hold `needle`.
+    fn workspace() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn needle() {}\n").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        std::fs::write(root.join("ok.rs"), "fn needle() {}\n").expect("ok");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), root.join("leak.rs"))
+            .expect("file link");
+        std::os::unix::fs::symlink(outside.path(), root.join("linked")).expect("dir link");
+        (outside, ws, root)
+    }
+
+    #[test]
+    fn a_project_search_counts_no_file_behind_a_link() {
+        let (_outside, _ws, root) = workspace();
+
+        assert_eq!(search_count_in_project(&root, "needle", None), 1);
+    }
+
+    #[tokio::test]
+    async fn recent_files_checked_are_not_behind_a_link() {
+        let (_outside, _ws, root) = workspace();
+
+        let report = run_checks(&root, &[]).await;
+
+        let checked: Vec<&str> = report
+            .lines()
+            .filter(|line| line.starts_with("  [OK] ") || line.starts_with("  [CHECK] "))
+            .collect();
+        assert_eq!(checked.len(), 1, "{report}");
+        assert!(checked[0].ends_with(" ok.rs"), "{report}");
+    }
 }

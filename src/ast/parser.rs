@@ -4,7 +4,6 @@ use crate::ast::languages::{LanguageRegistry, detect_language};
 use crate::ast::types::{AstNode, Language, NodeKind, Span};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use tokio::fs;
 use tree_sitter::Parser;
 
 /// Parser for converting source code to unified AST representation.
@@ -12,11 +11,18 @@ pub struct AstParser;
 
 impl AstParser {
     /// Parse a file from disk into an AstNode tree.
+    ///
+    /// `path` is canonical. The file is opened without following a link, so
+    /// a link swapped in for it, or for a directory above it, is refused.
     pub async fn parse_file(path: &Path) -> Result<AstNode> {
         let path_buf = path.to_path_buf();
-        let source = fs::read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read file: {}", path.display()))?;
+        let read_path = path_buf.clone();
+        let source = tokio::task::spawn_blocking(move || {
+            crate::agent::tools::common::path::read_resolved_text(&read_path)
+        })
+        .await
+        .context("read task failed")?
+        .with_context(|| format!("Failed to read file: {}", path.display()))?;
         let language = detect_language(path);
         Self::parse_source(&source, language, &path_buf)
     }

@@ -242,7 +242,7 @@ impl LspManager {
             .get_language_for_path(path)
             .ok_or_else(|| anyhow!("No LSP server configured for file: {}", path.display()))?
             .to_string();
-        let content = tokio::fs::read_to_string(path)
+        let content = crate::agent::tools::common::path::read_canonical_text(path)
             .await
             .context(format!("Failed to read file for LSP: {}", path.display()))?;
         self.open_document(path, &language, &content).await?;
@@ -256,7 +256,7 @@ impl LspManager {
             .get_language_for_path(path)
             .ok_or_else(|| anyhow!("No LSP server configured for file: {}", path.display()))?
             .to_string();
-        let content = tokio::fs::read_to_string(path)
+        let content = crate::agent::tools::common::path::read_canonical_text(path)
             .await
             .context(format!("Failed to read file for LSP: {}", path.display()))?;
         self.open_document(path, &language, &content).await?;

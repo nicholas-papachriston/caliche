@@ -246,12 +246,16 @@ impl SemanticSearchTool {
         self
     }
 
-    /// Index a single file
-    async fn index_file(&self, path: &Path) -> Result<usize> {
-        // Read file content
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read file '{}'", path.display()))?;
+    /// Index a single file, read below the canonical `root` without
+    /// following a link.
+    async fn index_file(&self, root: &Path, path: &Path) -> Result<usize> {
+        let (read_root, read_path) = (root.to_path_buf(), path.to_path_buf());
+        let content = tokio::task::spawn_blocking(move || {
+            crate::agent::tools::common::path::read_walked_text(&read_root, &read_path)
+        })
+        .await
+        .context("read task failed")?
+        .with_context(|| format!("Failed to read file '{}'", path.display()))?;
 
         if content.len() > self.config.max_file_size {
             bail!("File too large: {} bytes", content.len());
@@ -333,11 +337,18 @@ impl SemanticSearchTool {
         let mut total_files = 0;
         let mut total_chunks = 0;
 
-        let workspace = self.config.workspace_root.clone();
+        let workspace = tokio::fs::canonicalize(&self.config.workspace_root)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to resolve workspace '{}'",
+                    self.config.workspace_root.display()
+                )
+            })?;
         let files = self.collect_files(&workspace).await?;
 
         for file in files {
-            match self.index_file(&file).await {
+            match self.index_file(&workspace, &file).await {
                 Ok(chunks) => {
                     total_files += 1;
                     total_chunks += chunks;
@@ -376,14 +387,20 @@ impl SemanticSearchTool {
             {
                 let path = entry.path();
                 let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // The entry's own type: a link is neither and is skipped.
+                let kind = entry
+                    .file_type()
+                    .await
+                    .context("Failed to read directory entry type")?;
 
                 // Skip ignored directories
-                if path.is_dir() {
+                if kind.is_dir() {
                     if self.config.ignore_dirs.iter().any(|d| file_name == d) {
                         continue;
                     }
                     self.collect_files_recursive(&path, files).await?;
-                } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                } else if kind.is_file()
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
                     && self.config.file_extensions.iter().any(|e| e == ext)
                 {
                     files.push(path);
@@ -546,15 +563,22 @@ impl Tool for SemanticSearchTool {
 
             "index_file" => {
                 let file = match args["file"].as_str() {
-                    Some(f) => PathBuf::from(f),
+                    Some(f) => self.config.workspace_root.join(f),
                     None => {
                         return ToolResult::error(
                             "File path is required for index_file operation".to_string(),
                         );
                     }
                 };
+                // The policy gate decides on this canonical path; it is read
+                // from the file system root without following a link.
+                let file = match tokio::fs::canonicalize(&file).await {
+                    Ok(file) => file,
+                    Err(e) => return ToolResult::error(format!("Failed to index file: {e}")),
+                };
+                let root = file.ancestors().last().unwrap_or(&file).to_path_buf();
 
-                match self.index_file(&file).await {
+                match self.index_file(&root, &file).await {
                     Ok(chunks) => ToolResult::success(format!(
                         "Indexed {} ({} chunks)",
                         file.display(),
@@ -596,5 +620,54 @@ mod tests {
     fn test_truncate_content() {
         assert_eq!(truncate_content("hello", 10), "hello");
         assert_eq!(truncate_content("hello world", 8), "hello wo...");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::{SemanticSearchConfig, SemanticSearchTool};
+    use crate::agent::tools::Tool;
+    use crate::llm::{EmbeddingProvider, EmbeddingRequest, EmbeddingResponse};
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct FlatEmbedding;
+
+    #[async_trait]
+    impl EmbeddingProvider for FlatEmbedding {
+        async fn embed(&self, request: EmbeddingRequest) -> anyhow::Result<EmbeddingResponse> {
+            Ok(EmbeddingResponse {
+                embeddings: request.texts.iter().map(|_| vec![0.1_f32; 8]).collect(),
+                usage: None,
+                model: "flat".to_string(),
+            })
+        }
+
+        fn name(&self) -> &str {
+            "flat"
+        }
+    }
+
+    #[tokio::test]
+    async fn indexing_the_workspace_reads_no_file_behind_a_link() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        std::fs::write(ws.path().join("ok.rs"), "fn ok() {}\n").expect("ok");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), ws.path().join("leak.rs"))
+            .expect("file link");
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("linked")).expect("dir link");
+        let config = SemanticSearchConfig {
+            workspace_root: ws.path().to_path_buf(),
+            ..SemanticSearchConfig::default()
+        };
+        let tool = SemanticSearchTool::new(Arc::new(FlatEmbedding), config);
+
+        let result = tool.execute(json!({ "operation": "index" })).await;
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.content, "Indexed 1 files (1 chunks)");
     }
 }

@@ -1011,20 +1011,23 @@ async fn read_file_for_indexing(path_str: &str, max_size: usize) -> anyhow::Resu
     path::validate_file_size(&normalized_path, max_size as u64)
         .map_err(|e| anyhow::anyhow!("File size validation failed: {e}"))?;
 
+    let bytes = path::read_canonical_bytes(&normalized_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read file '{path_str}': {e}"))?;
+
     #[cfg(feature = "document-loaders")]
     {
         let processor = crate::data::loaders::DocumentProcessor::default();
-        if let Ok(processed) = processor.process_file(&normalized_path).await
+        let file_name = normalized_path.file_name().and_then(|name| name.to_str());
+        if let Ok(processed) = processor.process_bytes(&bytes, "", file_name).await
             && !processed.text.trim().is_empty()
         {
             return Ok(processed.text);
         }
     }
 
-    // Fallback: plain UTF-8 read
-    fs::read_to_string(&normalized_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to read file '{path_str}': {e}"))
+    // Fallback: plain UTF-8 text
+    String::from_utf8(bytes).map_err(|e| anyhow::anyhow!("Failed to read file '{path_str}': {e}"))
 }
 
 /// Simple pattern matching for file names (supports basic glob patterns like *.rs)

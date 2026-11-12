@@ -144,6 +144,9 @@ impl CodeGraph {
     }
 
     /// Ingest a whole project (multiple files).
+    ///
+    /// `root` is canonical. Only regular files directly in it are parsed: a
+    /// link is skipped, and each file is opened without following a link.
     pub async fn ingest_project(&self, root: &Path, patterns: &[&str]) -> Result<CodeGraphStats> {
         let mut stats = CodeGraphStats::default();
         let mut entries = fs::read_dir(root)
@@ -155,7 +158,8 @@ impl CodeGraph {
             .map_err(|e| anyhow::anyhow!("ReadDir error: {}", e))?
         {
             let path = entry.path();
-            if path.is_file() {
+            let is_file = entry.file_type().await.is_ok_and(|kind| kind.is_file());
+            if is_file {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 let matches = patterns.is_empty()
                     || patterns
@@ -171,5 +175,53 @@ impl CodeGraph {
             }
         }
         Ok(stats)
+    }
+}
+
+#[cfg(test)]
+#[cfg(all(unix, feature = "ast-rust"))]
+mod link_tests {
+    use super::CodeGraph;
+    use crate::ast::parser::AstParser;
+    use std::sync::Arc;
+
+    /// A canonical workspace with `ok.rs` and `leak.rs`, a link to a Rust
+    /// file outside it.
+    fn workspace_with_link() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical workspace");
+        std::fs::write(root.join("ok.rs"), "fn ok() {}\n").expect("ok");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), root.join("leak.rs"))
+            .expect("file link");
+        (outside, ws, root)
+    }
+
+    #[tokio::test]
+    async fn a_project_ingest_parses_only_files_that_are_not_links() {
+        let (_outside, _ws, root) = workspace_with_link();
+        let graph = CodeGraph::new(
+            Arc::new(dripstone::graph::InMemoryGraphBackend::new()),
+            "code",
+        );
+
+        let stats = graph.ingest_project(&root, &["rs"]).await.expect("ingest");
+
+        assert_eq!(stats.files_parsed, 1);
+    }
+
+    #[tokio::test]
+    async fn parsing_refuses_a_file_that_is_a_link() {
+        let (_outside, _ws, root) = workspace_with_link();
+
+        let err = AstParser::parse_file(&root.join("leak.rs"))
+            .await
+            .expect_err("a link");
+
+        assert_eq!(
+            err.to_string(),
+            format!("Failed to read file: {}", root.join("leak.rs").display())
+        );
     }
 }
