@@ -3,7 +3,6 @@
 #![cfg(any(unix, windows))]
 
 use caliche_policy::{COMMONDIR_FILE, plant_linked_worktree, write_loose_git_dir};
-use caliche_sandbox::external_tool_path;
 use caliche_sandbox::git_access::{
     CheckedRepository, WORKTREE_GITDIR_FILE, check_repository, refusal,
 };
@@ -154,32 +153,176 @@ fn a_linked_dot_git_or_directory_is_refused() {
     assert!(through_dir.is_err(), "{through_dir:?}");
 }
 
-/// `git` started from the checked repository reports its git dir, not one
-/// it would find from the process directory.
-#[test]
-fn the_pinned_git_runs_in_the_checked_repository() {
+/// Git runs on a checked repository only inside the native sandbox, and
+/// the kernel refuses any read a link swapped in after the check would
+/// lead to.
+#[cfg(any(
+    all(feature = "sandbox-macos", target_os = "macos"),
+    all(feature = "sandbox-linux", target_os = "linux"),
+    all(feature = "sandbox-windows", windows)
+))]
+mod sandboxed {
+    use super::*;
+
+    /// A repository at `dir` with one commit whose subject is `subject`.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn commit_repo(dir: &Path, subject: &str) -> String {
+        let git = |args: &[&str]| {
+            let output = caliche_policy::git_command()
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join(format!("{subject}.txt")), subject).expect("file");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", subject]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    /// `(exit code, stdout)` of a sandboxed `git args`, or the error.
+    async fn sandboxed(
+        checked: &CheckedRepository,
+        workspace: &Path,
+        args: &[&str],
+    ) -> Result<(i64, String), String> {
+        checked
+            .run_read_only(workspace, args)
+            .await
+            .map(|run| (run.exit_code, run.stdout.trim().to_string()))
+            .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn git_reads_the_checked_repository_inside_the_sandbox() {
+        let (_ws_dir, ws) = canonical_dir();
+        commit_repo(&ws, "INSIDE");
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        assert_eq!(
+            sandboxed(&checked, &ws, &["log", "--format=%s"]).await,
+            Ok((0, "INSIDE".to_string()))
+        );
+        let git_dir = sandboxed(&checked, &ws, &["rev-parse", "--absolute-git-dir"])
+            .await
+            .expect("rev-parse");
+        assert_eq!(
+            PathBuf::from(git_dir.1).canonicalize().ok(),
+            Some(ws.join(".git"))
+        );
+    }
+
+    /// `objects` swapped for a link to another repository's objects after
+    /// the check: git cannot read the outside commit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_swapped_into_the_git_dir_after_the_check_is_not_read() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        commit_repo(&ws, "INSIDE");
+        let outside_head = commit_repo(&outside, "OUTSIDE");
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        std::fs::rename(ws.join(".git/objects"), ws.join("moved-objects")).expect("move");
+        std::os::unix::fs::symlink(outside.join(".git/objects"), ws.join(".git/objects"))
+            .expect("swap");
+        let seen = sandboxed(&checked, &ws, &["log", "--format=%s", &outside_head]).await;
+
+        assert_eq!(
+            seen.map(|(code, out)| (code == 0, out)),
+            Ok((false, String::new()))
+        );
+    }
+
+    /// A checked repository below the workspace swapped for a link to an
+    /// outside repository, and back, around the run: git cannot read the
+    /// outside repository while the link is in place.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_repository_swapped_for_a_link_after_the_check_is_not_read() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        let sub = ws.join("sub");
+        std::fs::create_dir(&sub).expect("sub");
+        commit_repo(&sub, "INSIDE");
+        commit_repo(&outside, "OUTSIDE");
+        let checked = check_repository(&ws, &sub).expect("checked");
+
+        std::fs::rename(&sub, ws.join("moved")).expect("move");
+        std::os::unix::fs::symlink(&outside, &sub).expect("swap");
+        let seen = sandboxed(&checked, &ws, &["log", "--format=%s"]).await;
+        std::fs::remove_file(&sub).expect("unlink");
+        std::fs::rename(ws.join("moved"), &sub).expect("back");
+
+        // git reads its working directory first, so the kernel refuses the
+        // config listing and the command never runs.
+        let read_outside = matches!(&seen, Ok((_, out)) if out.contains("OUTSIDE"));
+        assert!(!read_outside, "{seen:?}");
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            seen,
+            Err(
+                "git could not list the repository config, so it did not run: \
+                 fatal: Unable to read current working directory: Operation not permitted"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            sandboxed(&checked, &ws, &["log", "--format=%s"]).await,
+            Ok((0, "INSIDE".to_string()))
+        );
+    }
+
+    /// A repository whose own config names a program is refused before
+    /// the command runs.
+    #[tokio::test]
+    async fn a_repository_that_names_a_program_is_refused() {
+        let (_ws_dir, ws) = canonical_dir();
+        commit_repo(&ws, "INSIDE");
+        let mut config = std::fs::read_to_string(ws.join(".git/config")).expect("config");
+        config.push_str("[diff]\n\texternal = /bin/echo\n");
+        std::fs::write(ws.join(".git/config"), config).expect("write config");
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        assert_eq!(
+            sandboxed(&checked, &ws, &["log", "--format=%s"]).await,
+            Err(refusal::program_keys(
+                &ws.join(".git"),
+                &["diff.external".to_string()]
+            ))
+        );
+    }
+}
+
+/// Without a native backend that confines files, git does not run.
+#[cfg(not(any(
+    all(feature = "sandbox-macos", target_os = "macos"),
+    all(feature = "sandbox-linux", target_os = "linux"),
+    all(feature = "sandbox-windows", windows)
+)))]
+#[tokio::test]
+async fn git_does_not_run_without_a_native_sandbox() {
     let (_ws_dir, ws) = canonical_dir();
-    let inner = ws.join("inner");
-    std::fs::create_dir(&inner).expect("inner");
-    let init = caliche_policy::program_command("git")
-        .args(["init", "-q"])
-        .current_dir(&inner)
-        .status()
-        .expect("git init");
-    assert!(init.success());
-    let checked = check_repository(&ws, &inner).expect("checked");
+    write_loose_git_dir(&ws.join(".git")).expect("own");
+    let checked = check_repository(&ws, &ws).expect("checked");
 
-    let output = checked
-        .git_command()
-        .expect("no program keys")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
-        .expect("git rev-parse");
+    let error = checked
+        .run_read_only(&ws, &["status"])
+        .await
+        .expect_err("refused");
 
-    let reported = String::from_utf8(output.stdout).expect("utf-8");
-    assert_eq!(
-        PathBuf::from(reported.trim()).canonicalize().ok(),
-        Some(inner.join(".git"))
+    assert!(
+        error
+            .to_string()
+            .starts_with(caliche_sandbox::git_run::NO_GIT_SANDBOX),
+        "{error}"
     );
 }
 
@@ -406,7 +549,11 @@ fn the_pin_ignores_every_inherited_repository_redirect() {
     // Only upload-pack honors a namespace; plant one for `ls-remote` to see.
     git_in(
         &ws,
-        &["update-ref", "refs/namespaces/planted/refs/heads/other", "HEAD"],
+        &[
+            "update-ref",
+            "refs/namespaces/planted/refs/heads/other",
+            "HEAD",
+        ],
     );
     let checked = check_repository(&ws, &ws).expect("checked");
     // "<exit ok>|<stdout>" of `git args` pinned, with `var` inherited.

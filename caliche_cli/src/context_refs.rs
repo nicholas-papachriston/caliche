@@ -582,7 +582,8 @@ fn resolve_clipboard() -> anyhow::Result<ResolvedItem> {
 /// and `git` is pinned to the checked git dir and work tree, so it reads no
 /// repository a gitfile names outside the workspace and none above it. A
 /// repository whose config names a program is refused, and git runs with
-/// no system or global config and no program of its own.
+/// no system or global config and no program of its own, inside the
+/// read-only OS sandbox ([`run_read_only`](caliche_sandbox::git_access::CheckedRepository::run_read_only)).
 async fn resolve_git<const N: usize>(
     workspace_root: &Path,
     args: [&str; N],
@@ -590,10 +591,8 @@ async fn resolve_git<const N: usize>(
 ) -> anyhow::Result<ResolvedItem> {
     let workspace = workspace_root.canonicalize()?;
     let checked = caliche_sandbox::git_access::check_repository(&workspace, &workspace)?;
-    let mut command = checked.git_command()?;
-    command.args(args);
-    let output = tokio::process::Command::from(command).output().await?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = checked.run_read_only(&workspace, &args).await?;
+    let stdout = output.stdout;
     if stdout.is_empty() {
         Ok(ResolvedItem::text(format!("--- {title} ---\nNo changes")))
     } else {

@@ -67,79 +67,48 @@ impl Tool for GitLogTool {
             .map(std::string::ToString::to_string);
         let max_count = params::extract_number_or(&arguments, "max_count", 10) as usize;
 
-        let repo = match super::open_tool_repository(&path_str) {
+        let repo = match super::tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
-
-        let mut revwalk = match repo.revwalk() {
-            Ok(rw) => rw,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to create revwalk: {e}"));
-            }
+        let max = format!("--max-count={max_count}");
+        let mut args = vec!["log", max.as_str(), LOG_FORMAT];
+        if let Some(file) = &file_path {
+            args.extend(["--", file.as_str()]);
+        }
+        let listed = match repo.read(&args).await {
+            Ok(listed) => listed,
+            Err(e) => return ToolResult::error(format!("Failed to read git log: {e}")),
         };
-
-        // Start from HEAD
-        match revwalk.push_head() {
-            Ok(()) => {}
-            Err(e) => {
-                return ToolResult::error(format!("Failed to push HEAD: {e}"));
-            }
-        }
-
-        // Filter by file if specified
-        if file_path.is_some()
-            && let Err(e) = revwalk.simplify_first_parent()
-        {
-            return ToolResult::error(format!("Failed to simplify revwalk: {e}"));
-        }
-        // Note: git2 doesn't have direct file filtering in revwalk
-
-        let mut output = String::from("Git Log:\n");
-        output.push_str("========\n\n");
-
-        let mut count = 0;
-        for oid in revwalk {
-            if count >= max_count {
-                break;
-            }
-
-            let oid = match oid {
-                Ok(o) => o,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get commit: {e}"));
-                }
-            };
-
-            let commit = match repo.find_commit(oid) {
-                Ok(c) => c,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to find commit: {e}"));
-                }
-            };
-
-            let short_id = oid.to_string().chars().take(7).collect::<String>();
-            let author = commit.author();
-            let message = commit.message().unwrap_or("<no message>");
-            let first_line = message.lines().next().unwrap_or("<no message>");
-
-            output.push_str(&format!(
-                "{} {} <{}>\n",
-                short_id,
-                author.name().unwrap_or("<unknown>"),
-                author.email().unwrap_or("<unknown>")
-            ));
-            output.push_str(&format!("  {first_line}\n\n"));
-
-            count += 1;
-        }
-
-        if count == 0 {
+        let output = format_log(&listed);
+        if output.is_empty() {
             return ToolResult::success("No commits found");
         }
-
-        ToolResult::success(output)
+        ToolResult::success(format!("Git Log:\n========\n\n{output}"))
     }
+}
+
+/// One record per commit: full id, author name, author email and message,
+/// split by unit separators, each record ended by a record separator.
+#[cfg(feature = "tools-git")]
+const LOG_FORMAT: &str = "--format=%H%x1f%an%x1f%ae%x1f%B%x1e";
+
+/// `{short id} {name} <{email}>` and the message's first line, per commit.
+#[cfg(feature = "tools-git")]
+fn format_log(listed: &str) -> String {
+    let mut output = String::new();
+    for record in listed.split('\x1e') {
+        let mut fields = record.trim_start_matches('\n').split('\x1f');
+        let (Some(id), Some(name), Some(email), Some(message)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let short_id: String = id.chars().take(7).collect();
+        let first_line = message.lines().next().unwrap_or("<no message>");
+        output.push_str(&format!("{short_id} {name} <{email}>\n  {first_line}\n\n"));
+    }
+    output
 }
 
 #[cfg(not(feature = "tools-git"))]

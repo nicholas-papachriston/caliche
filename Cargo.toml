@@ -426,7 +426,7 @@ tools-data = []
 tools-http = ["reqwest"]
 tools-document = ["image", "lopdf"]
 tools-grep = ["grep-regex", "grep-matcher", "ignore"]
-tools-git = ["git2"]
+tools-git = ["git2", "caliche_sandbox/sandbox-macos", "caliche_sandbox/sandbox-linux", "caliche_sandbox/sandbox-windows"]
 # Media understanding (audio transcription, image/video description)
 tools-media = []
 # Vector memory capabilities (independent of RAG tools)

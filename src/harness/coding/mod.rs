@@ -10,7 +10,7 @@ use crate::harness::{
 };
 use crate::llm::ProviderType;
 use crate::messages::TokenUsage;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -480,61 +480,55 @@ fn pyproject_mentions_pytest(root: &Path) -> bool {
     text.contains("pytest")
 }
 
-/// The work tree of the repository at `root`, read with libgit2 after its
-/// `.git` is checked (see `open_workspace_repository`). It runs no command
-/// that repository config names (filters, hooks, fsmonitor), so a
-/// repository the model wrote cannot make the host run one, and it opens no
-/// repository a gitfile names outside the workspace.
+/// The checked work tree of the repository at `root` (see
+/// `workspace_tool_repository`): no repository a gitfile names outside the
+/// workspace.
 #[cfg(feature = "tools-git")]
+#[expect(
+    clippy::unused_async,
+    reason = "same signature as the build without git"
+)]
 async fn git_root(root: &Path) -> Option<PathBuf> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let repo = crate::agent::tools::git::open_workspace_repository(&root).ok()?;
-        repo.workdir()
-            .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
-    })
-    .await
-    .ok()
-    .flatten()
+    crate::agent::tools::git::workspace_tool_repository(root)
+        .ok()
+        .map(|repo| repo.work_tree().to_path_buf())
 }
 
-/// Without libgit2 the agent does not run host `git`: no repository root.
+/// Without the git tools the agent does not run git: no repository root.
 #[cfg(not(feature = "tools-git"))]
-#[expect(clippy::unused_async, reason = "same signature as the libgit2 build")]
+#[expect(clippy::unused_async, reason = "same signature as the build with git")]
 async fn git_root(_root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Changed and untracked paths, relative to the repository root, read with
-/// libgit2 like [`git_root`].
+/// Changed and untracked paths, relative to the repository root, from
+/// `git status` run read-only inside the OS sandbox.
 #[cfg(feature = "tools-git")]
 async fn git_dirty_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let Ok(repo) = crate::agent::tools::git::open_workspace_repository(&root) else {
-            return Ok(Vec::new());
-        };
-        let mut options = git2::StatusOptions::new();
-        options
-            .include_untracked(true)
-            .recurse_untracked_dirs(false)
-            .include_ignored(false);
-        let statuses = repo
-            .statuses(Some(&mut options))
-            .context("failed to read git status")?;
-        Ok(statuses
-            .iter()
-            .filter(|entry| entry.status() != git2::Status::CURRENT)
-            .filter_map(|entry| entry.path().map(PathBuf::from))
-            .collect())
-    })
-    .await
-    .context("git status task failed")?
+    let Ok(repo) = crate::agent::tools::git::workspace_tool_repository(root) else {
+        return Ok(Vec::new());
+    };
+    let porcelain = repo
+        .read(&[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--no-renames",
+            "--untracked-files=normal",
+        ])
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to read git status: {err}"))?;
+    Ok(porcelain
+        .split('\0')
+        .filter_map(|entry| entry.get(3..))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect())
 }
 
-/// Without libgit2 the agent does not run host `git`: no dirty files.
+/// Without the git tools the agent does not run git: no dirty files.
 #[cfg(not(feature = "tools-git"))]
-#[expect(clippy::unused_async, reason = "same signature as the libgit2 build")]
+#[expect(clippy::unused_async, reason = "same signature as the build with git")]
 async fn git_dirty_files(_root: &Path) -> Result<Vec<PathBuf>> {
     Ok(Vec::new())
 }
@@ -773,21 +767,28 @@ mod tests {
 
     /// No agent-initiated git read (the verification root and dirty files,
     /// the harness git context) runs a program that repository config or a
-    /// hook names, and each still reports the change.
+    /// hook names: a repository whose config names one is refused.
     #[cfg(all(unix, feature = "tools-git"))]
     #[tokio::test]
     async fn agent_git_reads_run_no_repo_configured_program() {
         let (_repo, root, markers) = planted_repo();
 
         let top = git_root(&root).await;
-        let dirty = git_dirty_files(&root).await.expect("dirty files");
+        let dirty = git_dirty_files(&root).await.map_err(|err| err.to_string());
         let mut context = crate::harness::context::ContextManager::new(root.clone());
         let git_context = context.refresh_git_context().await.expect("git context");
 
         assert_eq!(markers_left(markers.path()), Vec::<String>::new());
         assert_eq!(top, Some(root.clone()));
-        assert!(dirty.contains(&PathBuf::from("a.txt")), "{dirty:?}");
-        assert_eq!(git_context.map(|c| c.modified_count), Some(1));
+        let refused = dirty.expect_err("a repository naming programs is refused");
+        assert!(
+            refused.starts_with(&format!(
+                "failed to read git status: {} config names programs git would run: ",
+                root.join(".git").display()
+            )),
+            "{refused}"
+        );
+        assert_eq!(git_context.map(|c| c.modified_count), None);
     }
 
     /// A submodule gitfile pointing at a git dir with a planted fsmonitor

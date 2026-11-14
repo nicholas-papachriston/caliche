@@ -240,45 +240,45 @@ impl ContextManager {
         Ok(context)
     }
 
-    #[allow(
-        clippy::unused_async,
-        reason = "callers await it; libgit2 reads are synchronous"
-    )]
     async fn get_git_context_internal(&self) -> Option<GitContext> {
-        // libgit2 runs no command that repository config names.
+        // git runs read-only inside the OS sandbox, with no program that
+        // repository config names.
         #[cfg(feature = "tools-git")]
         {
             let repo =
-                crate::agent::tools::git::open_workspace_repository(&self.workspace_root).ok()?;
-
-            // Get current branch
-            let head = repo.head().ok()?;
-            let branch = head
-                .shorthand()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "HEAD".to_string());
-
-            // Get status
-            let statuses = repo.statuses(None).ok()?;
+                crate::agent::tools::git::workspace_tool_repository(&self.workspace_root).ok()?;
+            let branch = repo
+                .read(&["rev-parse", "--abbrev-ref", "HEAD"])
+                .await
+                .ok()?
+                .trim()
+                .to_string();
+            let porcelain = repo
+                .read(&[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--no-renames",
+                    "--untracked-files=no",
+                ])
+                .await
+                .ok()?;
             let mut staged_count = 0;
             let mut modified_count = 0;
-
-            for entry in statuses.iter() {
-                let status = entry.status();
-                if status.is_index_new() || status.is_index_modified() || status.is_index_deleted()
-                {
+            for entry in porcelain.split('\0') {
+                let mut columns = entry.chars();
+                if matches!(columns.next(), Some('A' | 'M' | 'D')) {
                     staged_count += 1;
                 }
-                if status.is_wt_modified() || status.is_wt_deleted() {
+                if matches!(columns.next(), Some('M' | 'D')) {
                     modified_count += 1;
                 }
             }
-
-            // Get remote URL
             let remote_url = repo
-                .find_remote("origin")
+                .read(&["config", "--get", "remote.origin.url"])
+                .await
                 .ok()
-                .and_then(|remote| remote.url().map(|s| s.to_string()));
+                .map(|url| url.trim().to_string());
 
             Some(GitContext {
                 branch,
@@ -289,8 +289,7 @@ impl ContextManager {
             })
         }
 
-        // Without libgit2 the agent does not run host `git`, whose repository
-        // config can name commands (filters, fsmonitor) the host would run.
+        // Without the git tools the agent does not run git at all.
         #[cfg(not(feature = "tools-git"))]
         {
             None

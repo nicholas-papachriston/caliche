@@ -65,54 +65,15 @@ impl Tool for GitBranchTool {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let action = params::extract_string_or(&arguments, "action", "list");
 
+        if action == "list" {
+            return list_branches(&path_str).await;
+        }
         let repo = match super::open_tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
 
         match action.as_str() {
-            "list" => {
-                let branches = match repo.branches(None) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to list branches: {e}"));
-                    }
-                };
-
-                let mut output = String::from("Branches:\n");
-                output.push_str("========\n\n");
-
-                let current_branch = repo
-                    .head()
-                    .ok()
-                    .and_then(|h| h.shorthand().map(std::string::ToString::to_string));
-
-                for branch_result in branches {
-                    let (branch, _) = match branch_result {
-                        Ok(b) => b,
-                        Err(e) => {
-                            return ToolResult::error(format!("Failed to get branch: {e}"));
-                        }
-                    };
-
-                    let name = branch
-                        .name()
-                        .ok()
-                        .flatten()
-                        .unwrap_or("<unknown>")
-                        .to_string();
-
-                    let prefix = if current_branch.as_ref() == Some(&name) {
-                        "* "
-                    } else {
-                        "  "
-                    };
-
-                    output.push_str(&format!("{prefix}{name}\n"));
-                }
-
-                ToolResult::success(output)
-            }
             "create" => {
                 let branch_name = match params::extract_string(&arguments, "branch_name", None) {
                     Ok(n) => n,
@@ -176,6 +137,34 @@ impl Tool for GitBranchTool {
             _ => ToolResult::error(format!("Unknown action: {action}")),
         }
     }
+}
+
+/// Local and remote-tracking branches, the current one marked `*`.
+#[cfg(feature = "tools-git")]
+async fn list_branches(path_str: &str) -> ToolResult {
+    let repo = match super::tool_repository(path_str) {
+        Ok(r) => r,
+        Err(e) => return ToolResult::error(e),
+    };
+    let listed = match repo
+        .read(&[
+            "for-each-ref",
+            "--format=%(HEAD)%(refname:short)",
+            "refs/heads/",
+            "refs/remotes/",
+        ])
+        .await
+    {
+        Ok(listed) => listed,
+        Err(e) => return ToolResult::error(format!("Failed to list branches: {e}")),
+    };
+    let mut output = String::from("Branches:\n========\n\n");
+    for line in listed.lines() {
+        let (head, name) = line.split_at(line.len().min(1));
+        let prefix = if head == "*" { "* " } else { "  " };
+        output.push_str(&format!("{prefix}{name}\n"));
+    }
+    ToolResult::success(output)
 }
 
 #[cfg(not(feature = "tools-git"))]

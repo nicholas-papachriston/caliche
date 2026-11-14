@@ -67,89 +67,31 @@ impl Tool for GitDiffTool {
             .map(std::string::ToString::to_string);
         let staged = params::extract_bool(&arguments, "staged", false);
 
-        let repo = match super::open_tool_repository(&path_str) {
+        let repo = match super::tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
-
-        let mut diff = if staged {
-            // Diff between HEAD and index (staged changes)
-            let head = match repo.head() {
-                Ok(h) => h.target(),
-                Err(_) => None,
-            };
-            let tree = head.and_then(|oid| repo.find_tree(oid).ok());
-            let index = match repo.index() {
-                Ok(idx) => idx,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get index: {e}"));
-                }
-            };
-            match repo.diff_tree_to_index(tree.as_ref(), Some(&index), None) {
-                Ok(d) => d,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get staged diff: {e}"));
-                }
-            }
-        } else {
-            // Diff between index and working directory (unstaged changes)
-            let index = match repo.index() {
-                Ok(idx) => idx,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get index: {e}"));
-                }
-            };
-            match repo.diff_index_to_workdir(Some(&index), None) {
-                Ok(d) => d,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get working directory diff: {e}"));
-                }
-            }
-        };
-
-        // Filter by file if specified
-        if file_path.is_some()
-            && let Err(e) = diff.find_similar(None)
-        {
-            return ToolResult::error(format!("Failed to find similar files in diff: {e}"));
-        }
-        // Note: git2 doesn't have direct file filtering, so we'll filter in output
-
-        let mut output = String::new();
+        let mut args = vec!["diff"];
         if staged {
-            output.push_str("Staged changes:\n");
-        } else {
-            output.push_str("Working directory changes:\n");
+            args.push("--cached");
         }
-        output.push_str("==================\n\n");
-
-        let mut has_changes = false;
-        match diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-            has_changes = true;
-            let line_str = std::str::from_utf8(line.content()).unwrap_or("");
-
-            // Filter by file if specified
-            if let Some(ref file) = file_path
-                && let Some(path) = delta.new_file().path()
-                && !path.to_string_lossy().contains(file)
-            {
-                return true; // Continue
-            }
-
-            output.push_str(line_str);
-            true
-        }) {
-            Ok(()) => {}
-            Err(e) => {
-                return ToolResult::error(format!("Failed to print diff: {e}"));
-            }
+        args.extend(crate::policy::GIT_DIFF_SAFETY_FLAGS);
+        if let Some(file) = &file_path {
+            args.extend(["--", file.as_str()]);
         }
-
-        if !has_changes {
+        let patch = match repo.read(&args).await {
+            Ok(patch) => patch,
+            Err(e) => return ToolResult::error(format!("Failed to get git diff: {e}")),
+        };
+        if patch.is_empty() {
             return ToolResult::success("No changes found");
         }
-
-        ToolResult::success(output)
+        let title = if staged {
+            "Staged changes:"
+        } else {
+            "Working directory changes:"
+        };
+        ToolResult::success(format!("{title}\n==================\n\n{patch}"))
     }
 }
 

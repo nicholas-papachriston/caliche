@@ -53,36 +53,38 @@ struct StatusLists {
     deleted: Vec<String>,
 }
 
+/// Sort `git status --porcelain=v1 -z` entries (`XY path`) into lists:
+/// an added, modified or deleted index entry is staged, and the work tree
+/// column gives modified, untracked (`??`) and deleted files.
 #[cfg(feature = "tools-git")]
-fn collect_status_lists(statuses: &git2::Statuses<'_>) -> StatusLists {
+fn collect_status_lists(porcelain: &str) -> StatusLists {
     let mut lists = StatusLists {
         staged: Vec::new(),
         modified: Vec::new(),
         untracked: Vec::new(),
         deleted: Vec::new(),
     };
-    for entry in statuses.iter() {
-        classify_status_entry(&mut lists, entry);
+    for entry in porcelain.split('\0') {
+        let (Some(code), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+            continue;
+        };
+        let path = path.to_string();
+        if code == "??" {
+            lists.untracked.push(path);
+            continue;
+        }
+        let mut columns = code.chars();
+        let (index, work_tree) = (columns.next(), columns.next());
+        if matches!(index, Some('A' | 'M' | 'D')) {
+            lists.staged.push(path.clone());
+        }
+        match work_tree {
+            Some('M') => lists.modified.push(path),
+            Some('D') => lists.deleted.push(path),
+            _ => {}
+        }
     }
     lists
-}
-
-#[cfg(feature = "tools-git")]
-fn classify_status_entry(lists: &mut StatusLists, entry: git2::StatusEntry<'_>) {
-    let status = entry.status();
-    let path = entry.path().unwrap_or("<unknown>");
-    if status.is_index_new() || status.is_index_modified() || status.is_index_deleted() {
-        lists.staged.push(path.to_string());
-    }
-    if status.is_wt_modified() {
-        lists.modified.push(path.to_string());
-    }
-    if status.is_wt_new() {
-        lists.untracked.push(path.to_string());
-    }
-    if status.is_wt_deleted() {
-        lists.deleted.push(path.to_string());
-    }
 }
 
 #[cfg(feature = "tools-git")]
@@ -117,27 +119,27 @@ impl Tool for GitStatusTool {
         _permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
-        let repo = match super::open_tool_repository(&path_str) {
+        let repo = match super::tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
-
-        let mut status_opts = git2::StatusOptions::new();
-        status_opts.include_untracked(true);
-        status_opts.include_ignored(false);
-
-        let statuses = match repo.statuses(Some(&mut status_opts)) {
-            Ok(s) => s,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to get git status: {e}"));
-            }
+        let porcelain = match repo
+            .read(&[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--no-renames",
+                "--untracked-files=normal",
+            ])
+            .await
+        {
+            Ok(porcelain) => porcelain,
+            Err(e) => return ToolResult::error(format!("Failed to get git status: {e}")),
         };
-
-        if statuses.is_empty() {
+        if porcelain.is_empty() {
             return ToolResult::success("Working tree clean - no changes");
         }
-
-        ToolResult::success(format_status_output(&collect_status_lists(&statuses)))
+        ToolResult::success(format_status_output(&collect_status_lists(&porcelain)))
     }
 }
 

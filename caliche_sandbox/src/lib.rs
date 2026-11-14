@@ -8,6 +8,8 @@ mod cpu_rate;
 pub mod deferred;
 #[cfg(any(unix, windows))]
 pub mod git_access;
+#[cfg(any(unix, windows))]
+pub mod git_run;
 #[cfg(any(
     feature = "docker",
     all(feature = "sandbox-linux", target_os = "linux"),
