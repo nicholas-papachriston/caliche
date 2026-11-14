@@ -172,29 +172,7 @@ pub fn check_repository(workspace: &Path, dir: &Path) -> io::Result<CheckedRepos
     if !dir.starts_with(workspace) {
         return Err(denied(refusal::outside_workspace(dir)));
     }
-    let dot_git = dir.join(GIT_DIR_NAME);
-    let kind = list_dir_beneath(workspace, dir)?
-        .into_iter()
-        .find(|entry| entry.name == GIT_DIR_NAME)
-        .map(|entry| entry.kind)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, refusal::no_repository(dir)))?;
-    let (git_dir, own_worktree) = match kind {
-        EntryKind::Dir => (dot_git, false),
-        EntryKind::File => {
-            let text = read_beneath(workspace, &dot_git)?;
-            let named =
-                gitfile_path(&text).ok_or_else(|| denied(refusal::not_a_git_entry(&dot_git)))?;
-            let git_dir = canonical(&dir.join(named))?;
-            if git_dir.starts_with(workspace) {
-                (git_dir, false)
-            } else if dir == workspace && names_back(&git_dir, &dot_git) {
-                (git_dir, true)
-            } else {
-                return Err(denied(refusal::git_dir_outside(&dot_git, &git_dir)));
-            }
-        }
-        EntryKind::Other => return Err(denied(refusal::not_a_git_entry(&dot_git))),
-    };
+    let (git_dir, own_worktree) = locate_git_dir(workspace, dir)?;
     let git_root = if own_worktree {
         git_dir.as_path()
     } else {
@@ -221,6 +199,34 @@ pub fn check_repository(workspace: &Path, dir: &Path) -> io::Result<CheckedRepos
         git_dir,
         common_dir,
     })
+}
+
+/// The git dir `dir/.git` names, and whether it is the linked-worktree git
+/// dir the workspace root's gitfile may name outside the workspace.
+fn locate_git_dir(workspace: &Path, dir: &Path) -> io::Result<(PathBuf, bool)> {
+    let dot_git = dir.join(GIT_DIR_NAME);
+    let kind = list_dir_beneath(workspace, dir)?
+        .into_iter()
+        .find(|entry| entry.name == GIT_DIR_NAME)
+        .map(|entry| entry.kind)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, refusal::no_repository(dir)))?;
+    match kind {
+        EntryKind::Dir => Ok((dot_git, false)),
+        EntryKind::File => {
+            let text = read_beneath(workspace, &dot_git)?;
+            let named =
+                gitfile_path(&text).ok_or_else(|| denied(refusal::not_a_git_entry(&dot_git)))?;
+            let git_dir = canonical(&dir.join(named))?;
+            if git_dir.starts_with(workspace) {
+                Ok((git_dir, false))
+            } else if dir == workspace && names_back(&git_dir, &dot_git) {
+                Ok((git_dir, true))
+            } else {
+                Err(denied(refusal::git_dir_outside(&dot_git, &git_dir)))
+            }
+        }
+        EntryKind::Other => Err(denied(refusal::not_a_git_entry(&dot_git))),
+    }
 }
 
 /// Walk every entry of `git_dir`, at or below `root`, without following a
