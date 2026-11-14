@@ -61,7 +61,7 @@ pub struct SandboxConfig {
     /// macOS Seatbelt backend honors it: no other backend can scope writes
     /// in a git dir by file name.
     #[serde(skip)]
-    pub git_writes: Option<GitWriteGrant>,
+    pub(crate) git_writes: Option<GitWriteGrant>,
     /// Checked, canonical git dirs outside the workspace that git may read:
     /// a linked worktree's git dir and common dir. Only
     /// [`git_run`](crate::git_run) sets them, never a config file.
@@ -85,11 +85,11 @@ pub(crate) fn is_shared_temp(path: &Path) -> bool {
 /// name. `HEAD`, `config`, `hooks/`, `info/` and everything else stay
 /// read-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitWriteGrant {
+pub(crate) struct GitWriteGrant {
     /// The checked, canonical git dir (`HEAD`, the index and their locks).
-    pub git_dir: PathBuf,
+    pub(crate) git_dir: PathBuf,
     /// The checked, canonical common dir (objects, refs, packed refs).
-    pub common_dir: PathBuf,
+    pub(crate) common_dir: PathBuf,
 }
 
 /// Directories a git write op may write beneath, in the common dir and, for

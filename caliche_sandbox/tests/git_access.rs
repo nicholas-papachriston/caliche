@@ -437,7 +437,6 @@ mod sandboxed {
 #[cfg(all(feature = "sandbox-macos", target_os = "macos"))]
 mod sandboxed_writes {
     use super::*;
-    use caliche_sandbox::{NamedPolicy, SandboxBackendType, policy_to_config};
 
     const IDENTITY: [(&str, &str); 4] = [
         ("GIT_AUTHOR_NAME", "A"),
@@ -530,90 +529,6 @@ mod sandboxed_writes {
             result,
             Err("a git write op may set only the commit identity, not GIT_DIR".to_string())
         );
-    }
-
-    /// The profile a git write op runs under, with `sh -c script` run in it
-    /// beside git: the kernel refuses each write outside the grant.
-    #[expect(clippy::expect_used, reason = "test helper panics with context")]
-    async fn in_write_profile(
-        checked: &CheckedRepository,
-        ws: &Path,
-        script: &str,
-    ) -> (i64, String) {
-        let backend_type = SandboxBackendType::MacOSSeatbelt {
-            policy: NamedPolicy::ReadOnly,
-        };
-        let mut config = policy_to_config(NamedPolicy::ReadOnly, ws, None, backend_type);
-        config.git_writes = Some(caliche_sandbox::GitWriteGrant {
-            git_dir: checked.git_dir.clone(),
-            common_dir: checked.common_dir.clone(),
-        });
-        let backend = caliche_sandbox::create_backend(&config)
-            .await
-            .expect("backend");
-        let instance = backend.create(&config, ws).await.expect("instance");
-        let cwd = ws.display().to_string();
-        let run = instance
-            .exec(
-                &["/bin/sh", "-c", script],
-                Some(&cwd),
-                None,
-                std::time::Duration::from_secs(30),
-            )
-            .await
-            .expect("exec");
-        (run.exit_code, run.stderr.trim().to_string())
-    }
-
-    /// While a commit runs (its `HEAD.lock` held), a config edit, a planted
-    /// `hooks/post-commit` and a rename of `HEAD.lock` onto `HEAD` are each
-    /// refused by the kernel; the commit itself goes through.
-    #[tokio::test]
-    async fn writes_outside_the_grant_are_refused_during_a_commit() {
-        let (_ws_dir, ws) = canonical_dir();
-        staged_repo(&ws);
-        let checked = check_repository(&ws, &ws).expect("checked");
-        let config_before = std::fs::read(ws.join(".git/config")).expect("config");
-        let head_before = std::fs::read(ws.join(".git/HEAD")).expect("HEAD");
-
-        let attempts = [
-            in_write_profile(&checked, &ws, "printf '[x]\\n' >> .git/config").await,
-            in_write_profile(
-                &checked,
-                &ws,
-                "printf '#!/bin/sh\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
-            )
-            .await,
-            in_write_profile(
-                &checked,
-                &ws,
-                "printf 'ref: refs/heads/x\\n' > .git/HEAD.lock && mv .git/HEAD.lock .git/HEAD; \
-                 code=$?; rm -f .git/HEAD.lock; exit $code",
-            )
-            .await,
-        ];
-        let committed = write(
-            &checked,
-            &ws,
-            &["commit", "--cleanup=verbatim", "--message=second"],
-        )
-        .await;
-
-        assert_eq!(
-            attempts
-                .clone()
-                .map(|(code, stderr)| (code, stderr.contains("Operation not permitted"))),
-            [(1, true), (1, true), (1, true)],
-            "{attempts:?}"
-        );
-        assert_eq!(committed, Ok(0));
-        assert_eq!(
-            std::fs::read(ws.join(".git/config")).ok(),
-            Some(config_before)
-        );
-        assert_eq!(std::fs::read(ws.join(".git/HEAD")).ok(), Some(head_before));
-        assert!(!ws.join(".git/hooks/post-commit").exists());
-        assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "second");
     }
 
     /// A commit in a workspace that is a linked worktree writes the

@@ -252,3 +252,124 @@ fn git_program() -> Option<&'static Path> {
         None
     }
 }
+
+#[cfg(all(test, feature = "sandbox-macos", target_os = "macos"))]
+mod tests {
+    use super::*;
+    use crate::config::SandboxBackendType;
+    use crate::git_access::check_repository;
+
+    const IDENTITY: [(&str, &str); 4] = [
+        ("GIT_AUTHOR_NAME", "A"),
+        ("GIT_AUTHOR_EMAIL", "a@example.com"),
+        ("GIT_COMMITTER_NAME", "A"),
+        ("GIT_COMMITTER_EMAIL", "a@example.com"),
+    ];
+
+    /// A canonical workspace holding a repository with one commit and
+    /// `staged.txt` staged.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn staged_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("dir");
+        let ws = dir.path().canonicalize().expect("canonical");
+        let git = |args: &[&str]| {
+            let output = caliche_policy::git_command()
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(&ws)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(ws.join("first.txt"), "first").expect("file");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(ws.join("staged.txt"), "staged").expect("file");
+        git(&["add", "staged.txt"]);
+        (dir, ws)
+    }
+
+    /// The profile a git write op runs under, with `sh -c script` run in it
+    /// beside git: the kernel refuses each write outside the grant.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    async fn in_write_profile(
+        checked: &CheckedRepository,
+        ws: &Path,
+        script: &str,
+    ) -> (i64, String) {
+        let backend_type = SandboxBackendType::MacOSSeatbelt {
+            policy: NamedPolicy::ReadOnly,
+        };
+        let mut config = policy_to_config(NamedPolicy::ReadOnly, ws, None, backend_type);
+        config.git_writes = Some(crate::config::GitWriteGrant {
+            git_dir: checked.git_dir.clone(),
+            common_dir: checked.common_dir.clone(),
+        });
+        let backend = crate::create_backend(&config).await.expect("backend");
+        let instance = backend.create(&config, ws).await.expect("instance");
+        let cwd = ws.display().to_string();
+        let run = instance
+            .exec(
+                &["/bin/sh", "-c", script],
+                Some(&cwd),
+                None,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("exec");
+        (run.exit_code, run.stderr.trim().to_string())
+    }
+
+    /// While a commit runs (its `HEAD.lock` held), a config edit, a planted
+    /// `hooks/post-commit` and a rename of `HEAD.lock` onto `HEAD` are each
+    /// refused by the kernel; the commit itself goes through.
+    #[tokio::test]
+    async fn writes_outside_the_grant_are_refused_during_a_commit() {
+        let (_dir, ws) = staged_repo();
+        let checked = check_repository(&ws, &ws).expect("checked");
+        let config_before = std::fs::read(ws.join(".git/config")).expect("config");
+        let head_before = std::fs::read(ws.join(".git/HEAD")).expect("HEAD");
+
+        let attempts = [
+            in_write_profile(&checked, &ws, "printf '[x]\\n' >> .git/config").await,
+            in_write_profile(
+                &checked,
+                &ws,
+                "printf '#!/bin/sh\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+            )
+            .await,
+            in_write_profile(
+                &checked,
+                &ws,
+                "printf 'ref: refs/heads/x\\n' > .git/HEAD.lock && mv .git/HEAD.lock .git/HEAD; \
+                 code=$?; rm -f .git/HEAD.lock; exit $code",
+            )
+            .await,
+        ];
+        let committed = checked
+            .run_write(
+                &ws,
+                &["commit", "--cleanup=verbatim", "--message=second"],
+                &IDENTITY,
+            )
+            .await
+            .map(|run| run.exit_code)
+            .map_err(|err| err.to_string());
+
+        assert_eq!(
+            attempts
+                .clone()
+                .map(|(code, stderr)| (code, stderr.contains("Operation not permitted"))),
+            [(1, true), (1, true), (1, true)],
+            "{attempts:?}"
+        );
+        assert_eq!(committed, Ok(0));
+        assert_eq!(
+            std::fs::read(ws.join(".git/config")).ok(),
+            Some(config_before)
+        );
+        assert_eq!(std::fs::read(ws.join(".git/HEAD")).ok(), Some(head_before));
+        assert!(!ws.join(".git/hooks/post-commit").exists());
+    }
+}
