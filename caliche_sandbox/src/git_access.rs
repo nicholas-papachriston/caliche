@@ -148,6 +148,13 @@ pub mod refusal {
         format!("{} points git at another object store", path.display())
     }
 
+    /// A `commondir` inside a git dir that is not the checked git dir's own
+    /// or a linked worktree's, such as one in a submodule's git dir.
+    #[must_use]
+    pub fn nested_commondir(path: &Path) -> String {
+        format!("{} points git at another git dir", path.display())
+    }
+
     /// The named directory is not a git dir.
     #[must_use]
     pub fn not_a_git_dir(git_dir: &Path) -> String {
@@ -230,10 +237,12 @@ fn locate_git_dir(workspace: &Path, dir: &Path) -> io::Result<(PathBuf, bool)> {
 }
 
 /// Walk every entry of `git_dir`, at or below `root`, without following a
-/// link, and refuse a link or special file anywhere in it and an
-/// alternates file. Git reads objects, refs and the index by path, so a
-/// link inside the git dir, or an alternates file, would let it read a
-/// repository outside. Returns the git dir's own entries.
+/// link, and refuse a link or special file anywhere in it, an alternates
+/// file anywhere (also in a submodule's git dir under `modules/`), and a
+/// `commondir` other than the git dir's own and its linked worktrees'. Git
+/// reads objects, refs and the index by path, so a link inside the git
+/// dir, an alternates file or a `commondir` would let it read a repository
+/// outside. Returns the git dir's own entries.
 fn check_git_dir_contents(root: &Path, git_dir: &Path) -> io::Result<Vec<DirEntryBeneath>> {
     let top = list_dir_beneath(root, git_dir)?;
     let mut pending: Vec<(PathBuf, Vec<DirEntryBeneath>)> =
@@ -244,11 +253,11 @@ fn check_git_dir_contents(root: &Path, git_dir: &Path) -> io::Result<Vec<DirEntr
             match entry.kind {
                 EntryKind::Other => return Err(denied(refusal::special_in_git_dir(&path))),
                 EntryKind::File => {
-                    if ALTERNATES_FILES
-                        .iter()
-                        .any(|name| path == git_dir.join(name))
-                    {
+                    if ALTERNATES_FILES.iter().any(|name| path.ends_with(name)) {
                         return Err(denied(refusal::alternates(&path)));
+                    }
+                    if entry.name == COMMONDIR_FILE && !is_own_commondir(git_dir, &path) {
+                        return Err(denied(refusal::nested_commondir(&path)));
                     }
                 }
                 // Hooks never run (the pinned git sets core.hooksPath to an
@@ -262,6 +271,21 @@ fn check_git_dir_contents(root: &Path, git_dir: &Path) -> io::Result<Vec<DirEntr
         }
     }
     Ok(top)
+}
+
+/// Whether `path` is `<git_dir>/commondir` (checked as the common dir) or
+/// `<git_dir>/worktrees/<id>/commondir` (a linked worktree's, which git
+/// follows only for that worktree, checked when it is the one in use).
+fn is_own_commondir(git_dir: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(git_dir) else {
+        return false;
+    };
+    let parts: Vec<_> = rest.components().map(|part| part.as_os_str()).collect();
+    match parts.as_slice() {
+        [file] => *file == COMMONDIR_FILE,
+        [worktrees, _, file] => *worktrees == "worktrees" && *file == COMMONDIR_FILE,
+        _ => false,
+    }
 }
 
 /// The hooks dir of a git dir, which no checked git reads.

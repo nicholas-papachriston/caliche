@@ -885,3 +885,42 @@ fn the_check_refuses_an_outside_dir_bad_gitfile_and_non_git_dir() {
     );
 }
 
+/// An alternates file or a `commondir` in a submodule's git dir under
+/// `modules/` is refused too: git reads it when it enters the submodule.
+#[test]
+fn nested_alternates_and_commondir_are_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_out_dir, outside) = canonical_dir();
+    write_loose_git_dir(&outside.join(".git")).expect("outside");
+    write_loose_git_dir(&ws.join(".git")).expect("own");
+    let module = ws.join(".git/modules/sub");
+    write_loose_git_dir(&module).expect("module");
+    std::fs::create_dir_all(module.join("objects/info")).expect("info");
+    std::fs::write(
+        module.join("objects/info/alternates"),
+        format!("{}\n", outside.join(".git/objects").display()),
+    )
+    .expect("alternates");
+    let alternates = outcome(&ws, &ws);
+    std::fs::remove_file(module.join("objects/info/alternates")).expect("unplant");
+    std::fs::write(
+        module.join(COMMONDIR_FILE),
+        format!("{}\n", outside.join(".git").display()),
+    )
+    .expect("commondir");
+    let commondir = outcome(&ws, &ws);
+
+    assert_eq!(
+        (alternates, commondir),
+        (
+            Err(format!(
+                "{}/.git/modules/sub/objects/info/alternates points git at another object store",
+                ws.display()
+            )),
+            Err(format!(
+                "{}/.git/modules/sub/commondir points git at another git dir",
+                ws.display()
+            )),
+        )
+    );
+}
