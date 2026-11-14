@@ -15,6 +15,8 @@ use crate::{GIT_CONFIG_GLOBAL_VAR, GIT_CONFIG_NOSYSTEM_VAR, ISOLATED_GIT_CONFIG}
 pub const GIT_CONFIG_SYSTEM_VAR: &str = "GIT_CONFIG_SYSTEM";
 
 /// Inherited variables that add config or name a program for git to run.
+/// Git reads `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` only when
+/// `GIT_CONFIG_COUNT` is set, so removing the count turns those off too.
 pub const GIT_HOSTILE_VARS: [&str; 12] = [
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_COUNT",
@@ -29,10 +31,6 @@ pub const GIT_HOSTILE_VARS: [&str; 12] = [
     "GIT_EXEC_PATH",
     "GIT_TEMPLATE_DIR",
 ];
-
-/// Prefixes of the numbered `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
-/// variables, removed with [`GIT_HOSTILE_VARS`].
-pub const GIT_CONFIG_PAIR_PREFIXES: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
 
 /// Config every `git` command gets on its command line, which wins over the
 /// repository's config: no fsmonitor, no hooks, no pager.
@@ -66,17 +64,6 @@ fn hardened_git(program: &std::ffi::OsStr) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     for name in GIT_HOSTILE_VARS {
         command.env_remove(name);
-    }
-    for (name, _) in std::env::vars_os() {
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if GIT_CONFIG_PAIR_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        {
-            command.env_remove(name);
-        }
     }
     command
         .env(GIT_CONFIG_NOSYSTEM_VAR, "1")

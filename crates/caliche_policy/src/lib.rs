@@ -112,7 +112,7 @@ pub use git_discovery::{
     write_loose_git_dir,
 };
 pub use git_runner::{
-    GIT_CONFIG_PAIR_PREFIXES, GIT_CONFIG_SYSTEM_VAR, GIT_DIFF_SAFETY_FLAGS, GIT_HOSTILE_VARS,
+    GIT_CONFIG_SYSTEM_VAR, GIT_DIFF_SAFETY_FLAGS, GIT_HOSTILE_VARS,
     GIT_PROGRAM_OVERRIDES, git_command, program_command, refused_program_keys,
     refused_program_keys_in_listing,
 };
