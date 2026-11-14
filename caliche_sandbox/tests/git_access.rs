@@ -402,6 +402,12 @@ fn the_pin_ignores_every_inherited_repository_redirect() {
     }
     std::fs::write(outside.join("UNTRACKED-OUTSIDE.txt"), "x").expect("untracked");
     let outside_head = git_in(&outside, &["rev-parse", "HEAD"]);
+    let inside_head = git_in(&ws, &["rev-parse", "HEAD"]);
+    // Only upload-pack honors a namespace; plant one for `ls-remote` to see.
+    git_in(
+        &ws,
+        &["update-ref", "refs/namespaces/planted/refs/heads/other", "HEAD"],
+    );
     let checked = check_repository(&ws, &ws).expect("checked");
     // "<exit ok>|<stdout>" of `git args` pinned, with `var` inherited.
     let pinned = |var: &str, value: &Path, args: &[&str]| -> String {
@@ -432,7 +438,7 @@ fn the_pin_ignores_every_inherited_repository_redirect() {
         pinned(
             "GIT_NAMESPACE",
             Path::new("planted"),
-            &["for-each-ref", "--format=%(refname)"],
+            &["ls-remote", "--refs", "."],
         ),
         pinned("GIT_WORK_TREE", &outside, &["ls-files", "--others"]),
     ];
@@ -443,7 +449,11 @@ fn the_pin_ignores_every_inherited_repository_redirect() {
             "true|inside.txt",
             "false|",
             "false|",
-            "true|refs/heads/main",
+            format!(
+                "true|{inside_head}\trefs/heads/main\n\
+                 {inside_head}\trefs/namespaces/planted/refs/heads/other"
+            )
+            .as_str(),
             "true|",
         ]
     );

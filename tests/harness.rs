@@ -494,6 +494,22 @@ async fn git_context_is_not_read_from_a_repository_above_the_workspace() {
         .status()
         .expect("git init");
     assert!(init.success());
+    let commit = caliche::policy::program_command("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "above",
+        ])
+        .current_dir(&root)
+        .status()
+        .expect("git commit");
+    assert!(commit.success());
     let workspace = root.join("ws");
     std::fs::create_dir(&workspace).expect("ws");
 
