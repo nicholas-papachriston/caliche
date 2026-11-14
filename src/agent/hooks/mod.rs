@@ -70,6 +70,12 @@ pub struct HookRegistry {
     completion_hooks: Vec<Arc<dyn LifecycleHook>>,
 }
 
+/// The key a tool hook is stored and looked up under: the name the call
+/// runs as, in ASCII lowercase.
+fn hook_key(name: &str) -> String {
+    caliche_policy::tool_name_as_run(name).to_ascii_lowercase()
+}
+
 impl HookRegistry {
     /// Create a new empty hook registry
     #[must_use]
@@ -84,9 +90,10 @@ impl HookRegistry {
     pub fn register(&mut self, matcher: HookMatcher, hook: Arc<dyn LifecycleHook>) {
         match matcher {
             HookMatcher::Tool { name } => {
-                // Keyed by the tool the name runs, so a hook registered
-                // under an alias fires for that tool.
-                let name = caliche_policy::tool_name_as_run(&name).to_string();
+                // Keyed by the tool the name runs, in lowercase, so a hook
+                // registered under an alias or in another case fires for
+                // that tool.
+                let name = hook_key(&name);
                 self.hooks.entry(name).or_default().push(hook);
             }
             HookMatcher::All => {
@@ -101,13 +108,14 @@ impl HookRegistry {
         self.completion_hooks.push(hook);
     }
 
-    /// Get hooks matching a tool name, the name the call runs as (see
-    /// [`caliche_policy::tool_name_as_run`]): hooks are registered under it.
+    /// Get hooks matching a tool name. Both sides are compared as the
+    /// name the call runs as (see [`caliche_policy::tool_name_as_run`]),
+    /// without regard to ASCII case.
     pub fn get_matching(&self, tool_name: &str) -> Vec<Arc<dyn LifecycleHook>> {
         let mut result = Vec::new();
 
         // Add tool-specific hooks
-        if let Some(hooks) = self.hooks.get(tool_name) {
+        if let Some(hooks) = self.hooks.get(&hook_key(tool_name)) {
             result.extend(hooks.iter().map(Arc::clone));
         }
 

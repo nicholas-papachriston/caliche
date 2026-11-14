@@ -228,6 +228,30 @@ mod tests {
         );
     }
 
+    /// A hook registered under a name in another case fires for the tool.
+    #[tokio::test]
+    async fn a_hook_registered_in_another_case_fires_for_its_tool() {
+        let mut hooks = HookRegistry::new();
+        hooks.register(HookMatcher::tool("FS"), Arc::new(DenyHook));
+        hooks.register(HookMatcher::tool("Git_Log"), Arc::new(DenyHook));
+        let registry = ToolRegistry::new();
+
+        let mut seen = Vec::new();
+        for name in ["fs", "git_log", "GIT_LOG"] {
+            let result = execute_mcp_tool(&registry, &hooks, name, Value::Null).await;
+            seen.push((name, result.is_error, text(&result)));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                ("fs", Some(true), "hook stopped fs".to_string()),
+                ("git_log", Some(true), "hook stopped git_log".to_string()),
+                ("GIT_LOG", Some(true), "hook stopped GIT_LOG".to_string()),
+            ]
+        );
+    }
+
     /// A hook registered under an alias fires for the tool the alias runs.
     #[tokio::test]
     async fn a_hook_registered_under_an_alias_fires_for_its_tool() {
