@@ -9,9 +9,9 @@ use caliche_sandbox::{read_validated_file, write_validated_file};
 use std::fs;
 use tempfile::TempDir;
 
-/// A directory outside every root the policies grant. `/tmp` (and `/private/tmp`
-/// on macOS) is writable by design, so a checkout or `$TMPDIR` under it cannot
-/// host the fixture: a write there is allowed and the escape tests would fail.
+/// A directory outside every root the policies grant. The fixture stays out
+/// of `/tmp` (and `/private/tmp` on macOS), which a policy may name, so the
+/// escape tests do not depend on how the shared temp dir is treated.
 #[expect(clippy::expect_used, reason = "test fixture setup panics with context")]
 fn outside_tempdir() -> TempDir {
     let granted = tmp_writable_roots();
@@ -468,4 +468,37 @@ fn a_canonical_windows_path_is_plain_for_external_tools() {
         canonical.to_string_lossy().trim_start_matches(r"\\?\")
     );
     assert_eq!(plain.canonicalize().expect("plain resolves"), canonical);
+}
+
+/// The shared temp dir is outside the host path check, even for a policy
+/// that allows temp writes: commands get a private temp dir instead.
+#[test]
+fn the_shared_temp_dir_is_outside_the_host_path_check() {
+    let dir = TempDir::new().expect("tempdir");
+    let workspace = dir.path().canonicalize().expect("canonical workspace");
+    let config = policy_to_config(
+        NamedPolicy::WorkspaceWrite,
+        &workspace,
+        None,
+        SandboxBackendType::Noop,
+    );
+
+    assert_eq!(
+        (
+            validate_read_path(&workspace, &config, "/tmp/caliche-shared")
+                .map_err(|err| err.to_string()),
+            validate_write_path(&workspace, &config, "/tmp/caliche-shared")
+                .map_err(|err| err.to_string()),
+        ),
+        (
+            Err(
+                "read path '/tmp/caliche-shared' is outside sandbox-allowed directories"
+                    .to_string()
+            ),
+            Err(
+                "write path '/tmp/caliche-shared' is outside sandbox writable directories"
+                    .to_string()
+            ),
+        )
+    );
 }
