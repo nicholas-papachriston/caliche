@@ -39,7 +39,10 @@ pub fn add_usage_and_context_to_json(
 }
 
 /// Format a "no results" query response and return as `ToolResult`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one query option the tool schema exposes"
+)]
 pub fn format_no_results(
     query: &str,
     top_similarity: Option<f32>,
@@ -77,7 +80,10 @@ pub fn format_no_results(
 }
 
 /// Format a successful query response (with results) and return as `ToolResult`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one query option the tool schema exposes"
+)]
 pub fn format_query_success(
     formatted_results: Vec<String>,
     query: &str,

@@ -3,11 +3,13 @@
 # -A clippy::disallowed_methods -D unfulfilled_lint_expectations` passed to
 # clippy. The tool and handler modules deny `clippy::disallowed_methods`
 # under that cfg, which overrides the command-line allow, so only their
-# code is checked. The step builds lib targets only, so test modules are
-# not checked.
+# code is checked, and those modules deny clippy::allow_attributes there,
+# so a call can be let through only by an #[expect] with a reason. The step
+# builds lib targets only, so test modules are not checked.
 
 disallowed-methods = [
-  # The same command rules as the main config, so its reviewed expects hold.
+  # The same command rules as the main config, so the expects written for
+  # them hold in this step too.
   { path = "std::process::Command::new", reason = "build commands with caliche_policy::program_command, which hardens git" },
   { path = "tokio::process::Command::new", reason = "build commands with caliche_policy::program_command, which hardens git" },
   { path = "std::fs::read", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
@@ -55,6 +57,14 @@ disallowed-methods = [
   { path = "tokio::fs::File::options", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
   { path = "tokio::fs::OpenOptions::new", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
   { path = "tokio::fs::DirBuilder::new", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "std::fs::File::create_new", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "std::fs::soft_link", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "std::os::unix::fs::symlink", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "std::os::windows::fs::symlink_file", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link", allow-invalid = true },
+  { path = "std::os::windows::fs::symlink_dir", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link", allow-invalid = true },
+  { path = "tokio::fs::try_exists", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "tokio::fs::symlink", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
+  { path = "tokio::fs::File::create_new", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link", allow-invalid = true },
   { path = "std::path::Path::metadata", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
   { path = "std::path::Path::symlink_metadata", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },
   { path = "std::path::Path::read_dir", reason = "tool code reaches files through common::path, which resolves in the workspace and follows no link" },

@@ -370,13 +370,6 @@ impl EndpointManager {
     ///
     /// The guard check and the "starting" status update happen inside the same
     /// write-lock acquisition, preventing concurrent start races.
-    #[cfg_attr(
-        tool_file_lint,
-        expect(
-            clippy::disallowed_methods,
-            reason = "an endpoint workspace the admin API named; only its existence is checked"
-        )
-    )]
     pub async fn start(&self, id: &str) -> Result<EndpointInfo> {
         // Atomically: verify not already running and mark as "starting".
         let config = {
@@ -405,7 +398,15 @@ impl EndpointManager {
         }; // write lock released here
 
         // Validate workspace exists before attempting spawn.
-        if !std::path::Path::new(&config.workspace).is_dir() {
+        #[cfg_attr(
+            tool_file_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "an endpoint workspace the admin API named; only its existence is checked"
+            )
+        )]
+        let workspace_exists = std::path::Path::new(&config.workspace).is_dir();
+        if !workspace_exists {
             let mut inner = self.inner.write().await;
             if let Some(rt) = inner.runtimes.get_mut(id) {
                 rt.status = "failed".to_string();

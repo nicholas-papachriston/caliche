@@ -1,5 +1,8 @@
 // Checked by the tool file-access clippy step (clippy/tool-file-access).
-#![cfg_attr(tool_file_lint, deny(clippy::disallowed_methods))]
+#![cfg_attr(
+    tool_file_lint,
+    deny(clippy::disallowed_methods, clippy::allow_attributes)
+)]
 pub mod adaptive;
 #[cfg(feature = "agentfs")]
 pub mod agentfs_tool_logger;

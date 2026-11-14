@@ -168,13 +168,6 @@ fn resolve_output_path(cwd: &Path, output: &Option<String>) -> PathBuf {
 }
 
 /// Run the init command with static template generation.
-#[cfg_attr(
-    tool_file_lint,
-    expect(
-        clippy::disallowed_methods,
-        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
-    )
-)]
 pub async fn run_init_command(args: &InitArgs) -> Result<()> {
     use std::io::IsTerminal;
 
@@ -183,7 +176,15 @@ pub async fn run_init_command(args: &InitArgs) -> Result<()> {
     let unattended =
         args.force || !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal());
 
-    if output_path.exists() && !args.force {
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "caliche init, run by the user on the project dir they named: whether the file they asked init to write exists"
+        )
+    )]
+    let output_exists = output_path.exists();
+    if output_exists && !args.force {
         if unattended {
             anyhow::bail!(
                 "{} already exists. Re-run with --force to overwrite.",
@@ -276,13 +277,6 @@ struct UserAnswers {
 /// Run an interactive questionnaire before AI analysis.
 ///
 /// Returns `None` if the user cancelled.
-#[cfg_attr(
-    tool_file_lint,
-    expect(
-        clippy::disallowed_methods,
-        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
-    )
-)]
 fn run_questionnaire(
     cwd: &Path,
     output_path: &std::path::Path,
@@ -291,7 +285,15 @@ fn run_questionnaire(
     use dialoguer::{Input, Select, theme::ColorfulTheme};
 
     let theme = ColorfulTheme::default();
-    let existing_content: Option<String> = if output_path.exists() {
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "caliche init, run by the user on the project dir they named: whether the file they asked init to write exists"
+        )
+    )]
+    let output_exists = output_path.exists();
+    let existing_content: Option<String> = if output_exists {
         read_init_file(cwd, output_path).filter(|s| !s.trim().is_empty())
     } else {
         None

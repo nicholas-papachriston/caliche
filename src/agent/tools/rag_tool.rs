@@ -376,7 +376,10 @@ impl RagTool {
     }
 
     /// Enhanced query with hybrid search, reranking, metadata filtering, MMR, and temporal decay
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one query option the tool schema exposes"
+    )]
     pub async fn enhanced_query(
         &self,
         query: &str,
