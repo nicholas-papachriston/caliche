@@ -154,37 +154,6 @@ fn a_linked_dot_git_or_directory_is_refused() {
     assert!(through_dir.is_err(), "{through_dir:?}");
 }
 
-#[test]
-fn the_pinned_environment_names_the_checked_paths() {
-    let (_ws_dir, ws) = canonical_dir();
-    write_loose_git_dir(&ws.join(".git")).expect("own");
-    let checked = check_repository(&ws, &ws).expect("checked");
-
-    let (set, remove) = checked.git_env();
-
-    assert_eq!(
-        set.map(|(name, value)| (name, PathBuf::from(value))),
-        [
-            ("GIT_DIR", external_tool_path(&ws.join(".git"))),
-            ("GIT_WORK_TREE", external_tool_path(&ws)),
-            (
-                "GIT_CEILING_DIRECTORIES",
-                external_tool_path(ws.parent().expect("parent"))
-            ),
-        ]
-    );
-    assert_eq!(
-        remove,
-        [
-            "GIT_COMMON_DIR",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_NAMESPACE",
-        ]
-    );
-}
-
 /// `git` started from the checked repository reports its git dir, not one
 /// it would find from the process directory.
 #[test]
@@ -403,4 +372,104 @@ fn an_outside_worktree_git_dir_not_under_worktrees_is_refused() {
     gitfile(&ws, &planted);
 
     assert_eq!(outcome(&ws, &ws), Err(refusal::not_a_git_dir(&planted)));
+}
+
+/// Each inherited variable that would point the pinned `git` at another
+/// repository's index, objects, refs or work tree has no effect: the
+/// commands see only the workspace repository.
+#[test]
+fn the_pin_ignores_every_inherited_repository_redirect() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_out_dir, outside) = canonical_dir();
+    let git_in = |dir: &Path, args: &[&str]| -> String {
+        let output = caliche_policy::git_command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    };
+    for (dir, file) in [(&ws, "inside.txt"), (&outside, "OUTSIDE.txt")] {
+        git_in(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join(file), "x").expect("file");
+        git_in(dir, &["add", "-A"]);
+        git_in(dir, &["commit", "-q", "-m", file]);
+    }
+    std::fs::write(outside.join("UNTRACKED-OUTSIDE.txt"), "x").expect("untracked");
+    let outside_head = git_in(&outside, &["rev-parse", "HEAD"]);
+    let checked = check_repository(&ws, &ws).expect("checked");
+    // "<exit ok>|<stdout>" of `git args` pinned, with `var` inherited.
+    let pinned = |var: &str, value: &Path, args: &[&str]| -> String {
+        let mut command = caliche_policy::git_command();
+        command.env(var, value);
+        checked.pin(&mut command);
+        let output = command.args(args).current_dir(&ws).output().expect("git");
+        format!(
+            "{}|{}",
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        )
+    };
+    let objects = outside.join(".git/objects");
+
+    let seen = [
+        pinned("GIT_INDEX_FILE", &outside.join(".git/index"), &["ls-files"]),
+        pinned(
+            "GIT_OBJECT_DIRECTORY",
+            &objects,
+            &["cat-file", "-e", &outside_head],
+        ),
+        pinned(
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            &objects,
+            &["cat-file", "-e", &outside_head],
+        ),
+        pinned(
+            "GIT_NAMESPACE",
+            Path::new("planted"),
+            &["for-each-ref", "--format=%(refname)"],
+        ),
+        pinned("GIT_WORK_TREE", &outside, &["ls-files", "--others"]),
+    ];
+
+    assert_eq!(
+        seen,
+        [
+            "true|inside.txt",
+            "false|",
+            "false|",
+            "true|refs/heads/main",
+            "true|",
+        ]
+    );
+}
+
+/// A directory outside the workspace, a `.git` file that is not a gitfile,
+/// and a `.git` dir that is not a git dir are each refused with their own
+/// message.
+#[test]
+fn the_check_refuses_an_outside_dir_bad_gitfile_and_non_git_dir() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_out_dir, outside) = canonical_dir();
+    std::fs::create_dir(ws.join("text")).expect("text");
+    std::fs::write(ws.join("text/.git"), "not a gitfile\n").expect("text gitfile");
+    std::fs::create_dir_all(ws.join("bare/.git/objects")).expect("bare");
+
+    assert_eq!(
+        [
+            outcome(&ws, &outside),
+            outcome(&ws, &ws.join("text")),
+            outcome(&ws, &ws.join("bare")),
+        ],
+        [
+            Err(refusal::outside_workspace(&outside)),
+            Err(refusal::not_a_git_entry(&ws.join("text/.git"))),
+            Err(refusal::not_a_git_dir(&ws.join("bare/.git"))),
+        ]
+    );
 }

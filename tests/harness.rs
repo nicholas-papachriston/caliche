@@ -479,3 +479,26 @@ fn coding_request_maps_to_harness_config() {
     assert_eq!(config.permission_mode, PermissionModeConfig::AcceptEdits);
     assert_eq!(config.tools, Some(vec!["bash".to_string()]));
 }
+
+/// The harness reads git context only from the workspace's own repository:
+/// a workspace inside another repository, with no `.git` of its own, has
+/// none, and its branch is not read from the repository above.
+#[cfg(feature = "tools-git")]
+#[tokio::test]
+async fn git_context_is_not_read_from_a_repository_above_the_workspace() {
+    let above = tempfile::tempdir().expect("above");
+    let root = above.path().canonicalize().expect("canonical");
+    let init = caliche::policy::program_command("git")
+        .args(["init", "-q", "-b", "above-branch"])
+        .current_dir(&root)
+        .status()
+        .expect("git init");
+    assert!(init.success());
+    let workspace = root.join("ws");
+    std::fs::create_dir(&workspace).expect("ws");
+
+    let mut manager = caliche::harness::ContextManager::new(workspace);
+    let context = manager.refresh_git_context().await.expect("refresh");
+
+    assert_eq!(context.map(|git| git.branch), None);
+}
