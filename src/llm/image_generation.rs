@@ -228,22 +228,7 @@ impl ImageGenerationProvider for OpenAIImageGenerationProvider {
                     .unwrap_or_else(|| output_format.as_media_type().to_string());
                 (data, media_type)
             } else if let Some(url) = image.url {
-                let response = self
-                    .client
-                    .get(url)
-                    .send()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to fetch OpenAI image URL: {e}"))?;
-                let media_type = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(ToOwned::to_owned);
-                let data = response
-                    .bytes()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("failed to read OpenAI image bytes: {e}"))?
-                    .to_vec();
+                let (data, media_type) = fetch_provider_image(&url).await?;
                 let media_type = media_type
                     .or_else(|| detect_image_media_type(&data))
                     .unwrap_or_else(|| output_format.as_media_type().to_string());
@@ -275,8 +260,201 @@ impl ImageGenerationProvider for OpenAIImageGenerationProvider {
     }
 }
 
+/// Largest image a provider URL may return.
+pub const MAX_PROVIDER_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PROVIDER_IMAGE_REDIRECTS: usize = 5;
+
+/// Fetch an image URL that a provider returned.
+///
+/// The URL is provider output, so it gets the untrusted (tool) egress
+/// policy: every hop, redirects included, is checked and DNS-pinned, and
+/// the body stops at [`MAX_PROVIDER_IMAGE_BYTES`].
+async fn fetch_provider_image(url: &str) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    let policy = crate::gateway::egress::tool_http_policy()?;
+    fetch_image_with(&policy, url, MAX_PROVIDER_IMAGE_BYTES).await
+}
+
+async fn fetch_image_with(
+    policy: &crate::security::http_policy::HttpPolicy,
+    url: &str,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    let mut next = url.to_string();
+    for _ in 0..=MAX_PROVIDER_IMAGE_REDIRECTS {
+        let (client, parsed) = policy
+            .egress_client(&next)
+            .map_err(|e| anyhow::anyhow!("OpenAI image URL refused: {e}"))?;
+        let mut response = client
+            .get(parsed.clone())
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to fetch OpenAI image URL: {e}"))?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| anyhow::anyhow!("OpenAI image redirect has no location"))?;
+            next = parsed
+                .join(location)
+                .map_err(|e| anyhow::anyhow!("OpenAI image redirect is not a URL: {e}"))?
+                .to_string();
+            continue;
+        }
+        if !response.status().is_success() {
+            anyhow::bail!("OpenAI image URL returned {}", response.status());
+        }
+        if response
+            .content_length()
+            .is_some_and(|len| len > max_bytes as u64)
+        {
+            anyhow::bail!("OpenAI image is larger than {max_bytes} bytes");
+        }
+        let media_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let mut data = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read OpenAI image bytes: {e}"))?
+        {
+            if data.len() + chunk.len() > max_bytes {
+                anyhow::bail!("OpenAI image is larger than {max_bytes} bytes");
+            }
+            data.extend_from_slice(&chunk);
+        }
+        return Ok((data, media_type));
+    }
+    anyhow::bail!("OpenAI image URL redirected more than {MAX_PROVIDER_IMAGE_REDIRECTS} times")
+}
+
 #[cfg(test)]
 mod tests {
+    mod provider_image_fetch {
+        use super::super::fetch_image_with;
+        use crate::security::http_policy::HttpPolicy;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// Serve fixed raw responses by path on loopback; record each path asked.
+        async fn serve(routes: Vec<(&'static str, String)>) -> (u16, Arc<Mutex<Vec<String>>>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&asked);
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = vec![0_u8; 4096];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                    log.lock().expect("log").push(path.clone());
+                    let reply = routes.iter().find(|(p, _)| *p == path).map_or_else(
+                        || "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_string(),
+                        |(_, r)| r.replace("{port}", &port.to_string()),
+                    );
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                }
+            });
+            (port, asked)
+        }
+
+        fn local_policy() -> HttpPolicy {
+            HttpPolicy::new(None).allowing_loopback_and_private()
+        }
+
+        fn redirect(to: &str) -> String {
+            format!("HTTP/1.1 302 Found\r\nlocation: {to}\r\ncontent-length: 0\r\n\r\n")
+        }
+
+        #[tokio::test]
+        async fn a_redirect_hop_is_checked_before_it_is_followed() {
+            let (port, asked) = serve(vec![(
+                "/start",
+                redirect("http://169.254.169.254/latest/meta-data/"),
+            )])
+            .await;
+
+            let err = fetch_image_with(
+                &local_policy(),
+                &format!("http://127.0.0.1:{port}/start"),
+                64,
+            )
+            .await
+            .expect_err("metadata hop must be refused");
+
+            assert!(
+                err.to_string().starts_with("OpenAI image URL refused: "),
+                "{err}"
+            );
+            assert_eq!(*asked.lock().expect("log"), vec!["/start".to_string()]);
+        }
+
+        #[tokio::test]
+        async fn an_allowed_redirect_hop_is_followed() {
+            let (port, asked) = serve(vec![
+                ("/start", redirect("/img")),
+                (
+                    "/img",
+                    "HTTP/1.1 200 OK\r\ncontent-type: image/png\r\ncontent-length: 4\r\n\r\nPNG!"
+                        .to_string(),
+                ),
+            ])
+            .await;
+
+            let (data, media_type) = fetch_image_with(
+                &local_policy(),
+                &format!("http://127.0.0.1:{port}/start"),
+                64,
+            )
+            .await
+            .expect("image");
+
+            assert_eq!(data, b"PNG!");
+            assert_eq!(media_type.as_deref(), Some("image/png"));
+            assert_eq!(
+                *asked.lock().expect("log"),
+                vec!["/start".to_string(), "/img".to_string()]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_declared_body_over_the_cap_is_refused() {
+            let (port, _) = serve(vec![(
+                "/big",
+                "HTTP/1.1 200 OK\r\ncontent-length: 16\r\n\r\n0123456789abcdef".to_string(),
+            )])
+            .await;
+
+            let err = fetch_image_with(&local_policy(), &format!("http://127.0.0.1:{port}/big"), 8)
+                .await
+                .expect_err("over the cap");
+
+            assert_eq!(err.to_string(), "OpenAI image is larger than 8 bytes");
+        }
+
+        #[tokio::test]
+        async fn an_undeclared_body_over_the_cap_is_refused() {
+            let (port, _) = serve(vec![(
+                "/big",
+                "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n0123456789abcdef".to_string(),
+            )])
+            .await;
+
+            let err = fetch_image_with(&local_policy(), &format!("http://127.0.0.1:{port}/big"), 8)
+                .await
+                .expect_err("over the cap");
+
+            assert_eq!(err.to_string(), "OpenAI image is larger than 8 bytes");
+        }
+    }
+
     use super::{ChatImageUsage, GoogleImageUsage};
 
     #[test]
