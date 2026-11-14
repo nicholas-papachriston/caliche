@@ -163,7 +163,7 @@
 //!
 //! #[async_trait]
 //! impl Tool for MyCustomTool {
-//!     async fn execute(&self, _args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
+//!     async fn execute(&self, _args: serde_json::Value, _permit: &caliche::agent::tools::ToolPermit<'_>) -> ToolResult {
 //!         ToolResult::success("done".to_string())
 //!     }
 //! }
@@ -240,7 +240,7 @@
 //!
 //! #[async_trait]
 //! impl Tool for MyCustomTool {
-//!     async fn execute(&self, args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
+//!     async fn execute(&self, args: serde_json::Value, _permit: &caliche::agent::tools::ToolPermit<'_>) -> ToolResult {
 //!         let input = match args["input"].as_str() {
 //!             Some(s) => s,
 //!             None => return ToolResult::error("Missing input".to_string()),
