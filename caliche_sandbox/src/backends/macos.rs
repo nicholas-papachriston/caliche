@@ -47,12 +47,14 @@ impl SandboxBackend for MacOSSeatbeltBackend {
             .with_context(|| format!("canonicalize {}", workspace.display()))?;
         let guarded = crate::git_targets::guarded_dirs(&canonical)?;
         refuse_exposed_git_dirs(config, &canonical)?;
+        let private_temp = private_temp_dir(config)?;
         Ok(Box::new(MacOSSeatbeltInstance {
             id: uuid::Uuid::now_v7().to_string(),
             config: config.clone(),
             workspace: workspace.to_path_buf(),
             canonical,
             guarded,
+            private_temp,
         }))
     }
 }
@@ -63,10 +65,8 @@ impl SandboxBackend for MacOSSeatbeltBackend {
 /// one and each submodule in the index), so this reads indexes and never
 /// walks the tree. `workspace` is canonical.
 fn refuse_exposed_git_dirs(config: &SandboxConfig, workspace: &Path) -> Result<()> {
-    let mut writable = config.writable_roots.clone();
-    if config.tmp_write {
-        writable.extend(crate::config::tmp_writable_roots());
-    }
+    // The private temp directory is new and empty, so it holds no git dir.
+    let writable = writable_roots(config);
     // A root that does not exist yet cannot hold git metadata now. This
     // holds only while the host, not the sandbox, creates writable roots.
     let writable: Vec<PathBuf> = writable
@@ -85,6 +85,35 @@ fn refuse_exposed_git_dirs(config: &SandboxConfig, workspace: &Path) -> Result<(
     Ok(())
 }
 
+/// The configured writable roots without the shared `/tmp`, which no
+/// command gets (see [`private_temp_dir`]).
+fn writable_roots(config: &SandboxConfig) -> Vec<PathBuf> {
+    config
+        .writable_roots
+        .iter()
+        .filter(|root| !crate::config::is_shared_temp(root))
+        .cloned()
+        .collect()
+}
+
+/// A private temp directory for an instance that asked for temp writes
+/// (`tmp_write`, or `/tmp` as a writable root). Each exec gets it as
+/// `TMPDIR`, `TMP` and `TEMP`. The shared `/tmp` is neither readable nor
+/// writable: it holds other sessions' and projects' files.
+fn private_temp_dir(config: &SandboxConfig) -> Result<Option<tempfile::TempDir>> {
+    let requested = config.tmp_write
+        || config
+            .writable_roots
+            .iter()
+            .any(|root| crate::config::is_shared_temp(root));
+    if !requested {
+        return Ok(None);
+    }
+    let dir =
+        tempfile::TempDir::with_prefix("caliche-").context("create a private temp directory")?;
+    Ok(Some(dir))
+}
+
 #[derive(Debug)]
 struct MacOSSeatbeltInstance {
     id: String,
@@ -94,6 +123,8 @@ struct MacOSSeatbeltInstance {
     canonical: PathBuf,
     /// [`crate::git_targets::guarded_dirs`] at create.
     guarded: Vec<PathBuf>,
+    /// [`private_temp_dir`], removed when the instance drops.
+    private_temp: Option<tempfile::TempDir>,
 }
 
 /// Escape a path for inclusion in a Seatbelt string literal.
@@ -206,8 +237,6 @@ const SYSTEM_READ_ROOTS: &[&str] = &[
     "/private/etc",
     "/private/var/db",
     "/private/var/select",
-    "/tmp",
-    "/private/tmp",
     "/System/Volumes",
 ];
 
@@ -269,15 +298,18 @@ pub fn build_seatbelt_profile(config: &SandboxConfig, workspace: &Path) -> Resul
         .canonicalize()
         .with_context(|| format!("canonicalize {}", workspace.display()))?;
     let guarded = crate::git_targets::guarded_dirs(&canonical)?;
-    seatbelt_profile(config, &canonical, &guarded)
+    seatbelt_profile(config, &canonical, &guarded, None)
 }
 
-/// The profile for the canonical `workspace` with the `guarded` directories.
+/// The profile for the canonical `workspace` with the `guarded` directories
+/// and the instance's private temp directory, if any.
 fn seatbelt_profile(
     config: &SandboxConfig,
     workspace: &Path,
     guarded: &[PathBuf],
+    private_temp: Option<&Path>,
 ) -> Result<String> {
+    let writable = writable_roots(config);
     let mut rules = vec![
         "(version 1)".to_string(),
         "(deny default)".to_string(),
@@ -299,7 +331,10 @@ fn seatbelt_profile(
         rules.push(allow_file_subpath("file-read*", developer_dir)?);
     }
     rules.push(allow_file_subpath("file-read*", workspace)?);
-    for root in &config.writable_roots {
+    for root in writable
+        .iter()
+        .chain(private_temp.map(Path::to_path_buf).as_ref())
+    {
         rules.push(allow_file_subpath("file-read*", root)?);
     }
     let deny_network = !matches!(config.network, NetworkPolicy::Full);
@@ -307,14 +342,11 @@ fn seatbelt_profile(
         rules.push("(deny network*)".to_string());
     }
     rules.push("(deny file-write*)".to_string());
-    for root in &config.writable_roots {
+    for root in writable
+        .iter()
+        .chain(private_temp.map(Path::to_path_buf).as_ref())
+    {
         rules.push(allow_file_subpath("file-write*", root)?);
-    }
-    if config.tmp_write {
-        rules.push("(allow file-write* (subpath \"/tmp\"))".to_string());
-        if cfg!(target_os = "macos") {
-            rules.push("(allow file-write* (subpath \"/private/tmp\"))".to_string());
-        }
     }
     rules.push(deny_workspace_git_writes(workspace, guarded)?);
     if let Some(grant) = &config.git_writes {
@@ -353,7 +385,12 @@ fn allow_git_writes(grant: &crate::config::GitWriteGrant) -> Result<String> {
 
 impl MacOSSeatbeltInstance {
     fn build_profile(&self) -> Result<String> {
-        seatbelt_profile(&self.config, &self.canonical, &self.guarded)
+        seatbelt_profile(
+            &self.config,
+            &self.canonical,
+            &self.guarded,
+            self.private_temp.as_ref().map(tempfile::TempDir::path),
+        )
     }
 }
 
@@ -389,6 +426,11 @@ impl SandboxInstance for MacOSSeatbeltInstance {
         cmd.env_clear();
         if let Some(e) = env {
             cmd.envs(e);
+        }
+        if let Some(temp) = &self.private_temp {
+            for name in ["TMPDIR", "TMP", "TEMP"] {
+                cmd.env(name, temp.path());
+            }
         }
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());

@@ -108,26 +108,26 @@ pub fn path_within_root(candidate: &Path, root: &Path) -> bool {
     candidate == root || candidate.starts_with(&root)
 }
 
+/// The workspace and the writable roots, without the shared `/tmp`: no
+/// backend lets a command read or write it (each gets a private temp
+/// directory), so the host file API does not either.
 fn read_allowed_roots(workspace: &Path, config: &SandboxConfig) -> Vec<PathBuf> {
     let mut roots = vec![workspace.to_path_buf()];
-    for root in &config.writable_roots {
-        if !roots.iter().any(|existing| existing == root) {
-            roots.push(root.clone());
+    for root in write_allowed_roots(config) {
+        if !roots.iter().any(|existing| existing == &root) {
+            roots.push(root);
         }
     }
     roots
 }
 
 fn write_allowed_roots(config: &SandboxConfig) -> Vec<PathBuf> {
-    let mut roots = config.writable_roots.clone();
-    if config.tmp_write {
-        for root in crate::config::tmp_writable_roots() {
-            if !roots.iter().any(|existing| existing == &root) {
-                roots.push(root);
-            }
-        }
-    }
-    roots
+    config
+        .writable_roots
+        .iter()
+        .filter(|root| !crate::config::is_shared_temp(root))
+        .cloned()
+        .collect()
 }
 
 fn path_within_any(candidate: &Path, roots: &[PathBuf]) -> bool {

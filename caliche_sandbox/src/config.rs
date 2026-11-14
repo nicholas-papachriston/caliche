@@ -48,8 +48,8 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub writable_roots: Vec<PathBuf>,
     /// When true, allow writes to a temp directory.
-    /// macOS grants `/tmp` and `/private/tmp`. Linux Landlock creates a private
-    /// directory and sets `TMPDIR` there instead of sharing `/tmp`.
+    /// macOS Seatbelt and Linux Landlock create a private directory and set
+    /// `TMPDIR` there instead of sharing `/tmp`.
     /// This does not include the host `$TMPDIR`, which on macOS is the user-wide temp tree.
     #[serde(default = "default_tmp_write")]
     pub tmp_write: bool,
@@ -62,6 +62,16 @@ pub struct SandboxConfig {
     /// in a git dir by file name.
     #[serde(skip)]
     pub git_writes: Option<GitWriteGrant>,
+}
+
+/// Whether `path` is the shared system temp directory. No backend grants
+/// it: a command gets a private temp directory instead, so it can neither
+/// read nor write other users' and sessions' files there.
+pub(crate) fn is_shared_temp(path: &Path) -> bool {
+    matches!(
+        path.to_str(),
+        Some("/tmp" | "/tmp/" | "/private/tmp" | "/private/tmp/")
+    )
 }
 
 /// The parts of one checked repository's git metadata a git write op

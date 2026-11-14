@@ -140,7 +140,10 @@ fn private_temp_dir(
     workspace: &Path,
     writable: &mut Vec<PathBuf>,
 ) -> Result<Option<tempfile::TempDir>> {
-    let requested = tmp_write || writable.iter().any(|path| is_shared_temp(path));
+    let requested = tmp_write
+        || writable
+            .iter()
+            .any(|path| crate::config::is_shared_temp(path));
     if !requested {
         return Ok(None);
     }
@@ -153,14 +156,7 @@ fn private_temp_dir(
 }
 
 fn keep_writable(path: &Path, workspace: &Path) -> bool {
-    !is_shared_temp(path) || same_path(path, workspace)
-}
-
-fn is_shared_temp(path: &Path) -> bool {
-    matches!(
-        path.to_str(),
-        Some("/tmp" | "/tmp/" | "/private/tmp" | "/private/tmp/")
-    )
+    !crate::config::is_shared_temp(path) || same_path(path, workspace)
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {

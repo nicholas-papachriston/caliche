@@ -81,9 +81,23 @@ impl SandboxBackend for WasmtimeBackend {
             SandboxBackendType::WasmWasmtime { modules, .. } => modules.clone(),
             _ => HashMap::new(),
         };
+        let wants_temp = config.tmp_write
+            || config
+                .writable_roots
+                .iter()
+                .any(|root| crate::config::is_shared_temp(root));
+        let private_temp = if wants_temp {
+            Some(
+                tempfile::TempDir::with_prefix("caliche-")
+                    .context("create a private temp directory")?,
+            )
+        } else {
+            None
+        };
         Ok(Box::new(WasmtimeSandboxInstance {
             id: uuid::Uuid::now_v7().to_string(),
             config: config.clone(),
+            private_temp,
             workspace: normalize_path(workspace),
             modules,
             engine: Arc::clone(&self.engine),
@@ -95,6 +109,9 @@ impl SandboxBackend for WasmtimeBackend {
 struct WasmtimeSandboxInstance {
     id: String,
     config: SandboxConfig,
+    /// The instance's own temp dir, in place of the shared `/tmp` that
+    /// other programs and sessions use; removed when the instance drops.
+    private_temp: Option<tempfile::TempDir>,
     workspace: PathBuf,
     modules: HashMap<String, PathBuf>,
     engine: Arc<wasmtime::Engine>,
@@ -116,12 +133,15 @@ impl WasmtimeSandboxInstance {
     }
 
     fn writable_roots(&self) -> Vec<PathBuf> {
-        let mut roots = Vec::new();
-        roots.extend(self.config.writable_roots.iter().map(|p| normalize_path(p)));
-        if self.config.tmp_write {
-            for root in crate::config::tmp_writable_roots() {
-                roots.push(normalize_path(&root));
-            }
+        let mut roots: Vec<PathBuf> = self
+            .config
+            .writable_roots
+            .iter()
+            .filter(|root| !crate::config::is_shared_temp(root))
+            .map(|root| normalize_path(root))
+            .collect();
+        if let Some(temp) = &self.private_temp {
+            roots.push(normalize_path(temp.path()));
         }
         roots
     }
@@ -240,6 +260,9 @@ impl SandboxInstance for WasmtimeSandboxInstance {
         let mut merged_env = self.config.env_vars.clone();
         if let Some(runtime_env) = env {
             merged_env.extend(runtime_env.clone());
+        }
+        if let Some(temp) = &self.private_temp {
+            merged_env.insert("TMPDIR".to_string(), temp.path().display().to_string());
         }
 
         let wasmtime = resolve_wasmtime(

@@ -1065,3 +1065,53 @@ async fn create_does_no_nested_git_scan() {
     assert_eq!(result.expect("exec"), "allowed");
     assert!(!nested.join("hooks").join("post-checkout").exists());
 }
+
+/// Each instance gets its own temp dir as `TMPDIR`; the shared `/tmp`, where
+/// other programs and repositories live, can be neither read nor written.
+#[tokio::test]
+async fn private_temp_replaces_shared_tmp() {
+    let dir = tempfile::TempDir::new().expect("workspace");
+    let workspace = dir.path().canonicalize().expect("canonical");
+    let shared = tempfile::tempdir_in("/private/tmp").expect("shared");
+    let secret = shared.path().join("secret.txt");
+    std::fs::write(&secret, "SHARED-TMP-SECRET").expect("secret");
+    let config = policy_to_config(
+        NamedPolicy::WorkspaceWrite,
+        &workspace,
+        None,
+        SandboxBackendType::MacOSSeatbelt {
+            policy: NamedPolicy::WorkspaceWrite,
+        },
+    );
+    let backend = MacOSSeatbeltBackend;
+    let script = format!(
+        "cat '{secret}' /tmp/{name}/secret.txt 2>/dev/null; echo \"read=$?\"; \
+         touch '{shared}/planted' 2>/dev/null; echo \"write=$?\"; \
+         printf ok > \"$TMPDIR/own\" && cat \"$TMPDIR/own\"; echo; \
+         case \"$TMPDIR\" in /tmp*|/private/tmp*) echo shared;; *) echo private;; esac; \
+         printf '%s' \"$TMPDIR\"",
+        secret = secret.display(),
+        name = shared.path().file_name().expect("name").to_string_lossy(),
+        shared = shared.path().display(),
+    );
+    let mut temps = Vec::new();
+    for _ in 0..2 {
+        let instance = backend.create(&config, &workspace).await.expect("instance");
+        let run = instance
+            .exec(
+                &["/bin/sh", "-c", &script],
+                Some(&workspace.display().to_string()),
+                None,
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("exec");
+        let mut lines = run.stdout.lines();
+        let report: Vec<&str> = lines.by_ref().take(4).collect();
+        assert_eq!(report, ["read=1", "write=1", "ok", "private"], "{run:?}");
+        temps.push(lines.next().unwrap_or_default().to_string());
+    }
+
+    assert_ne!(temps[0], temps[1], "instances share a temp dir");
+    assert!(!shared.path().join("planted").exists());
+}

@@ -519,16 +519,16 @@ mod sandboxed_writes {
         assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "second");
     }
 
-    /// `refs` swapped for a link to an outside copy after the check: the
-    /// commit's ref update resolves outside the grant and the kernel
-    /// refuses it, so the outside copy is unchanged. The copy is under
-    /// `/tmp`, which the sandbox may read, so only the write is refused.
+    /// `refs` swapped for a link to a copy outside `.git` after the check:
+    /// the commit's ref update resolves outside the grant and the kernel
+    /// refuses it, so the copy is unchanged. The copy is in the workspace,
+    /// which the sandbox may read, so only the write is refused.
     #[tokio::test]
     async fn a_refs_dir_swapped_for_a_link_after_the_check_is_not_written() {
         let (_ws_dir, ws) = canonical_dir();
-        let out_dir = tempfile::tempdir_in("/tmp").expect("outside");
-        let outside = out_dir.path().canonicalize().expect("canonical");
         staged_repo(&ws);
+        let outside = ws.join("copy");
+        std::fs::create_dir(&outside).expect("copy dir");
         let checked = check_repository(&ws, &ws).expect("checked");
         let main_before = std::fs::read(ws.join(".git/refs/heads/main")).expect("main");
         std::fs::rename(ws.join(".git/refs"), outside.join("refs")).expect("move refs");
@@ -884,3 +884,4 @@ fn the_check_refuses_an_outside_dir_bad_gitfile_and_non_git_dir() {
         ]
     );
 }
+

@@ -46,3 +46,53 @@ async fn exec_never_runs_a_wasmtime_planted_on_its_path() {
         .await;
     assert!(!marker.exists(), "planted wasmtime ran");
 }
+
+/// A wasm instance that may write temp files gets its own temp dir; the
+/// shared `/tmp`, where other programs and repositories live, is neither
+/// readable nor writable through it.
+#[tokio::test]
+async fn the_shared_temp_dir_is_outside_a_wasm_instance() {
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let shared = tempfile::tempdir_in("/private/tmp").expect("shared");
+    let secret = shared.path().join("secret.txt");
+    std::fs::write(&secret, "SHARED-TMP-SECRET").expect("secret");
+    let planted = shared.path().join("planted");
+    let config = policy_to_config(
+        NamedPolicy::WorkspaceWrite,
+        workspace.path(),
+        None,
+        SandboxBackendType::WasmWasmtime {
+            policy: NamedPolicy::WorkspaceWrite,
+            modules: HashMap::new(),
+        },
+    );
+    let instance = WasmtimeBackend::new()
+        .expect("backend")
+        .create(&config, workspace.path())
+        .await
+        .expect("wasm instance");
+
+    let read = instance
+        .read_file(&secret.display().to_string())
+        .await
+        .map_err(|err| err.to_string());
+    let written = instance
+        .write_file(&planted.display().to_string(), b"x")
+        .await
+        .map_err(|err| err.to_string());
+
+    assert_eq!(
+        (read, written),
+        (
+            Err(format!(
+                "WASM sandbox denies read access outside allowed roots: {}",
+                secret.display()
+            )),
+            Err(format!(
+                "WASM sandbox denies write access outside allowed roots: {}",
+                planted.display()
+            )),
+        )
+    );
+    assert!(!planted.exists());
+}
