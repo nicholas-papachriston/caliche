@@ -1115,3 +1115,53 @@ async fn private_temp_replaces_shared_tmp() {
     assert_ne!(temps[0], temps[1], "instances share a temp dir");
     assert!(!shared.path().join("planted").exists());
 }
+
+/// A writable root that spells the shared temp dir another way is still
+/// dropped: the command can write neither there nor anywhere in `/tmp`.
+#[tokio::test]
+async fn a_shared_temp_root_spelled_another_way_is_not_writable() {
+    let dir = tempfile::TempDir::new().expect("workspace");
+    let workspace = dir.path().canonicalize().expect("canonical");
+    let shared = tempfile::tempdir_in("/private/tmp").expect("shared");
+    let planted = shared.path().join("planted");
+    let script = format!(
+        "touch '{}' 2>/dev/null; echo \"write=$?\"",
+        planted.display()
+    );
+    let backend = MacOSSeatbeltBackend;
+    let mut seen = Vec::new();
+    for spelling in ["/private/tmp/.", "//tmp", "/tmp/../tmp", "/private//tmp/"] {
+        let mut config = policy_to_config(
+            NamedPolicy::WorkspaceWrite,
+            &workspace,
+            None,
+            SandboxBackendType::MacOSSeatbelt {
+                policy: NamedPolicy::WorkspaceWrite,
+            },
+        );
+        config.tmp_write = false;
+        config.writable_roots = vec![workspace.clone(), std::path::PathBuf::from(spelling)];
+        let instance = backend.create(&config, &workspace).await.expect("instance");
+        let run = instance
+            .exec(
+                &["/bin/sh", "-c", &script],
+                Some(&workspace.display().to_string()),
+                None,
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("exec");
+        seen.push((spelling, run.stdout.trim().to_string()));
+    }
+
+    assert_eq!(
+        seen,
+        [
+            ("/private/tmp/.", "write=1".to_string()),
+            ("//tmp", "write=1".to_string()),
+            ("/tmp/../tmp", "write=1".to_string()),
+            ("/private//tmp/", "write=1".to_string()),
+        ]
+    );
+    assert!(!planted.exists());
+}

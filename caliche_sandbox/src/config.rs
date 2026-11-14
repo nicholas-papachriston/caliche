@@ -69,14 +69,29 @@ pub struct SandboxConfig {
     pub(crate) git_reads: Vec<PathBuf>,
 }
 
-/// Whether `path` is the shared system temp directory. No backend grants
-/// it: a command gets a private temp directory instead, so it can neither
-/// read nor write other users' and sessions' files there.
+/// Whether `path` is the shared system temp directory, however it is
+/// spelled (`/tmp/.`, `//tmp`, `/tmp/../tmp`) or reached (a link to it). No
+/// backend grants it: a command gets a private temp directory instead, so
+/// it can neither read nor write other users' and sessions' files there.
 pub(crate) fn is_shared_temp(path: &Path) -> bool {
-    matches!(
-        path.to_str(),
-        Some("/tmp" | "/tmp/" | "/private/tmp" | "/private/tmp/")
-    )
+    let shared = |path: &Path| path == Path::new("/tmp") || path == Path::new("/private/tmp");
+    shared(&lexically_normal(path)) || path.canonicalize().is_ok_and(|real| shared(&real))
+}
+
+/// `path` with `.` and repeated separators dropped and each `..` taken
+/// back, without reading the file system.
+fn lexically_normal(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normal.pop();
+            }
+            other => normal.push(other.as_os_str()),
+        }
+    }
+    normal
 }
 
 /// The parts of one checked repository's git metadata a git write op
@@ -343,7 +358,36 @@ pub fn policy_to_config(
 
 #[cfg(test)]
 mod tests {
-    use super::ResourceLimits;
+    use super::{ResourceLimits, is_shared_temp};
+    use std::path::Path;
+
+    #[test]
+    fn the_shared_temp_dir_is_found_however_it_is_spelled() {
+        assert_eq!(
+            [
+                "/tmp",
+                "/private/tmp/",
+                "/private/tmp/.",
+                "//tmp",
+                "/tmp/../tmp",
+                "/tmp/x/..",
+                "/tmp/x",
+                "/var/tmp",
+            ]
+            .map(|path| is_shared_temp(Path::new(path))),
+            [true, true, true, true, true, true, false, false]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_the_shared_temp_dir_is_the_shared_temp_dir() {
+        let dir = tempfile::tempdir().expect("dir");
+        let link = dir.path().join("t");
+        std::os::unix::fs::symlink("/tmp", &link).expect("link");
+
+        assert!(is_shared_temp(&link));
+    }
 
     #[test]
     fn missing_cpu_rate_field_deserializes_as_off() {
