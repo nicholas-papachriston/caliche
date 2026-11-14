@@ -9,8 +9,12 @@
 //! [`CheckedRepository::git_env`] gives the environment that pins `git` to
 //! the checked paths.
 
-use crate::paths::{EntryKind, external_tool_path, list_dir_beneath, open_file_beneath};
-use caliche_policy::{COMMONDIR_FILE, GIT_DIR_NAME, common_dir_path, gitfile_path, is_git_dir};
+use crate::paths::{
+    DirEntryBeneath, EntryKind, external_tool_path, list_dir_beneath, open_file_beneath,
+};
+use caliche_policy::{
+    COMMONDIR_FILE, GIT_DIR_NAME, HEAD_FILE, OBJECTS_DIR, REFS_DIR, common_dir_path, gitfile_path,
+};
 use std::ffi::OsString;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
@@ -148,6 +152,21 @@ pub mod refusal {
         )
     }
 
+    /// A link, FIFO, socket or device inside a git dir.
+    #[must_use]
+    pub fn special_in_git_dir(path: &Path) -> String {
+        format!(
+            "{} is a link or special file inside a git dir",
+            path.display()
+        )
+    }
+
+    /// An alternates file pointing git at another object store.
+    #[must_use]
+    pub fn alternates(path: &Path) -> String {
+        format!("{} points git at another object store", path.display())
+    }
+
     /// The named directory is not a git dir.
     #[must_use]
     pub fn not_a_git_dir(git_dir: &Path) -> String {
@@ -195,15 +214,116 @@ pub fn check_repository(workspace: &Path, dir: &Path) -> io::Result<CheckedRepos
         }
         EntryKind::Other => return Err(denied(refusal::not_a_git_entry(&dot_git))),
     };
+    let git_root = if own_worktree {
+        git_dir.as_path()
+    } else {
+        workspace
+    };
+    let git_entries = check_git_dir_contents(git_root, &git_dir)?;
     let common_dir = common_dir_of(workspace, &git_dir, own_worktree)?;
-    if !is_git_dir(&git_dir) {
+    let common_entries = if common_dir == git_dir {
+        git_entries.clone()
+    } else {
+        let common_root = if own_worktree {
+            common_dir.as_path()
+        } else {
+            workspace
+        };
+        check_git_dir_contents(common_root, &common_dir)?
+    };
+    if own_worktree && !is_worktree_of(&git_dir, &common_dir) {
         return Err(denied(refusal::not_a_git_dir(&git_dir)));
     }
+    require_git_layout(git_root, &git_dir, &git_entries, &common_entries)?;
     Ok(CheckedRepository {
         work_tree: dir.to_path_buf(),
         git_dir,
         common_dir,
     })
+}
+
+/// Walk every entry of `git_dir`, at or below `root`, without following a
+/// link, and refuse a link or special file anywhere in it and an
+/// alternates file. Git reads objects, refs and the index by path, so a
+/// link inside the git dir, or an alternates file, would let it read a
+/// repository outside. Returns the git dir's own entries.
+fn check_git_dir_contents(root: &Path, git_dir: &Path) -> io::Result<Vec<DirEntryBeneath>> {
+    let top = list_dir_beneath(root, git_dir)?;
+    let mut pending: Vec<(PathBuf, Vec<DirEntryBeneath>)> =
+        vec![(git_dir.to_path_buf(), top.clone())];
+    while let Some((dir, entries)) = pending.pop() {
+        for entry in entries {
+            let path = dir.join(&entry.name);
+            match entry.kind {
+                EntryKind::Other => return Err(denied(refusal::special_in_git_dir(&path))),
+                EntryKind::File => {
+                    if ALTERNATES_FILES
+                        .iter()
+                        .any(|name| path == git_dir.join(name))
+                    {
+                        return Err(denied(refusal::alternates(&path)));
+                    }
+                }
+                // Hooks never run (core.hooksPath is off, and libgit2 runs
+                // none), so a hook manager's links there are not read.
+                EntryKind::Dir if path == git_dir.join(HOOKS_DIR) => {}
+                EntryKind::Dir => {
+                    let listed = list_dir_beneath(root, &path)?;
+                    pending.push((path, listed));
+                }
+            }
+        }
+    }
+    Ok(top)
+}
+
+/// The hooks dir of a git dir, which no checked git reads.
+pub const HOOKS_DIR: &str = "hooks";
+
+/// Files that point git at other object stores.
+pub const ALTERNATES_FILES: [&str; 2] = ["objects/info/alternates", "objects/info/http-alternates"];
+
+/// Whether `git_dir` is `<common_dir>/worktrees/<id>`, where
+/// `git worktree add` puts a linked worktree's git dir.
+fn is_worktree_of(git_dir: &Path, common_dir: &Path) -> bool {
+    let Some(worktrees) = git_dir.parent() else {
+        return false;
+    };
+    worktrees
+        .file_name()
+        .is_some_and(|name| name == "worktrees")
+        && worktrees.parent() == Some(common_dir)
+}
+
+/// A git dir has a regular `HEAD` that names a ref or an object, and its
+/// common dir has `objects` and `refs` directories, all read from the
+/// no-link walk.
+fn require_git_layout(
+    root: &Path,
+    git_dir: &Path,
+    git_entries: &[DirEntryBeneath],
+    common_entries: &[DirEntryBeneath],
+) -> io::Result<()> {
+    let has = |entries: &[DirEntryBeneath], name: &str, kind: EntryKind| {
+        entries
+            .iter()
+            .any(|entry| entry.name == name && entry.kind == kind)
+    };
+    let laid_out = has(git_entries, HEAD_FILE, EntryKind::File)
+        && has(common_entries, OBJECTS_DIR, EntryKind::Dir)
+        && has(common_entries, REFS_DIR, EntryKind::Dir);
+    if !laid_out || !valid_head(&read_beneath(root, &git_dir.join(HEAD_FILE))?) {
+        return Err(denied(refusal::not_a_git_dir(git_dir)));
+    }
+    Ok(())
+}
+
+/// `ref: refs/...`, or an object id in hex.
+fn valid_head(text: &str) -> bool {
+    let text = text.trim_end_matches(['\n', '\r']);
+    text.strip_prefix("ref: ")
+        .is_some_and(|name| name.starts_with("refs/"))
+        || (matches!(text.len(), 40 | 64) && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// The common dir `git_dir` names, read without following a link when the

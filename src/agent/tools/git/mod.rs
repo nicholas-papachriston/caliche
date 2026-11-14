@@ -221,4 +221,56 @@ mod tests {
             "{linked_log:?}"
         );
     }
+
+    /// A real `.git` in the workspace whose alternates file names an outside
+    /// object store, with a branch at the outside commit, does not show the
+    /// outside commit through git_log, git_status or git operation=log.
+    #[tokio::test]
+    async fn a_git_dir_with_alternates_does_not_read_an_outside_repository() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        let foreign = repo_with_commit(&outside, "OUTSIDE-COMMIT");
+        let outside_head = foreign.head().expect("head").target().expect("oid");
+        let g = ws.join("g");
+        std::fs::create_dir(&g).expect("g");
+        git2::Repository::init(&g).expect("init");
+        std::fs::create_dir_all(g.join(".git/objects/info")).expect("info");
+        std::fs::write(
+            g.join(".git/objects/info/alternates"),
+            format!("{}\n", outside.join(".git/objects").display()),
+        )
+        .expect("alternates");
+        std::fs::create_dir_all(g.join(".git/refs/heads")).expect("heads");
+        std::fs::write(g.join(".git/refs/heads/main"), format!("{outside_head}\n")).expect("ref");
+        std::fs::write(g.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        set_tool_workspace_root(Some(ws.clone()));
+
+        let mut seen = Vec::new();
+        let tools: [(&str, Box<dyn Tool>, serde_json::Value); 3] = [
+            ("git_log", Box::new(GitLogTool), json!({"path": "g"})),
+            ("git_status", Box::new(GitStatusTool), json!({"path": "g"})),
+            (
+                "git log",
+                Box::new(GitTool),
+                json!({"operation": "log", "path": "g"}),
+            ),
+        ];
+        for (name, tool, args) in tools {
+            let result = tool
+                .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+                .await;
+            let text = format!("{}{}", result.content, result.error.unwrap_or_default());
+            seen.push((name, result.success, text.contains("OUTSIDE-COMMIT")));
+        }
+        set_tool_workspace_root(None);
+
+        assert_eq!(
+            seen,
+            vec![
+                ("git_log", false, false),
+                ("git_status", false, false),
+                ("git log", false, false),
+            ]
+        );
+    }
 }

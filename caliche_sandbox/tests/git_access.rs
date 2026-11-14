@@ -313,3 +313,94 @@ fn inherited_config_and_programs_do_not_reach_git() {
     std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit");
     git(&["diff"]);
 }
+
+/// A real `.git` whose `objects` is a link to another repository's objects
+/// is refused: git would read the outside objects through it.
+#[cfg(unix)]
+#[test]
+fn a_git_dir_with_linked_objects_is_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_out_dir, outside) = canonical_dir();
+    write_loose_git_dir(&outside.join(".git")).expect("outside");
+    write_loose_git_dir(&ws.join(".git")).expect("own");
+    std::fs::remove_dir_all(ws.join(".git/objects")).expect("objects");
+    std::os::unix::fs::symlink(outside.join(".git/objects"), ws.join(".git/objects"))
+        .expect("link");
+
+    assert_eq!(
+        outcome(&ws, &ws),
+        Err(refusal::special_in_git_dir(&ws.join(".git/objects")))
+    );
+}
+
+/// An alternates file is refused, with no link anywhere: it would make git
+/// read an object store outside the workspace.
+#[test]
+fn a_git_dir_with_alternates_is_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_out_dir, outside) = canonical_dir();
+    write_loose_git_dir(&outside.join(".git")).expect("outside");
+    write_loose_git_dir(&ws.join(".git")).expect("own");
+    std::fs::create_dir_all(ws.join(".git/objects/info")).expect("info");
+    std::fs::write(
+        ws.join(".git/objects/info/alternates"),
+        format!("{}\n", outside.join(".git/objects").display()),
+    )
+    .expect("alternates");
+
+    assert_eq!(
+        outcome(&ws, &ws),
+        Err(refusal::alternates(
+            &ws.join(".git/objects/info/alternates")
+        ))
+    );
+}
+
+/// A FIFO at `.git/HEAD` is refused from the listing, without opening it,
+/// so the check does not hang.
+#[cfg(unix)]
+#[test]
+fn a_fifo_head_is_refused_without_reading_it() {
+    let (_ws_dir, ws) = canonical_dir();
+    write_loose_git_dir(&ws.join(".git")).expect("own");
+    std::fs::remove_file(ws.join(".git/HEAD")).expect("head");
+    let status = caliche_policy::program_command("mkfifo")
+        .arg(ws.join(".git/HEAD"))
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let checked_ws = ws.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(outcome(&checked_ws, &checked_ws));
+    });
+
+    assert_eq!(
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the check returned"),
+        Err(refusal::special_in_git_dir(&ws.join(".git/HEAD")))
+    );
+}
+
+/// The workspace root's gitfile may name a linked worktree git dir outside
+/// only when it is `<common>/worktrees/<id>`; a git dir elsewhere that
+/// names the root back is refused.
+#[test]
+fn an_outside_worktree_git_dir_not_under_worktrees_is_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_main_dir, main) = canonical_dir();
+    write_loose_git_dir(&main.join(".git")).expect("main");
+    let planted = main.join("planted");
+    write_loose_git_dir(&planted).expect("planted");
+    std::fs::write(planted.join(COMMONDIR_FILE), "../.git\n").expect("commondir");
+    std::fs::write(
+        planted.join(WORKTREE_GITDIR_FILE),
+        format!("{}\n", ws.join(".git").display()),
+    )
+    .expect("gitdir");
+    gitfile(&ws, &planted);
+
+    assert_eq!(outcome(&ws, &ws), Err(refusal::not_a_git_dir(&planted)));
+}
