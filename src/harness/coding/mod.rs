@@ -511,6 +511,7 @@ async fn git_dirty_files(root: &Path) -> Result<Vec<PathBuf>> {
     let porcelain = repo
         .read(&[
             "status",
+            crate::policy::GIT_STATUS_SAFETY_FLAGS[0],
             "--porcelain=v1",
             "-z",
             "--no-renames",
@@ -783,7 +784,7 @@ mod tests {
         let refused = dirty.expect_err("a repository naming programs is refused");
         assert!(
             refused.starts_with(&format!(
-                "failed to read git status: {} config names programs git would run: ",
+                "failed to read git status: {} config names programs git would run or submodules it would read: ",
                 root.join(".git").display()
             )),
             "{refused}"
@@ -792,7 +793,8 @@ mod tests {
     }
 
     /// A submodule gitfile pointing at a git dir with a planted fsmonitor
-    /// (the sandbox-side attack) runs nothing through the agent's reads.
+    /// (the sandbox-side attack) runs nothing through the agent's reads,
+    /// which do not enter submodules, so the dirty submodule is not listed.
     #[cfg(all(unix, feature = "tools-git"))]
     #[tokio::test]
     async fn agent_git_reads_ignore_a_planted_submodule_fsmonitor() {
@@ -855,7 +857,7 @@ mod tests {
         let git_context = context.refresh_git_context().await.expect("git context");
 
         assert!(!marker.exists(), "planted fsmonitor ran");
-        assert!(dirty.contains(&PathBuf::from("sub")), "{dirty:?}");
+        assert_eq!(dirty, Vec::<PathBuf>::new());
         assert!(git_context.is_some());
     }
 

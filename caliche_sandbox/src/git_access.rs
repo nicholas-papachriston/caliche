@@ -127,7 +127,7 @@ pub mod refusal {
     #[must_use]
     pub fn program_keys(git_dir: &Path, keys: &[String]) -> String {
         format!(
-            "{} config names programs git would run: {}",
+            "{} config names programs git would run or submodules it would read: {}",
             git_dir.display(),
             keys.join(", ")
         )

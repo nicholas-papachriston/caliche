@@ -45,8 +45,14 @@ pub const GIT_PROGRAM_OVERRIDES: [(&str, &str); 3] = [
 ];
 
 /// Flags every `git diff`, `show` and `log -p` gets, so no external diff and
-/// no textconv driver runs.
-pub const GIT_DIFF_SAFETY_FLAGS: [&str; 2] = ["--no-ext-diff", "--no-textconv"];
+/// no textconv driver runs, and git does not read a submodule's repository,
+/// which the git dir check does not cover.
+pub const GIT_DIFF_SAFETY_FLAGS: [&str; 3] =
+    ["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"];
+
+/// Flags every `git status` gets, so git does not read a submodule's
+/// repository.
+pub const GIT_STATUS_SAFETY_FLAGS: [&str; 1] = ["--ignore-submodules=all"];
 
 /// A `git` command with no system or global config, no hostile inherited
 /// variable, and [`GIT_PROGRAM_OVERRIDES`] on its command line. The caller
@@ -99,8 +105,8 @@ fn is_git_program(program: &std::ffi::OsStr) -> bool {
 }
 
 /// Config keys, as `git config --list --name-only` prints them (section and
-/// key lowercased), that name a program git may run and that a repository
-/// may not set. A driver's name is chosen by the repository, so these are
+/// key lowercased), that name a program git may run, or make git read a
+/// submodule's repository, and that a repository may not set. A driver's name is chosen by the repository, so these are
 /// matched by section and last part.
 #[must_use]
 pub fn refused_program_keys<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -133,7 +139,11 @@ fn is_program_key(name: &str) -> bool {
     let last = name.rsplit('.').next().unwrap_or_default();
     match section {
         "filter" => matches!(last, "clean" | "smudge" | "process"),
-        "diff" => matches!(last, "external" | "textconv" | "command"),
+        // `diff.submodule` and `status.submodule*` show a submodule's
+        // commits or content, read from its repository.
+        "diff" => matches!(last, "external" | "textconv" | "command" | "submodule"),
+        "status" => last.starts_with("submodule"),
+        "submodule" => last == "recurse",
         "merge" | "mergetool" | "difftool" => matches!(last, "driver" | "cmd"),
         "core" => matches!(
             last,
@@ -171,6 +181,10 @@ mod tests {
             "merge.ours.driver",
             "remote.origin.url",
             "remote.origin.uploadpack",
+            "diff.submodule",
+            "status.submodulesummary",
+            "submodule.recurse",
+            "submodule.sub.url",
         ];
 
         assert_eq!(
@@ -186,6 +200,9 @@ mod tests {
                 "includeif.gitdir:/x.path",
                 "merge.ours.driver",
                 "remote.origin.uploadpack",
+                "diff.submodule",
+                "status.submodulesummary",
+                "submodule.recurse",
             ]
         );
     }

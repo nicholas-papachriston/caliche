@@ -241,20 +241,16 @@ impl ContextResolver {
                 resolve_clipboard()
             }
             ContextReference::GitDiff => {
-                resolve_git(
-                    &self.workspace_root,
-                    [
-                        "diff",
-                        caliche::policy::GIT_DIFF_SAFETY_FLAGS[0],
-                        caliche::policy::GIT_DIFF_SAFETY_FLAGS[1],
-                        "HEAD",
-                    ],
-                    "Git Diff",
-                )
-                .await
+                let mut args = vec!["diff"];
+                args.extend(caliche::policy::GIT_DIFF_SAFETY_FLAGS);
+                args.push("HEAD");
+                resolve_git(&self.workspace_root, &args, "Git Diff").await
             }
             ContextReference::GitStatus => {
-                resolve_git(&self.workspace_root, ["status", "--short"], "Git Status").await
+                let mut args = vec!["status"];
+                args.extend(caliche::policy::GIT_STATUS_SAFETY_FLAGS);
+                args.push("--short");
+                resolve_git(&self.workspace_root, &args, "Git Status").await
             }
             ContextReference::Artifact(selector) => self.resolve_artifact(selector).await,
             ContextReference::Resource(selector) => self.resolve_resource(selector).await,
@@ -584,14 +580,14 @@ fn resolve_clipboard() -> anyhow::Result<ResolvedItem> {
 /// repository whose config names a program is refused, and git runs with
 /// no system or global config and no program of its own, inside the
 /// read-only OS sandbox ([`run_read_only`](caliche_sandbox::git_access::CheckedRepository::run_read_only)).
-async fn resolve_git<const N: usize>(
+async fn resolve_git(
     workspace_root: &Path,
-    args: [&str; N],
+    args: &[&str],
     title: &str,
 ) -> anyhow::Result<ResolvedItem> {
     let workspace = workspace_root.canonicalize()?;
     let checked = caliche_sandbox::git_access::check_repository(&workspace, &workspace)?;
-    let output = checked.run_read_only(&workspace, &args).await?;
+    let output = checked.run_read_only(&workspace, args).await?;
     let stdout = output.stdout;
     if stdout.is_empty() {
         Ok(ResolvedItem::text(format!("--- {title} ---\nNo changes")))
@@ -834,11 +830,9 @@ mod link_tests {
 
         assert!(
             resolved.message.ends_with(&format!(
-                "[Error loading @diff: {}]",
-                caliche_sandbox::git_access::refusal::program_keys(
-                    &root.join(".git"),
-                    &["diff.external".to_string()]
-                )
+                "[Error loading @diff: {}/.git config names programs git would run or \
+                 submodules it would read: diff.external]",
+                root.display()
             )),
             "{}",
             resolved.message

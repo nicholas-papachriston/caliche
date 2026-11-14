@@ -307,6 +307,69 @@ mod sandboxed {
         );
     }
 
+    /// A workspace holding a submodule gitlink at `sub` whose `sub/.git`
+    /// names `victim`'s git dir, with a change in the victim's tree.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn submodule_to(ws: &Path, victim: &Path) {
+        let head = commit_repo(victim, "VICTIM");
+        std::fs::write(victim.join("VICTIM.txt"), "VICTIM-TMP-SECRET line\n").expect("change");
+        commit_repo(ws, "INSIDE");
+        let git = |args: &[&str]| {
+            let output = caliche_policy::git_command()
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(ws)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},sub"),
+        ]);
+        git(&["commit", "-q", "-m", "sub"]);
+        gitfile(&ws.join("sub"), &victim.join(".git"));
+    }
+
+    /// A submodule whose gitfile names a repository under the shared temp
+    /// dir: `diff` and `status` with the safety flags do not enter it, and
+    /// a repository that sets `diff.submodule` is refused.
+    #[tokio::test]
+    async fn git_does_not_enter_a_submodule_that_names_the_outside() {
+        let (_ws_dir, ws) = canonical_dir();
+        let victim_dir = tempfile::tempdir_in("/tmp").expect("victim");
+        let victim = victim_dir.path().canonicalize().expect("canonical");
+        submodule_to(&ws, &victim);
+        let checked = check_repository(&ws, &ws).expect("checked");
+        let mut diff = vec!["diff"];
+        diff.extend(caliche_policy::GIT_DIFF_SAFETY_FLAGS);
+        diff.extend(["--submodule=diff", "HEAD"]);
+        let mut status = vec!["status"];
+        status.extend(caliche_policy::GIT_STATUS_SAFETY_FLAGS);
+        status.push("--porcelain=v1");
+
+        let plain = (
+            sandboxed(&checked, &ws, &diff).await,
+            sandboxed(&checked, &ws, &status).await,
+        );
+        let mut config = std::fs::read_to_string(ws.join(".git/config")).expect("config");
+        config.push_str("[diff]\n\tsubmodule = diff\n");
+        std::fs::write(ws.join(".git/config"), config).expect("write config");
+        let configured = sandboxed(&checked, &ws, &diff).await;
+
+        assert_eq!(plain, (Ok((0, String::new())), Ok((0, String::new()))));
+        assert_eq!(
+            configured,
+            Err(format!(
+                "{}/.git config names programs git would run or submodules it would read: \
+                 diff.submodule",
+                ws.display()
+            ))
+        );
+    }
+
     /// Landlock cannot scope writes in a git dir by file name, so a git
     /// write op refuses on Linux and writes nothing.
     #[cfg(target_os = "linux")]

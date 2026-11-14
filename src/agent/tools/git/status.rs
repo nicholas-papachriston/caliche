@@ -126,6 +126,7 @@ impl Tool for GitStatusTool {
         let porcelain = match repo
             .read(&[
                 "status",
+                crate::policy::GIT_STATUS_SAFETY_FLAGS[0],
                 "--porcelain=v1",
                 "-z",
                 "--no-renames",

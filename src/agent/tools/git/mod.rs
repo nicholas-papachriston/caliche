@@ -179,6 +179,93 @@ mod tests {
         (dir, path)
     }
 
+    /// A workspace with a submodule gitlink `sub` to `victim`'s head, whose
+    /// `sub/.git` holds `gitfile`; the victim's tree has an uncommitted
+    /// secret line.
+    fn submodule_workspace(ws: &Path, victim: &Path, gitfile: &str) {
+        let head = repo_with_commit(victim, "VICTIM");
+        std::fs::write(victim.join("file.txt"), "VICTIM-TMP-SECRET line\n").expect("secret");
+        repo_with_commit(ws, "INSIDE");
+        git_in(
+            ws,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},sub"),
+            ],
+        );
+        git_in(ws, &["commit", "-q", "-m", "sub"]);
+        std::fs::create_dir(ws.join("sub")).expect("sub");
+        std::fs::write(ws.join("sub/.git"), gitfile).expect("gitfile");
+    }
+
+    /// git_diff does not read a repository outside the workspace through a
+    /// submodule: not through a gitfile naming it with `diff.submodule`
+    /// set, and not through alternates in the submodule's git dir under
+    /// `modules/`.
+    #[tokio::test]
+    async fn git_diff_does_not_read_the_outside_through_a_submodule() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_ws2_dir, ws2) = canonical_dir();
+        let victim_dir = tempfile::tempdir_in("/tmp").expect("victim");
+        let victim = victim_dir.path().canonicalize().expect("canonical");
+        submodule_workspace(
+            &ws,
+            &victim,
+            &format!("gitdir: {}\n", victim.join(".git").display()),
+        );
+        git_in(&ws, &["config", "diff.submodule", "diff"]);
+        let victim2_dir = tempfile::tempdir_in("/tmp").expect("victim");
+        let victim2 = victim2_dir.path().canonicalize().expect("canonical");
+        submodule_workspace(&ws2, &victim2, "gitdir: ../.git/modules/sub\n");
+        let module = ws2.join(".git/modules/sub");
+        caliche_policy::write_loose_git_dir(&module).expect("module");
+        std::fs::create_dir_all(module.join("objects/info")).expect("info");
+        std::fs::write(
+            module.join("objects/info/alternates"),
+            format!("{}\n", victim2.join(".git/objects").display()),
+        )
+        .expect("alternates");
+
+        let mut seen = Vec::new();
+        for workspace in [&ws, &ws2] {
+            set_tool_workspace_root(Some(workspace.clone()));
+            let result = GitDiffTool
+                .execute(
+                    json!({"path": "."}),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
+                .await;
+            set_tool_workspace_root(None);
+            seen.push((result.success, result.content, result.error));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    false,
+                    String::new(),
+                    Some(format!(
+                        "Failed to get git diff: {}/.git config names programs git would run \
+                         or submodules it would read: diff.submodule",
+                        ws.display()
+                    ))
+                ),
+                (
+                    false,
+                    String::new(),
+                    Some(format!(
+                        "Failed to open git repository at '.': {}/.git/modules/sub/objects/info/\
+                         alternates points git at another object store",
+                        ws2.display()
+                    ))
+                ),
+            ]
+        );
+    }
+
     /// A git tool opens only the workspace's own repository: a committed
     /// git link to another repository, an outside path and a relative path
     /// read against the process directory are all refused or resolved in
