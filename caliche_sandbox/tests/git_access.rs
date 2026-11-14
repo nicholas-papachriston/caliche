@@ -74,6 +74,36 @@ fn the_workspace_as_a_linked_worktree_is_accepted() {
     );
 }
 
+/// A worktree record left behind by a deleted worktree, matched later by a
+/// new `.git` at its old path, is refused: the record is older than the
+/// `.git` that names it.
+#[tokio::test]
+async fn a_stale_worktree_record_is_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let (_main_dir, main) = canonical_dir();
+    let linked = plant_linked_worktree(&main.join(".git"), "ws").expect("linked");
+    std::fs::write(
+        linked.join(WORKTREE_GITDIR_FILE),
+        format!("{}\n", ws.join(".git").display()),
+    )
+    .expect("gitdir back");
+    tokio::time::sleep(
+        caliche_sandbox::git_access::WORKTREE_RECORD_SLACK + std::time::Duration::from_secs(1),
+    )
+    .await;
+    gitfile(&ws, &linked);
+
+    assert_eq!(
+        outcome(&ws, &ws),
+        Err(format!(
+            "{}/.git names the worktree record {}/.git/worktrees/ws, which is older than it; \
+             if this is that worktree, run `git worktree repair` in it",
+            ws.display(),
+            main.display()
+        ))
+    );
+}
+
 #[test]
 fn a_git_link_to_a_repository_outside_is_refused() {
     let (_ws_dir, ws) = canonical_dir();

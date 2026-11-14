@@ -155,6 +155,19 @@ pub mod refusal {
         format!("{} points git at another git dir", path.display())
     }
 
+    /// The workspace's `.git` names a linked-worktree record outside it that
+    /// git wrote before that `.git` last changed: a record left behind by a
+    /// deleted worktree, now matched by new files at its old path.
+    #[must_use]
+    pub fn stale_worktree(dot_git: &Path, git_dir: &Path) -> String {
+        format!(
+            "{} names the worktree record {}, which is older than it; if this \
+             is that worktree, run `git worktree repair` in it",
+            dot_git.display(),
+            git_dir.display()
+        )
+    }
+
     /// The named directory is not a git dir.
     #[must_use]
     pub fn not_a_git_dir(git_dir: &Path) -> String {
@@ -227,6 +240,9 @@ fn locate_git_dir(workspace: &Path, dir: &Path) -> io::Result<(PathBuf, bool)> {
             if git_dir.starts_with(workspace) {
                 Ok((git_dir, false))
             } else if dir == workspace && names_back(&git_dir, &dot_git) {
+                if changed_after_record(&git_dir, &dot_git)? {
+                    return Err(denied(refusal::stale_worktree(&dot_git, &git_dir)));
+                }
                 Ok((git_dir, true))
             } else {
                 Err(denied(refusal::git_dir_outside(&dot_git, &git_dir)))
@@ -367,6 +383,40 @@ fn names_back(git_dir: &Path, dot_git: &Path) -> bool {
     };
     let named = PathBuf::from(common_dir_path(&text));
     canonical(&named).is_ok_and(|named| named == dot_git)
+}
+
+/// How long after its worktree record a linked worktree's `.git` may have
+/// changed: `git worktree add` and `git worktree repair` write both at once.
+pub const WORKTREE_RECORD_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `dot_git` changed more than [`WORKTREE_RECORD_SLACK`] after the
+/// worktree record `git_dir/gitdir` did. On Unix this is the inode change
+/// time, which unpacking or copying files sets to now whatever times they
+/// carry, so a `.git` placed at a deleted worktree's old path is newer than
+/// the record left behind.
+fn changed_after_record(git_dir: &Path, dot_git: &Path) -> io::Result<bool> {
+    let record = changed_at(&git_dir.join(WORKTREE_GITDIR_FILE))?;
+    let gitfile = changed_at(dot_git)?;
+    Ok(gitfile > record + WORKTREE_RECORD_SLACK.as_nanos() as i128)
+}
+
+/// When `path` last changed, in nanoseconds since the epoch: its inode
+/// change time on Unix, its modification time elsewhere.
+fn changed_at(path: &Path) -> io::Result<i128> {
+    let meta = std::fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let modified = meta.modified()?;
+        let since = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?;
+        Ok(since.as_nanos() as i128)
+    }
 }
 
 fn read_beneath(workspace: &Path, file: &Path) -> io::Result<String> {
