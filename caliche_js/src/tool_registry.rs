@@ -90,7 +90,8 @@ impl JsToolRegistry {
     /// filtering).
     ///
     /// `workspace` is the root the filesystem tools may use; without it,
-    /// every filesystem call is refused. A refused call returns
+    /// every filesystem call is refused. It must be an existing absolute
+    /// directory, used canonical; any other path is an error. A refused call returns
     /// `success: false` and the tool does not run.
     ///
     /// # Errors
@@ -104,6 +105,7 @@ impl JsToolRegistry {
         arguments: Value,
         workspace: Option<String>,
     ) -> napi::Result<Value> {
+        let workspace = caller_workspace(workspace)?;
         let registry = Arc::clone(&self.inner);
         let handle = tokio::runtime::Handle::current();
         let result = tokio::task::spawn_blocking(move || {
@@ -169,6 +171,27 @@ fn tool_result_to_value(result: caliche::agent::tools::ToolResult) -> Value {
     obj
 }
 
+/// The workspace a JavaScript caller named, as an existing absolute
+/// directory made canonical.
+///
+/// # Errors
+///
+/// Returns a NAPI error when the path is relative, missing, not a
+/// directory or not UTF-8.
+fn caller_workspace(workspace: Option<String>) -> napi::Result<Option<String>> {
+    workspace
+        .map(|path| {
+            caliche::policy::caller_workspace_root(&path)
+                .and_then(|root| {
+                    root.into_os_string()
+                        .into_string()
+                        .map_err(|_| format!("workspace is not UTF-8: {path}"))
+                })
+                .map_err(napi::Error::from_reason)
+        })
+        .transpose()
+}
+
 /// The tool gate for a call from JavaScript.
 fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
     let gate = HookExecutionMiddleware::new(HookRegistry::new());
@@ -195,6 +218,7 @@ pub fn execute_tool(
     arguments: Value,
     workspace: Option<String>,
 ) -> napi::Result<Value> {
+    let workspace = caller_workspace(workspace)?;
     let rt = get_runtime()?;
     let root = workspace.clone().map(std::path::PathBuf::from);
     let result = block_on_in_workspace(rt.handle(), root, async move {

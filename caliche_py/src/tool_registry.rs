@@ -82,7 +82,8 @@ impl PyToolRegistry {
     /// filtering).
     ///
     /// `workspace` is the root the filesystem tools may use; without it,
-    /// every filesystem call is refused. A refused call returns
+    /// every filesystem call is refused. It must be an existing absolute
+    /// directory, used canonical; any other path raises. A refused call returns
     /// `success: False` and the tool does not run.
     #[pyo3(signature = (name, arguments, workspace=None))]
     pub fn execute(
@@ -94,6 +95,7 @@ impl PyToolRegistry {
     ) -> PyResult<Py<PyAny>> {
         let args = pythonize::depythonize(arguments)
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid tool arguments: {e}")))?;
+        let workspace = crate::builtin_tools::caller_workspace(workspace)?;
         let rt = get_runtime()?;
         let registry = Arc::clone(&self.inner);
         let name = name.to_string();

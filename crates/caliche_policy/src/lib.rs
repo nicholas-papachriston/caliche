@@ -118,7 +118,9 @@ pub use git_runner::{
 };
 pub use ids::{ActionBinding, ActionId, ActionKind, BindingRecheck, PendingId};
 pub use parse::{parse_effect, parse_mode_overlay, parse_preset};
-pub use paths::{SsrfClass, classify_ssrf_host, embedded_ipv4, is_vendor_auth_path};
+pub use paths::{
+    SsrfClass, caller_workspace_root, classify_ssrf_host, embedded_ipv4, is_vendor_auth_path,
+};
 pub use policy::{CompiledPolicy, Decide, Decision, PolicyBuilder};
 pub use posix::PosixShellAnalyzer;
 pub use posture::{

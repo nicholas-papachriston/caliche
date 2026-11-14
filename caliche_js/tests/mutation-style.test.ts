@@ -124,4 +124,19 @@ describe("mutation style", () => {
     expect(ops).not.toContain("write");
     expect(ops).not.toContain("edit");
   });
+  test("a workspace must be an existing absolute directory", () => {
+    const tool = BuiltinTool.fs(MutationStyle.editWrite());
+    const dir = mkdtempSync(join(tmpdir(), "caliche-js-root-"));
+    try {
+      expect(() => tool.execute({ op: "read", path: "x.txt" }, "relative/ws")).toThrow(
+        "workspace must be an absolute path: relative/ws",
+      );
+      const missing = join(dir, "missing");
+      expect(() => tool.execute({ op: "read", path: "x.txt" }, missing)).toThrow(
+        `workspace cannot be resolved: ${missing}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

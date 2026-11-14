@@ -15,6 +15,27 @@ use pythonize::depythonize;
 use std::sync::Arc;
 
 /// The tool gate for a call from Python.
+/// The workspace a Python caller named, as an existing absolute directory
+/// made canonical.
+///
+/// # Errors
+///
+/// Returns a `ValueError` when the path is relative, missing, not a
+/// directory or not UTF-8.
+pub(crate) fn caller_workspace(workspace: Option<String>) -> PyResult<Option<String>> {
+    workspace
+        .map(|path| {
+            caliche::policy::caller_workspace_root(&path)
+                .and_then(|root| {
+                    root.into_os_string()
+                        .into_string()
+                        .map_err(|_| format!("workspace is not UTF-8: {path}"))
+                })
+                .map_err(pyo3::exceptions::PyValueError::new_err)
+        })
+        .transpose()
+}
+
 pub(crate) fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
     let gate = HookExecutionMiddleware::new(HookRegistry::new());
     match workspace {
@@ -98,7 +119,8 @@ impl PyBuiltinTool {
     /// shared runtime).
     ///
     /// `workspace` is the root the filesystem tools may use; without it,
-    /// every filesystem call is refused. A refused call returns
+    /// every filesystem call is refused. It must be an existing absolute
+    /// directory, used canonical; any other path raises. A refused call returns
     /// `success: False` and the tool does not run.
     #[pyo3(signature = (arguments, workspace=None))]
     pub fn execute(
@@ -109,6 +131,7 @@ impl PyBuiltinTool {
     ) -> PyResult<Py<PyAny>> {
         let args = depythonize(arguments)
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid tool arguments: {e}")))?;
+        let workspace = caller_workspace(workspace)?;
         let tool = Arc::clone(&self.inner);
         let rt = get_runtime()?;
         let result = py.detach(|| {

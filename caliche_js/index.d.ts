@@ -2245,7 +2245,8 @@ export declare class ToolRegistry {
    * filtering).
    *
    * `workspace` is the root the filesystem tools may use; without it,
-   * every filesystem call is refused. A refused call returns
+   * every filesystem call is refused. It must be an existing absolute
+   * directory, used canonical; any other path is an error. A refused call returns
    * `success: false` and the tool does not run.
    *
    * # Errors

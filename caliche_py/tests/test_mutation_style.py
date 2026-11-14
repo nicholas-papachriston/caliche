@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from caliche import (
     AgentBuilder,
     MutationStyle,
@@ -94,3 +96,14 @@ def test_builder_mutation_style_registers_apply_patch_on_built_agent():
     ops = fs_schema["parameters"]["properties"]["op"]["enum"]
     assert "write" not in ops
     assert "edit" not in ops
+
+
+def test_a_workspace_must_be_an_existing_absolute_directory(tmp_path: Path):
+    tool = create_fs_tool(MutationStyle.EditWrite)
+    missing = tmp_path / "missing"
+
+    with pytest.raises(ValueError, match="^workspace must be an absolute path: relative/ws$"):
+        tool.execute({"op": "read", "path": "x.txt"}, "relative/ws")
+    with pytest.raises(ValueError) as raised:
+        tool.execute({"op": "read", "path": "x.txt"}, str(missing))
+    assert str(raised.value).startswith(f"workspace cannot be resolved: {missing}: ")

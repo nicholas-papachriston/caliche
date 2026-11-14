@@ -4,6 +4,7 @@
 //! turns a match into deny.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
 
 /// Class of blocked egress target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,9 +152,61 @@ fn is_cgnat(v4: Ipv4Addr) -> bool {
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
+/// The workspace root an SDK caller names for a tool call: it must be an
+/// absolute path to an existing directory, and is returned canonical, so a
+/// `..` through a link cannot widen it.
+///
+/// # Errors
+///
+/// Returns the reason when `path` is relative, missing or not a directory.
+pub fn caller_workspace_root(path: &str) -> Result<PathBuf, String> {
+    let given = Path::new(path);
+    if !given.is_absolute() {
+        return Err(format!("workspace must be an absolute path: {path}"));
+    }
+    match given.canonicalize() {
+        Ok(root) if root.is_dir() => Ok(root),
+        Ok(_) => Err(format!("workspace is not a directory: {path}")),
+        Err(err) => Err(format!("workspace cannot be resolved: {path}: {err}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_caller_workspace_root_is_an_existing_absolute_directory() {
+        let base = std::env::temp_dir().join(format!("policy-ws-root-{}", std::process::id()));
+        std::fs::create_dir_all(&base).expect("dir");
+        let root = base.canonicalize().expect("canonical");
+        std::fs::create_dir(root.join("real")).expect("real");
+        std::fs::write(root.join("file"), "x").expect("file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("real"), root.join("lnk")).expect("link");
+        let through_link = format!("{}/lnk/..", root.display());
+
+        assert_eq!(
+            [
+                caller_workspace_root("relative/ws"),
+                caller_workspace_root(&format!("{}/file", root.display())),
+                caller_workspace_root(&format!("{}/real", root.display())),
+            ],
+            [
+                Err("workspace must be an absolute path: relative/ws".to_string()),
+                Err(format!(
+                    "workspace is not a directory: {}/file",
+                    root.display()
+                )),
+                Ok(root.join("real")),
+            ]
+        );
+        #[cfg(unix)]
+        let linked = caller_workspace_root(&through_link);
+        std::fs::remove_dir_all(&root).expect("cleanup");
+        #[cfg(unix)]
+        assert_eq!(linked, Ok(root));
+    }
 
     #[test]
     fn an_ipv4_target_inside_an_ipv6_address_is_classified() {
