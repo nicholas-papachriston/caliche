@@ -53,7 +53,7 @@ async fn exec_never_runs_a_wasmtime_planted_on_its_path() {
 #[tokio::test]
 async fn the_shared_temp_dir_is_outside_a_wasm_instance() {
     let workspace = tempfile::TempDir::new().expect("workspace");
-    let shared = tempfile::tempdir_in("/private/tmp").expect("shared");
+    let shared = tempfile::tempdir_in("/tmp").expect("shared");
     let secret = shared.path().join("secret.txt");
     std::fs::write(&secret, "SHARED-TMP-SECRET").expect("secret");
     let planted = shared.path().join("planted");
