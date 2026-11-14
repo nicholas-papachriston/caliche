@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+
 from caliche import (
     ToolRegistry,
     create_apply_patch_tool,
@@ -28,8 +30,9 @@ def test_inactive_tools_are_hidden_from_schemas_and_execution():
     denied = registry.execute(
         "apply_patch",
         {
-            "patch": "*** Begin Patch\n*** Add File: /tmp/x\n+y\n*** End Patch\n",
+            "patch": "*** Begin Patch\n*** Add File: x\n+y\n*** End Patch\n",
         },
+        workspace=tempfile.gettempdir(),
     )
     assert denied["success"] is False
     assert "not active" in (denied.get("error") or "")

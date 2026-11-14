@@ -98,7 +98,8 @@ impl PyToolRegistry {
         let registry = Arc::clone(&self.inner);
         let name = name.to_string();
         let result = py.detach(|| {
-            rt.block_on(async move {
+            let root = workspace.clone().map(std::path::PathBuf::from);
+            caliche::agent::tools::common::block_on_in_workspace(rt.handle(), root, async move {
                 crate::builtin_tools::tool_gate(workspace)
                     .run(&registry, &name, args)
                     .await

@@ -749,14 +749,19 @@ export declare class BuiltinTool {
   /** Get the parameters of a built-in tool */
   parameters(): any
   /**
-   * Execute the tool (async work is driven on the shared runtime).
+   * Execute the tool through the tool gate (async work is driven on the
+   * shared runtime).
+   *
+   * `workspace` is the root the filesystem tools may use; without it,
+   * every filesystem call is refused. A refused call returns
+   * `success: false` and the tool does not run.
    *
    * # Errors
    *
    * Returns a NAPI error when validation, synchronization, serialization,
    * or an underlying runtime operation fails.
    */
-  execute(arguments: any): any
+  execute(arguments: any, workspace?: string | undefined | null): any
 }
 
 /** JavaScript wrapper for `CachedResponse` */
@@ -2236,14 +2241,19 @@ export declare class ToolRegistry {
   isActive(name: string): boolean
   activeToolNames(): Array<string>
   /**
-   * Execute a tool by name (honors active-set filtering).
+   * Execute a tool by name through the tool gate (honors active-set
+   * filtering).
+   *
+   * `workspace` is the root the filesystem tools may use; without it,
+   * every filesystem call is refused. A refused call returns
+   * `success: false` and the tool does not run.
    *
    * # Errors
    *
    * Returns a NAPI error when validation, synchronization, serialization,
    * or an underlying runtime operation fails.
    */
-  execute(name: string, arguments: any): Promise<any>
+  execute(name: string, arguments: any, workspace?: string | undefined | null): Promise<any>
   /** Schemas currently exposed to the model (active tools only). */
   getToolSchemas(): Array<any>
   list(): Array<any>

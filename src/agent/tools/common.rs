@@ -50,6 +50,26 @@ where
     })
 }
 
+/// Drive `future` to completion on this thread with `workspace` as the
+/// tool workspace root, so the gate's relative paths and the tools' own
+/// resolve against the same directory. The thread's previous settings are
+/// restored afterwards, also when the future panics.
+///
+/// The future runs on the calling thread only (tasks it spawns elsewhere do
+/// not see the root, as with [`spawn_tool_blocking`]), so this is for a
+/// binding that calls in from outside the runtime's worker threads.
+pub fn block_on_in_workspace<F: std::future::Future>(
+    handle: &tokio::runtime::Handle,
+    workspace: Option<PathBuf>,
+    future: F,
+) -> F::Output {
+    let _restore = ToolSettingsRestore {
+        root: TOOL_WORKSPACE_ROOT.with(|cell| cell.replace(workspace)),
+        unlocked: TOOL_HOST_FS_UNLOCKED.with(|cell| cell.replace(false)),
+    };
+    handle.block_on(future)
+}
+
 /// Puts a blocking thread's own tool settings back, also when `f` panics.
 struct ToolSettingsRestore {
     root: Option<PathBuf>,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,16 +31,18 @@ describe("mutation style", () => {
     expect(ops).not.toContain("write");
     expect(ops).not.toContain("edit");
 
-    const result = tool.execute({ op: "write", path: "x.txt", content: "nope" });
-    expect(result.success).toBe(false);
-    expect(result.error ?? "").toContain("apply_patch");
+    const dir = mkdtempSync(join(tmpdir(), "caliche-js-style-"));
+    try {
+      const result = tool.execute({ op: "write", path: "x.txt", content: "nope" }, dir);
+      expect(result.success).toBe(false);
+      expect(result.error ?? "").toContain("apply_patch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test("apply_patch tool mutates file", () => {
-    // A tool used outside an agent works in the current directory.
+  test("apply_patch tool mutates a file in the workspace it is given", () => {
     const dir = mkdtempSync(join(tmpdir(), "caliche-js-patch-"));
-    const previous = process.cwd();
-    process.chdir(dir);
     try {
       const target = join(dir, "note.txt");
       const patch =
@@ -51,9 +53,40 @@ describe("mutation style", () => {
         "*** End Patch\n";
       const tool = BuiltinTool.applyPatch();
       expect(tool.name()).toBe("apply_patch");
-      const result = tool.execute({ patch });
+      const result = tool.execute({ patch }, dir);
       expect(result.success).toBe(true);
       expect(readFileSync(target, "utf8")).toBe("alpha\nbeta\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("apply_patch outside the workspace it is given is refused", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caliche-js-patch-"));
+    const outside = mkdtempSync(join(tmpdir(), "caliche-js-outside-"));
+    try {
+      const target = join(outside, "note.txt");
+      const patch = `*** Begin Patch\n*** Add File: ${target}\n+alpha\n*** End Patch\n`;
+      const result = BuiltinTool.applyPatch().execute({ patch }, dir);
+      expect(result.success).toBe(false);
+      expect(result.error ?? "").toStartWith("Tool 'apply_patch' was refused: ");
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("apply_patch without a workspace is refused and writes nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caliche-js-patch-"));
+    const previous = process.cwd();
+    process.chdir(dir);
+    try {
+      const patch = "*** Begin Patch\n*** Add File: note.txt\n+alpha\n*** End Patch\n";
+      const result = BuiltinTool.applyPatch().execute({ patch });
+      expect(result.success).toBe(false);
+      expect(result.error ?? "").toStartWith("Tool 'apply_patch' was refused: ");
+      expect(existsSync(join(dir, "note.txt"))).toBe(false);
     } finally {
       process.chdir(previous);
       rmSync(dir, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { BuiltinTool, ToolRegistry } from "../src/index";
 
 describe("tool registry", () => {
@@ -18,9 +19,11 @@ describe("tool registry", () => {
     expect(schemas[0]?.name).toBe("calculator");
     expect(registry.isActive("apply_patch")).toBe(false);
 
-    const denied = await registry.execute("apply_patch", {
-      patch: "*** Begin Patch\n*** Add File: /tmp/x\n+y\n*** End Patch\n",
-    });
+    const denied = await registry.execute(
+      "apply_patch",
+      { patch: "*** Begin Patch\n*** Add File: x\n+y\n*** End Patch\n" },
+      tmpdir(),
+    );
     expect(denied.success).toBe(false);
     expect(denied.error ?? "").toContain("not active");
 

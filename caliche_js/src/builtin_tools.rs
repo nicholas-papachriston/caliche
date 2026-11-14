@@ -87,12 +87,12 @@ impl BuiltinTool {
     /// `workspace` is the root the filesystem tools may use; without it,
     /// every filesystem call is refused. A refused call returns
     /// `success: false` and the tool does not run.
-    #[napi(catch_unwind)]
     ///
     /// # Errors
     ///
     /// Returns a NAPI error when validation, synchronization, serialization,
     /// or an underlying runtime operation fails.
+    #[napi(catch_unwind)]
     pub fn execute(&self, arguments: Value, workspace: Option<String>) -> napi::Result<Value> {
         execute_tool(Arc::clone(&self.inner), arguments, workspace)
     }

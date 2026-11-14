@@ -387,7 +387,10 @@ export class BuiltinTool {
     name(): string;
     description(): string;
     parameters(): unknown;
-    execute(arguments_: Record<string, unknown>): {
+    execute(
+      arguments_: Record<string, unknown>,
+      workspace?: string,
+    ): {
       success: boolean;
       content: string;
       error?: string;
@@ -480,27 +483,33 @@ export class BuiltinTool {
   }
 
   /**
-   * Execute the tool directly (shared Tokio runtime).
+   * Run the tool through the tool gate (shared Tokio runtime). `workspace`
+   * is the root the filesystem tools may use; without it, every
+   * filesystem call is refused and the tool does not run.
    */
-  execute(arguments_: Record<string, unknown>): {
+  execute(
+    arguments_: Record<string, unknown>,
+    workspace?: string,
+  ): {
     success: boolean;
     content: string;
     error?: string;
     typed_payload?: unknown;
   } {
-    return this._tool.execute(arguments_);
+    return this._tool.execute(arguments_, workspace);
   }
 
   /**
-   * Convert to Tool interface for use with AgentBuilder
+   * Convert to Tool interface for use with AgentBuilder. Each call runs
+   * through the tool gate with `workspace` as the filesystem root.
    */
-  toTool(): Tool {
+  toTool(workspace?: string): Tool {
     return {
       name: this.name(),
       description: this.description(),
       parameters: this.parameters(),
       execute: async (args: ToolArguments) => {
-        return this.execute(args as Record<string, unknown>);
+        return this.execute(args as Record<string, unknown>, workspace);
       },
     };
   }

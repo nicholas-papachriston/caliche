@@ -7,6 +7,7 @@
 use crate::builtin_tools::BuiltinTool;
 use crate::get_runtime;
 use caliche::agent::hooks::HookRegistry;
+use caliche::agent::tools::common::block_on_in_workspace;
 use caliche::agent::tools::execution::HookExecutionMiddleware;
 use caliche::agent::tools::{Tool, ToolRegistry};
 use napi_derive::napi;
@@ -91,12 +92,12 @@ impl JsToolRegistry {
     /// `workspace` is the root the filesystem tools may use; without it,
     /// every filesystem call is refused. A refused call returns
     /// `success: false` and the tool does not run.
-    #[napi]
     ///
     /// # Errors
     ///
     /// Returns a NAPI error when validation, synchronization, serialization,
     /// or an underlying runtime operation fails.
+    #[napi]
     pub async fn execute(
         &self,
         name: String,
@@ -104,7 +105,17 @@ impl JsToolRegistry {
         workspace: Option<String>,
     ) -> napi::Result<Value> {
         let registry = Arc::clone(&self.inner);
-        let result = tool_gate(workspace).run(&registry, &name, arguments).await;
+        let handle = tokio::runtime::Handle::current();
+        let result = tokio::task::spawn_blocking(move || {
+            let root = workspace.clone().map(std::path::PathBuf::from);
+            block_on_in_workspace(
+                &handle,
+                root,
+                tool_gate(workspace).run(&registry, &name, arguments),
+            )
+        })
+        .await
+        .map_err(|err| napi::Error::from_reason(format!("tool call failed: {err}")))?;
         Ok(tool_result_to_value(result))
     }
 
@@ -162,7 +173,12 @@ fn tool_result_to_value(result: caliche::agent::tools::ToolResult) -> Value {
 fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
     let gate = HookExecutionMiddleware::new(HookRegistry::new());
     match workspace {
-        Some(root) => gate.with_workspace(root),
+        // The caller names the workspace, which approves edits inside it.
+        // Writes outside it or to `.git`, and every other ask, are still
+        // refused: no one is there to answer.
+        Some(root) => gate
+            .with_workspace(root)
+            .with_overlay(caliche::policy::ModeOverlay::AcceptEdits),
         None => gate,
     }
 }
@@ -180,7 +196,8 @@ pub fn execute_tool(
     workspace: Option<String>,
 ) -> napi::Result<Value> {
     let rt = get_runtime()?;
-    let result = rt.block_on(async move {
+    let root = workspace.clone().map(std::path::PathBuf::from);
+    let result = block_on_in_workspace(rt.handle(), root, async move {
         tool_gate(workspace)
             .run_tool(tool.as_ref(), arguments)
             .await

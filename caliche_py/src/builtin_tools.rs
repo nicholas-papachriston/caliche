@@ -3,6 +3,7 @@
 use crate::mutation::PyMutationStyle;
 use crate::{conversions::json_to_python_dict, get_runtime};
 use caliche::agent::hooks::HookRegistry;
+use caliche::agent::tools::common::block_on_in_workspace;
 use caliche::agent::tools::execution::HookExecutionMiddleware;
 use caliche::agent::tools::{
     ApplyPatchTool, CalculatorTool, CodeExecutionTool, FsTool, HttpTool, MutationStyle, Tool,
@@ -17,7 +18,12 @@ use std::sync::Arc;
 pub(crate) fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
     let gate = HookExecutionMiddleware::new(HookRegistry::new());
     match workspace {
-        Some(root) => gate.with_workspace(root),
+        // The caller names the workspace, which approves edits inside it.
+        // Writes outside it or to `.git`, and every other ask, are still
+        // refused: no one is there to answer.
+        Some(root) => gate
+            .with_workspace(root)
+            .with_overlay(caliche::policy::ModeOverlay::AcceptEdits),
         None => gate,
     }
 }
@@ -106,7 +112,10 @@ impl PyBuiltinTool {
         let tool = Arc::clone(&self.inner);
         let rt = get_runtime()?;
         let result = py.detach(|| {
-            rt.block_on(async move { tool_gate(workspace).run_tool(tool.as_ref(), args).await })
+            let root = workspace.clone().map(std::path::PathBuf::from);
+            block_on_in_workspace(rt.handle(), root, async move {
+                tool_gate(workspace).run_tool(tool.as_ref(), args).await
+            })
         });
 
         let dict = PyDict::new(py);

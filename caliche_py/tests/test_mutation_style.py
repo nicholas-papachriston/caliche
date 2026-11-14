@@ -19,7 +19,7 @@ def test_mutation_style_factories():
     assert MutationStyle.from_string("apply_patch").__str__() == "ApplyPatch"
 
 
-def test_create_fs_tool_apply_patch_style_strips_write_edit():
+def test_create_fs_tool_apply_patch_style_strips_write_edit(tmp_path: Path):
     tool = create_fs_tool(MutationStyle.ApplyPatch)
     assert tool.name() == "fs"
     params = tool.parameters()
@@ -28,21 +28,39 @@ def test_create_fs_tool_apply_patch_style_strips_write_edit():
     assert "write" not in ops
     assert "edit" not in ops
 
-    result = tool.execute({"op": "write", "path": "x.txt", "content": "nope"})
+    result = tool.execute({"op": "write", "path": "x.txt", "content": "nope"}, str(tmp_path))
     assert result["success"] is False
     assert "apply_patch" in (result.get("error") or "")
 
 
-def test_create_apply_patch_tool_mutates_file(tmp_path: Path, monkeypatch):
-    # A tool used outside an agent works in the current directory.
-    monkeypatch.chdir(tmp_path)
-    target = tmp_path / "note.txt"
-    patch = "*** Begin Patch\n*** Add File: note.txt\n+alpha\n+beta\n*** End Patch\n"
+PATCH = "*** Begin Patch\n*** Add File: note.txt\n+alpha\n+beta\n*** End Patch\n"
+
+
+def test_create_apply_patch_tool_mutates_a_file_in_the_workspace_it_is_given(tmp_path: Path):
     tool = create_apply_patch_tool()
     assert tool.name() == "apply_patch"
-    result = tool.execute({"patch": patch})
+    result = tool.execute({"patch": PATCH}, str(tmp_path))
     assert result["success"] is True, result
-    assert target.read_text() == "alpha\nbeta\n"
+    assert (tmp_path / "note.txt").read_text() == "alpha\nbeta\n"
+
+
+def test_apply_patch_outside_the_workspace_it_is_given_is_refused(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    patch = f"*** Begin Patch\n*** Add File: {outside}\n+x\n*** End Patch\n"
+    result = create_apply_patch_tool().execute({"patch": patch}, str(workspace))
+    assert result["success"] is False
+    assert (result.get("error") or "").startswith("Tool 'apply_patch' was refused: ")
+    assert not outside.exists()
+
+
+def test_apply_patch_without_a_workspace_is_refused_and_writes_nothing(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = create_apply_patch_tool().execute({"patch": PATCH})
+    assert result["success"] is False
+    assert (result.get("error") or "").startswith("Tool 'apply_patch' was refused: ")
+    assert not (tmp_path / "note.txt").exists()
 
 
 def test_agent_builder_accepts_mutation_and_inspection():
