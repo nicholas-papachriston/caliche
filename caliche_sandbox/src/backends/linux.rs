@@ -157,7 +157,8 @@ impl SandboxBackend for LinuxLandlockBackend {
             workspace = %workspace.display(),
             "workspace .git write guard"
         );
-        let prepared = landlock_roots::prepare(roots, workspace, git_guard.excluded())?;
+        let prepared =
+            landlock_roots::prepare(roots, workspace, git_guard.excluded(), &config.git_reads)?;
         // Declared before `private_temp` so the cgroup drops first and kills
         // children before the private temp directory is removed.
         let cgroup = InstanceCgroup::create()

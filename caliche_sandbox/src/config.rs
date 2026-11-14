@@ -62,6 +62,11 @@ pub struct SandboxConfig {
     /// in a git dir by file name.
     #[serde(skip)]
     pub git_writes: Option<GitWriteGrant>,
+    /// Checked, canonical git dirs outside the workspace that git may read:
+    /// a linked worktree's git dir and common dir. Only
+    /// [`git_run`](crate::git_run) sets them, never a config file.
+    #[serde(skip)]
+    pub(crate) git_reads: Vec<PathBuf>,
 }
 
 /// Whether `path` is the shared system temp directory. No backend grants
@@ -332,6 +337,7 @@ pub fn policy_to_config(
         tmp_write,
         policy_name,
         git_writes: None,
+        git_reads: Vec::new(),
     }
 }
 

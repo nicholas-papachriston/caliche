@@ -337,6 +337,14 @@ fn seatbelt_profile(
     {
         rules.push(allow_file_subpath("file-read*", root)?);
     }
+    // Checked git dirs outside the workspace (a linked worktree), as they
+    // are: a directory swapped for a link afterwards resolves outside them.
+    for root in &config.git_reads {
+        rules.push(format!(
+            "(allow file-read* (subpath \"{}\"))",
+            sbpl_string(&root.display().to_string())?
+        ));
+    }
     let deny_network = !matches!(config.network, NetworkPolicy::Full);
     if deny_network {
         rules.push("(deny network*)".to_string());

@@ -57,14 +57,26 @@ pub(super) fn roots(config: &SandboxConfig, workspace: &Path) -> Result<Roots> {
 /// workspace), a writable root equal to the workspace becomes writable
 /// grants for everything except the targets and the directories leading to
 /// them, which stay read-only.
+///
+/// `git_reads` are checked, canonical git dirs outside the workspace (a
+/// linked worktree), opened as they are, read-only.
 pub(super) fn prepare(
     roots: Roots,
     workspace: &Path,
     excluded: Option<&[PathBuf]>,
+    git_reads: &[PathBuf],
 ) -> Result<Prepared> {
     let mut grants = Vec::new();
     add_system_dirs(&mut grants)?;
     add_required(&mut grants, workspace, false)?;
+    for dir in git_reads {
+        if let Some(fd) = open_frozen(dir, true)? {
+            grants.push(Grant {
+                fd,
+                writable: false,
+            });
+        }
+    }
     for root in &roots.writable {
         match excluded {
             Some(targets) if same_path(root, workspace) => {

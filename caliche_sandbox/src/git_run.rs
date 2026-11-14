@@ -126,6 +126,7 @@ impl CheckedRepository {
             policy_to_config(NamedPolicy::ReadOnly, workspace, None, backend_type.clone());
         let writes = git_writes.is_some();
         config.git_writes = git_writes;
+        config.git_reads = self.git_dirs_outside(workspace);
         let backend = crate::create_backend(&config)
             .await
             .map_err(|err| anyhow::anyhow!("{NO_GIT_SANDBOX}: {err}"))?;
@@ -166,6 +167,18 @@ impl CheckedRepository {
         instance
             .exec(&argv, Some(&cwd), Some(&env), GIT_TIMEOUT)
             .await
+    }
+
+    /// The checked git dir and common dir that lie outside `workspace`: a
+    /// linked worktree's, which git must read.
+    fn git_dirs_outside(&self, workspace: &Path) -> Vec<std::path::PathBuf> {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for dir in [&self.git_dir, &self.common_dir] {
+            if !dir.starts_with(workspace) && !dirs.contains(dir) {
+                dirs.push(dir.clone());
+            }
+        }
+        dirs
     }
 
     /// The argv, environment and directory of the pinned, hardened

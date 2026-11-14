@@ -370,6 +370,40 @@ mod sandboxed {
         );
     }
 
+    /// The workspace may be a linked worktree whose git dir and common dir
+    /// are elsewhere: git reads them inside the sandbox.
+    #[tokio::test]
+    async fn git_runs_in_a_linked_worktree_workspace() {
+        let (_main_dir, main) = canonical_dir();
+        let (_ws_parent, parent) = canonical_dir();
+        commit_repo(&main, "INSIDE");
+        let ws = parent.join("wt");
+        let output = caliche_policy::git_command()
+            .args(["worktree", "add", "-q", "-b", "side"])
+            .arg(&ws)
+            .current_dir(&main)
+            .output()
+            .expect("worktree add");
+        assert!(output.status.success(), "{output:?}");
+        let checked = check_repository(&ws, &ws).expect("checked");
+        let mut status = vec!["status"];
+        status.extend(caliche_policy::GIT_STATUS_SAFETY_FLAGS);
+        status.push("--porcelain=v1");
+
+        assert_eq!(
+            (
+                sandboxed(&checked, &ws, &["log", "--format=%s"]).await,
+                sandboxed(&checked, &ws, &status).await,
+                sandboxed(&checked, &ws, &["branch", "--show-current"]).await,
+            ),
+            (
+                Ok((0, "INSIDE".to_string())),
+                Ok((0, String::new())),
+                Ok((0, "side".to_string())),
+            )
+        );
+    }
+
     /// Landlock cannot scope writes in a git dir by file name, so a git
     /// write op refuses on Linux and writes nothing.
     #[cfg(target_os = "linux")]
@@ -580,6 +614,39 @@ mod sandboxed_writes {
         assert_eq!(std::fs::read(ws.join(".git/HEAD")).ok(), Some(head_before));
         assert!(!ws.join(".git/hooks/post-commit").exists());
         assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "second");
+    }
+
+    /// A commit in a workspace that is a linked worktree writes the
+    /// worktree's index and the shared objects and refs.
+    #[tokio::test]
+    async fn a_commit_runs_in_a_linked_worktree_workspace() {
+        let (_main_dir, main) = canonical_dir();
+        let (_ws_parent, parent) = canonical_dir();
+        staged_repo(&main);
+        let ws = parent.join("wt");
+        let output = caliche_policy::git_command()
+            .args(["worktree", "add", "-q", "-b", "side"])
+            .arg(&ws)
+            .current_dir(&main)
+            .output()
+            .expect("worktree add");
+        assert!(output.status.success(), "{output:?}");
+        std::fs::write(ws.join("linked.txt"), "linked").expect("file");
+        host(&ws, &["add", "linked.txt"]);
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        let committed = write(
+            &checked,
+            &ws,
+            &["commit", "--cleanup=verbatim", "--message=linked"],
+        )
+        .await;
+
+        assert_eq!(committed, Ok(0));
+        assert_eq!(
+            host(&main, &["log", "-1", "--format=%s|%an", "side"]),
+            "linked|A"
+        );
     }
 
     /// `refs` swapped for a link to a copy outside `.git` after the check:
