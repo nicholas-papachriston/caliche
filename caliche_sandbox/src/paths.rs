@@ -125,7 +125,7 @@ fn write_allowed_roots(config: &SandboxConfig) -> Vec<PathBuf> {
     config
         .writable_roots
         .iter()
-        .filter(|root| !crate::config::is_shared_temp(root))
+        .filter(|root| !crate::config::covers_shared_temp(root))
         .cloned()
         .collect()
 }

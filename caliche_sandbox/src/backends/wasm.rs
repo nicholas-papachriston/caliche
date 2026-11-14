@@ -85,7 +85,7 @@ impl SandboxBackend for WasmtimeBackend {
             || config
                 .writable_roots
                 .iter()
-                .any(|root| crate::config::is_shared_temp(root));
+                .any(|root| crate::config::covers_shared_temp(root));
         let private_temp = if wants_temp {
             Some(
                 tempfile::TempDir::with_prefix("caliche-")
@@ -137,7 +137,7 @@ impl WasmtimeSandboxInstance {
             .config
             .writable_roots
             .iter()
-            .filter(|root| !crate::config::is_shared_temp(root))
+            .filter(|root| !crate::config::covers_shared_temp(root))
             .map(|root| normalize_path(root))
             .collect();
         if let Some(temp) = &self.private_temp {

@@ -155,7 +155,7 @@ fn private_temp_dir(
     let requested = tmp_write
         || writable
             .iter()
-            .any(|path| crate::config::is_shared_temp(path));
+            .any(|path| crate::config::covers_shared_temp(path));
     if !requested {
         return Ok(None);
     }
@@ -168,7 +168,7 @@ fn private_temp_dir(
 }
 
 fn keep_writable(path: &Path, workspace: &Path) -> bool {
-    !crate::config::is_shared_temp(path) || same_path(path, workspace)
+    !crate::config::covers_shared_temp(path) || same_path(path, workspace)
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {

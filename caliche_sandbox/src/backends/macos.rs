@@ -91,7 +91,7 @@ fn writable_roots(config: &SandboxConfig) -> Vec<PathBuf> {
     config
         .writable_roots
         .iter()
-        .filter(|root| !crate::config::is_shared_temp(root))
+        .filter(|root| !crate::config::covers_shared_temp(root))
         .cloned()
         .collect()
 }
@@ -105,7 +105,7 @@ fn private_temp_dir(config: &SandboxConfig) -> Result<Option<tempfile::TempDir>>
         || config
             .writable_roots
             .iter()
-            .any(|root| crate::config::is_shared_temp(root));
+            .any(|root| crate::config::covers_shared_temp(root));
     if !requested {
         return Ok(None);
     }

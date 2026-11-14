@@ -69,13 +69,23 @@ pub struct SandboxConfig {
     pub(crate) git_reads: Vec<PathBuf>,
 }
 
-/// Whether `path` is the shared system temp directory, however it is
-/// spelled (`/tmp/.`, `//tmp`, `/tmp/../tmp`) or reached (a link to it). No
-/// backend grants it: a command gets a private temp directory instead, so
-/// it can neither read nor write other users' and sessions' files there.
-pub(crate) fn is_shared_temp(path: &Path) -> bool {
-    let shared = |path: &Path| path == Path::new("/tmp") || path == Path::new("/private/tmp");
-    shared(&lexically_normal(path)) || path.canonicalize().is_ok_and(|real| shared(&real))
+/// The shared system temp directory, as written and as macOS resolves it.
+const SHARED_TEMP_DIRS: [&str; 2] = ["/tmp", "/private/tmp"];
+
+/// Whether a root at `path` would cover the shared system temp directory:
+/// `path` is that directory or one that holds it (`/private`, `/`),
+/// however it is spelled (`/tmp/.`, `//tmp`, `/tmp/../tmp`) or reached (a
+/// link, or a link's parent through `..`). Both the lexical form and the
+/// canonical form a backend grants are checked. No backend grants such a
+/// root: a command gets a private temp directory instead, so it can
+/// neither read nor write other users' and sessions' files there.
+pub(crate) fn covers_shared_temp(path: &Path) -> bool {
+    let covers = |path: &Path| {
+        SHARED_TEMP_DIRS
+            .iter()
+            .any(|shared| Path::new(shared).starts_with(path))
+    };
+    covers(&lexically_normal(path)) || path.canonicalize().is_ok_and(|real| covers(&real))
 }
 
 /// `path` with `.` and repeated separators dropped and each `..` taken
@@ -358,7 +368,7 @@ pub fn policy_to_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{ResourceLimits, is_shared_temp};
+    use super::{ResourceLimits, covers_shared_temp};
     use std::path::Path;
 
     #[test]
@@ -375,9 +385,28 @@ mod tests {
                 "/tmp/x",
                 "/var/tmp",
             ]
-            .map(|path| is_shared_temp(Path::new(path))),
+            .map(|path| covers_shared_temp(Path::new(path))),
             [true, true, true, true, true, true, true, false, false]
         );
+    }
+
+    #[test]
+    fn a_root_that_holds_the_shared_temp_dir_covers_it() {
+        assert_eq!(
+            ["/", "/private", "/private/", "/private/var", "/Users"]
+                .map(|path| covers_shared_temp(Path::new(path))),
+            [true, true, true, false, false]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_parent_of_a_link_to_the_shared_temp_dir_covers_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let link = dir.path().join("t");
+        std::os::unix::fs::symlink("/tmp", &link).expect("link");
+
+        assert!(covers_shared_temp(&link.join("..")));
     }
 
     #[cfg(unix)]
@@ -387,7 +416,7 @@ mod tests {
         let link = dir.path().join("t");
         std::os::unix::fs::symlink("/tmp", &link).expect("link");
 
-        assert!(is_shared_temp(&link));
+        assert!(covers_shared_temp(&link));
     }
 
     #[test]

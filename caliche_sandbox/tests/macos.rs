@@ -1116,21 +1116,36 @@ async fn private_temp_replaces_shared_tmp() {
     assert!(!shared.path().join("planted").exists());
 }
 
-/// A writable root that spells the shared temp dir another way is still
-/// dropped: the command can write neither there nor anywhere in `/tmp`.
+/// A writable root that spells the shared temp dir another way, or holds
+/// it, is still dropped: the command can write neither there nor anywhere
+/// in `/tmp`, and cannot read a file there.
 #[tokio::test]
 async fn a_shared_temp_root_spelled_another_way_is_not_writable() {
     let dir = tempfile::TempDir::new().expect("workspace");
     let workspace = dir.path().canonicalize().expect("canonical");
     let shared = tempfile::tempdir_in("/private/tmp").expect("shared");
     let planted = shared.path().join("planted");
+    let secret = shared.path().join("secret.txt");
+    std::fs::write(&secret, "SHARED-SECRET").expect("secret");
+    let links = tempfile::TempDir::new().expect("links");
+    std::os::unix::fs::symlink("/private/tmp", links.path().join("t")).expect("link");
+    let link_parent = format!("{}/t/..", links.path().display());
     let script = format!(
-        "touch '{}' 2>/dev/null; echo \"write=$?\"",
+        "cat '{}' 2>/dev/null; echo \"read=$?\"; touch '{}' 2>/dev/null; echo \"write=$?\"",
+        secret.display(),
         planted.display()
     );
     let backend = MacOSSeatbeltBackend;
     let mut seen = Vec::new();
-    for spelling in ["/private/tmp/.", "//tmp", "/tmp/../tmp", "/private//tmp/"] {
+    for spelling in [
+        "/private/tmp/.",
+        "//tmp",
+        "/tmp/../tmp",
+        "/private//tmp/",
+        link_parent.as_str(),
+        "/private",
+        "/",
+    ] {
         let mut config = policy_to_config(
             NamedPolicy::WorkspaceWrite,
             &workspace,
@@ -1151,17 +1166,9 @@ async fn a_shared_temp_root_spelled_another_way_is_not_writable() {
             )
             .await
             .expect("exec");
-        seen.push((spelling, run.stdout.trim().to_string()));
+        seen.push(run.stdout.split_whitespace().collect::<Vec<_>>().join(" "));
     }
 
-    assert_eq!(
-        seen,
-        [
-            ("/private/tmp/.", "write=1".to_string()),
-            ("//tmp", "write=1".to_string()),
-            ("/tmp/../tmp", "write=1".to_string()),
-            ("/private//tmp/", "write=1".to_string()),
-        ]
-    );
+    assert_eq!(seen, ["read=1 write=1"; 7]);
     assert!(!planted.exists());
 }
