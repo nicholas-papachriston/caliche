@@ -97,7 +97,11 @@ impl ToolMeta for ApplyPatchTool {
 
 #[async_trait]
 impl Tool for ApplyPatchTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let patch = arguments
             .get("patch")
             .and_then(|v| v.as_str())

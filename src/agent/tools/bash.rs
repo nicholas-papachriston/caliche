@@ -94,7 +94,11 @@ impl ToolMeta for BashTool {
 
 #[async_trait]
 impl Tool for BashTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let args = match parse_bash_args(&arguments) {
             Ok(a) => a,
             Err(e) => return *e,
@@ -110,6 +114,7 @@ impl Tool for BashTool {
         &self,
         arguments: serde_json::Value,
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let args = match parse_bash_args(&arguments) {
             Ok(a) => a,
@@ -680,7 +685,9 @@ mod tests {
             "command": "echo 'Hello, World!'"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
         assert!(result.content.contains("Hello, World!"));
     }
@@ -692,7 +699,9 @@ mod tests {
             "command": "echo 'First' && echo 'Second'"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
         assert!(result.content.contains("First"));
         assert!(result.content.contains("Second"));
@@ -705,7 +714,9 @@ mod tests {
             "command": "false"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(!result.success);
         assert!(result.error.is_some());
     }
@@ -765,7 +776,9 @@ mod tests {
             "command": ""
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(!result.success);
     }
 
@@ -789,10 +802,13 @@ mod tests {
     async fn shell_path_argv0_is_rejected_before_exec() {
         let tool = BashTool;
         let result = tool
-            .execute(json!({
-                "command": "echo should-not-run",
-                "shell": "/bin/bash"
-            }))
+            .execute(
+                json!({
+                    "command": "echo should-not-run",
+                    "shell": "/bin/bash"
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!result.success);
         let err = result.error.unwrap_or_default();
@@ -825,7 +841,7 @@ mod tests {
         let result = BashTool
             .execute(json!({
                 "command": "printf '%s|%s' \"${CALICHE_BASH_SCRUB_PROBE-unset}\" \"${CALICHE_SCRUB_FOO_TOKEN-unset}\""
-            }))
+            }), &crate::agent::tools::ToolPermit::for_tests())
             .await;
         assert!(result.success, "{:?}", result.error);
         assert_eq!(result.content.trim(), "kept|unset");
@@ -871,7 +887,13 @@ mod tests {
                         if [ -n \"$PATH\" ]; then echo path_present; else echo path_missing; fi",
         });
 
-        let result = tool.execute_sandboxed(args, Some(&handle)).await;
+        let result = tool
+            .execute_sandboxed(
+                args,
+                Some(&handle),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
 
         assert!(
             result.success,
@@ -933,7 +955,11 @@ mod tests {
                 duration: Duration::from_millis(1),
             });
             let result = BashTool
-                .execute_sandboxed(json!({ "command": "produce" }), Some(&sandbox))
+                .execute_sandboxed(
+                    json!({ "command": "produce" }),
+                    Some(&sandbox),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
                 .await;
             assert!(
                 result.success,
@@ -990,14 +1016,30 @@ mod tests {
             let ledger = TestLedger::open().await;
             ledger
                 .run(async {
-                    BashTool.execute(json!({ "command": "echo unit-ok" })).await;
-                    BashTool.execute(json!({ "command": "exit 4" })).await;
                     BashTool
-                        .execute(json!({ "command": "sleep 30 # unit-timeout", "timeout_secs": 1 }))
+                        .execute(
+                            json!({ "command": "echo unit-ok" }),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        )
+                        .await;
+                    BashTool
+                        .execute(
+                            json!({ "command": "exit 4" }),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        )
+                        .await;
+                    BashTool
+                        .execute(
+                            json!({ "command": "sleep 30 # unit-timeout", "timeout_secs": 1 }),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        )
                         .await;
                     let cut = tokio::time::timeout(
                         std::time::Duration::from_millis(300),
-                        BashTool.execute(json!({ "command": "sleep 30 # unit-cancel" })),
+                        BashTool.execute(
+                            json!({ "command": "sleep 30 # unit-cancel" }),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        ),
                     )
                     .await;
                     assert!(cut.is_err(), "the cancel case must be cut short");
@@ -1049,10 +1091,18 @@ mod tests {
             ledger
                 .run(async {
                     BashTool
-                        .execute_sandboxed(json!({ "command": "echo sandboxed-ok" }), Some(&handle))
+                        .execute_sandboxed(
+                            json!({ "command": "echo sandboxed-ok" }),
+                            Some(&handle),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        )
                         .await;
                     BashTool
-                        .execute_sandboxed(json!({ "command": "exit 5" }), Some(&handle))
+                        .execute_sandboxed(
+                            json!({ "command": "exit 5" }),
+                            Some(&handle),
+                            &crate::agent::tools::ToolPermit::for_tests(),
+                        )
                         .await;
                 })
                 .await;

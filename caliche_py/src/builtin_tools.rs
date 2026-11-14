@@ -2,6 +2,8 @@
 
 use crate::mutation::PyMutationStyle;
 use crate::{conversions::json_to_python_dict, get_runtime};
+use caliche::agent::hooks::HookRegistry;
+use caliche::agent::tools::execution::HookExecutionMiddleware;
 use caliche::agent::tools::{
     ApplyPatchTool, CalculatorTool, CodeExecutionTool, FsTool, HttpTool, MutationStyle, Tool,
 };
@@ -10,6 +12,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pythonize::depythonize;
 use std::sync::Arc;
+
+/// The tool gate for a call from Python.
+pub(crate) fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
+    let gate = HookExecutionMiddleware::new(HookRegistry::new());
+    match workspace {
+        Some(root) => gate.with_workspace(root),
+        None => gate,
+    }
+}
 
 /// Create a `CalculatorTool` instance
 #[pyfunction]
@@ -77,13 +88,26 @@ impl PyBuiltinTool {
         json_to_python_dict(py, &params).map(std::convert::Into::into)
     }
 
-    /// Execute the tool (async work is driven on the shared runtime).
-    pub fn execute(&self, py: Python<'_>, arguments: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    /// Execute the tool through the tool gate (async work is driven on the
+    /// shared runtime).
+    ///
+    /// `workspace` is the root the filesystem tools may use; without it,
+    /// every filesystem call is refused. A refused call returns
+    /// `success: False` and the tool does not run.
+    #[pyo3(signature = (arguments, workspace=None))]
+    pub fn execute(
+        &self,
+        py: Python<'_>,
+        arguments: &Bound<'_, PyAny>,
+        workspace: Option<String>,
+    ) -> PyResult<Py<PyAny>> {
         let args = depythonize(arguments)
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid tool arguments: {e}")))?;
         let tool = Arc::clone(&self.inner);
         let rt = get_runtime()?;
-        let result = py.detach(|| rt.block_on(async move { tool.execute(args).await }));
+        let result = py.detach(|| {
+            rt.block_on(async move { tool_gate(workspace).run_tool(tool.as_ref(), args).await })
+        });
 
         let dict = PyDict::new(py);
         dict.set_item("success", result.success)?;

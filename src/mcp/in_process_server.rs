@@ -74,7 +74,9 @@ impl InProcessMcpServer {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Tool '{}' not found", name))?;
 
-        let result = tool.execute(arguments).await;
+        // The policy gate admitted the call above.
+        let permit = crate::agent::tools::ToolPermit::admitted();
+        let result = tool.execute(arguments, &permit).await;
 
         let text = if result.success {
             result.content

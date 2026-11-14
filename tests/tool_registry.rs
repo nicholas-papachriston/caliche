@@ -17,6 +17,7 @@ async fn inactive_tools_are_hidden_from_schemas_and_execution() {
             json!({
                 "patch": "*** Begin Patch\n*** Add File: /tmp/x\n+y\n*** End Patch\n"
             }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
         )
         .await;
     assert!(!inactive.success);

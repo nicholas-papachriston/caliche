@@ -1,6 +1,7 @@
 //! Asynchronous operation manager.
 
 use super::{Operation, OperationExecution, OperationId, OperationStatus};
+use crate::agent::tools::ToolPermit;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -26,7 +27,14 @@ pub trait OperationManager: Send + Sync + std::fmt::Debug {
     async fn commit(&self, ops: &[Operation]) -> Result<Vec<OperationId>>;
 
     /// Execute previously committed operations.
-    async fn execute(&self, ids: &[OperationId]) -> Result<Vec<OperationExecution>>;
+    ///
+    /// `permit` is the gate's proof that it admitted the tool call these
+    /// operations came from.
+    async fn execute(
+        &self,
+        ids: &[OperationId],
+        permit: &ToolPermit<'_>,
+    ) -> Result<Vec<OperationExecution>>;
 
     /// Current status of a committed operation.
     async fn status(&self, id: &OperationId) -> Result<OperationStatus>;

@@ -78,19 +78,32 @@ impl PyToolRegistry {
         self.inner.active_tool_names()
     }
 
-    /// Execute a tool by name (honors active-set filtering).
+    /// Execute a tool by name through the tool gate (honors active-set
+    /// filtering).
+    ///
+    /// `workspace` is the root the filesystem tools may use; without it,
+    /// every filesystem call is refused. A refused call returns
+    /// `success: False` and the tool does not run.
+    #[pyo3(signature = (name, arguments, workspace=None))]
     pub fn execute(
         &self,
         py: Python<'_>,
         name: &str,
         arguments: &Bound<'_, PyAny>,
+        workspace: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let args = pythonize::depythonize(arguments)
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid tool arguments: {e}")))?;
         let rt = get_runtime()?;
         let registry = Arc::clone(&self.inner);
         let name = name.to_string();
-        let result = py.detach(|| rt.block_on(async move { registry.execute(&name, args).await }));
+        let result = py.detach(|| {
+            rt.block_on(async move {
+                crate::builtin_tools::tool_gate(workspace)
+                    .run(&registry, &name, args)
+                    .await
+            })
+        });
 
         let dict = PyDict::new(py);
         dict.set_item("success", result.success)?;

@@ -89,50 +89,66 @@ impl ToolMeta for GitTool {
 #[cfg(feature = "tools-git")]
 #[async_trait]
 impl Tool for GitTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = params::extract_string_or(&arguments, "operation", "status");
         let path = params::extract_string_or(&arguments, "path", ".");
 
         match operation.as_str() {
             "status" => {
                 let tool = GitStatusTool;
-                tool.execute(json!({ "path": path })).await
+                tool.execute(json!({ "path": path }), permit).await
             }
             "diff" => {
                 let tool = GitDiffTool;
-                tool.execute(json!({
-                    "path": path,
-                    "file": arguments.get("file").and_then(|v| v.as_str()),
-                    "staged": params::extract_bool(&arguments, "staged", false)
-                }))
+                tool.execute(
+                    json!({
+                        "path": path,
+                        "file": arguments.get("file").and_then(|v| v.as_str()),
+                        "staged": params::extract_bool(&arguments, "staged", false)
+                    }),
+                    permit,
+                )
                 .await
             }
             "log" => {
                 let tool = GitLogTool;
-                tool.execute(json!({
-                    "path": path,
-                    "file": arguments.get("file").and_then(|v| v.as_str()),
-                    "max_count": params::extract_number_or(&arguments, "max_count", 10)
-                }))
+                tool.execute(
+                    json!({
+                        "path": path,
+                        "file": arguments.get("file").and_then(|v| v.as_str()),
+                        "max_count": params::extract_number_or(&arguments, "max_count", 10)
+                    }),
+                    permit,
+                )
                 .await
             }
             "branch" => {
                 let tool = GitBranchTool;
-                tool.execute(json!({
-                    "path": path,
-                    "action": params::extract_string_or(&arguments, "action", "list"),
-                    "branch_name": arguments.get("branch_name").and_then(|v| v.as_str())
-                }))
+                tool.execute(
+                    json!({
+                        "path": path,
+                        "action": params::extract_string_or(&arguments, "action", "list"),
+                        "branch_name": arguments.get("branch_name").and_then(|v| v.as_str())
+                    }),
+                    permit,
+                )
                 .await
             }
             "commit" => {
                 let tool = GitCommitTool;
-                tool.execute(json!({
-                    "path": path,
-                    "message": arguments.get("message").and_then(|v| v.as_str()),
-                    "author_name": arguments.get("author_name").and_then(|v| v.as_str()),
-                    "author_email": arguments.get("author_email").and_then(|v| v.as_str())
-                }))
+                tool.execute(
+                    json!({
+                        "path": path,
+                        "message": arguments.get("message").and_then(|v| v.as_str()),
+                        "author_name": arguments.get("author_name").and_then(|v| v.as_str()),
+                        "author_email": arguments.get("author_email").and_then(|v| v.as_str())
+                    }),
+                    permit,
+                )
                 .await
             }
             _ => ToolResult::error(format!(
@@ -145,7 +161,11 @@ impl Tool for GitTool {
 #[cfg(not(feature = "tools-git"))]
 #[async_trait]
 impl Tool for GitTool {
-    async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         ToolResult::error("Git tools require 'tools-git' feature to be enabled")
     }
 }

@@ -5,7 +5,7 @@ use crate::agent::hooks::permission::PermissionMode;
 use crate::agent::hooks::{AmendmentPersister, ApprovalResolver};
 use crate::agent::tools::ToolRegistry;
 use crate::agent::tools::execution::{
-    HookExecutionMiddleware, ToolExecutionEngine, ToolExecutionMiddleware, ToolExecutionRequest,
+    HookExecutionMiddleware, ToolExecutionEngine, ToolExecutionRequest,
 };
 use crate::agent::tools::tool::{ToolCall, ToolResult as ToolResultType};
 use crate::errors::AgentError;
@@ -297,11 +297,6 @@ fn dedupe_valid_tool_calls(
     out
 }
 
-struct NoopExecutionMiddleware;
-
-#[async_trait::async_trait]
-impl ToolExecutionMiddleware for NoopExecutionMiddleware {}
-
 struct PreparedOperationCalls {
     engine_calls: Vec<(usize, String, Arc<ToolCall>)>,
     ids_by_idx: std::collections::HashMap<usize, Vec<crate::agent::operations::OperationId>>,
@@ -422,8 +417,6 @@ async fn execute_via_operations(
     let valid_tool_calls = prepared.engine_calls;
 
     let engine = ToolExecutionEngine::new();
-    let middlewares: [&dyn crate::agent::tools::execution::ToolExecutionMiddleware; 1] =
-        [&hook_middleware];
     let result = engine
         .execute_parallel(
             ToolExecutionRequest {
@@ -445,7 +438,7 @@ async fn execute_via_operations(
                 #[cfg(feature = "tools-rag")]
                 workspace_rag_min_similarity: params.workspace_rag_min_similarity,
             },
-            &middlewares,
+            &hook_middleware,
         )
         .await;
     record_engine_audit(
@@ -520,7 +513,7 @@ async fn execute_remote_operations(
     valid_tool_calls: Vec<(usize, String, Arc<ToolCall>)>,
     manager: &dyn crate::agent::operations::OperationManager,
     translators: &crate::agent::operations::TranslatorRegistry,
-    middleware: &dyn crate::agent::tools::execution::ToolExecutionMiddleware,
+    gate: &HookExecutionMiddleware,
 ) -> ToolExecutionOutcome {
     let mut executed = Vec::new();
     let mut denied = Vec::new();
@@ -532,30 +525,27 @@ async fn execute_remote_operations(
             arguments: &call.arguments,
             call_id: &id,
         };
-        if let Err(reason) = middleware.before_execute(&ctx).await {
-            denied.push((idx, id, name, reason));
-            continue;
+        match gate.admit(&ctx).await {
+            Ok(permit) => work.push((idx, id, call, name, permit)),
+            Err(reason) => denied.push((idx, id, name, reason)),
         }
-        if let Err(reason) = middleware.admit_execution(&ctx).await {
-            denied.push((idx, id, name, reason));
-            continue;
-        }
-        work.push((idx, id, call, name));
     }
 
-    let dispatched =
-        futures_util::future::join_all(work.into_iter().map(|(idx, id, call, name)| async move {
-            let (duration_ms, result) = crate::agent::operations::execute_tool_call_via_operations(
+    let dispatched = futures_util::future::join_all(work.into_iter().map(
+        |(idx, id, call, name, permit)| async move {
+            let start = std::time::Instant::now();
+            let result = crate::agent::operations::execute_admitted_via_operations(
                 call.as_ref(),
-                &id,
                 translators,
                 manager,
-                &NoopExecutionMiddleware,
+                &permit,
             )
             .await;
+            let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             (idx, id, name, call.arguments.clone(), duration_ms, result)
-        }))
-        .await;
+        },
+    ))
+    .await;
 
     for (idx, id, name, arguments, duration_ms, mut result) in dispatched {
         let ctx = crate::agent::tools::execution::ToolExecutionContext {
@@ -563,7 +553,7 @@ async fn execute_remote_operations(
             arguments: &arguments,
             call_id: &id,
         };
-        middleware.after_execute(&ctx, &mut result).await;
+        gate.after_execute(&ctx, &mut result).await;
         executed.push((idx, id, name, arguments, duration_ms, result));
     }
     executed.sort_by_key(|(idx, _, _, _, _, _)| *idx);
@@ -606,8 +596,6 @@ pub async fn execute_tools_parallel(
     }
 
     let engine = ToolExecutionEngine::new();
-    let middlewares: [&dyn crate::agent::tools::execution::ToolExecutionMiddleware; 1] =
-        [&hook_middleware];
 
     let result = engine
         .execute_parallel(
@@ -630,7 +618,7 @@ pub async fn execute_tools_parallel(
                 #[cfg(feature = "tools-rag")]
                 workspace_rag_min_similarity: params.workspace_rag_min_similarity,
             },
-            &middlewares,
+            &hook_middleware,
         )
         .await;
 
@@ -863,7 +851,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::agent::tools::tool::Tool for EchoTool {
-        async fn execute(&self, args: serde_json::Value) -> crate::agent::tools::tool::ToolResult {
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> crate::agent::tools::tool::ToolResult {
             crate::agent::tools::tool::ToolResult::success(args.to_string())
         }
     }
@@ -963,7 +955,7 @@ mod tests {
             crate::agent::operations::OperationStatus::Completed
         );
         let err = manager
-            .execute(&ids)
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
             .await
             .expect("already finished is resolvable");
         assert_eq!(

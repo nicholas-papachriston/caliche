@@ -468,6 +468,7 @@ async fn execute_glob_sandboxed(
 async fn execute_read_or_list(
     arguments: serde_json::Value,
     sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+    permit: &crate::agent::tools::ToolPermit<'_>,
 ) -> ToolResult {
     let path_str = match params::extract_string(&arguments, "path", None) {
         Ok(v) => v,
@@ -486,16 +487,16 @@ async fn execute_read_or_list(
             return execute_list_sandboxed(arguments, sandbox_handle).await;
         }
         let tool = ListDirectoryTool;
-        return tool.execute(arguments).await;
+        return tool.execute(arguments, permit).await;
     }
 
     let tool = ReadFileTool;
     if let Some(sandbox_handle) = sandbox {
         return tool
-            .execute_sandboxed(arguments, Some(sandbox_handle))
+            .execute_sandboxed(arguments, Some(sandbox_handle), permit)
             .await;
     }
-    tool.execute(arguments).await
+    tool.execute(arguments, permit).await
 }
 
 #[cfg(not(feature = "sandbox"))]
@@ -632,7 +633,11 @@ fn delete_path_sync(file_path: &std::path::Path, path_str: &str, recursive: bool
 
 #[async_trait]
 impl Tool for FsTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let op = match params::extract_string(&arguments, "op", None) {
             Ok(v) => v.to_lowercase(),
             Err(e) => return ToolResult::error(e),
@@ -648,7 +653,7 @@ impl Tool for FsTool {
             "read" => {
                 #[cfg(feature = "sandbox")]
                 {
-                    execute_read_or_list(arguments, None).await
+                    execute_read_or_list(arguments, None, permit).await
                 }
                 #[cfg(not(feature = "sandbox"))]
                 {
@@ -657,7 +662,7 @@ impl Tool for FsTool {
             }
             "list" => {
                 let tool = ListDirectoryTool;
-                tool.execute(arguments).await
+                tool.execute(arguments, permit).await
             }
             "grep" => {
                 #[cfg(feature = "tools-grep")]
@@ -666,7 +671,7 @@ impl Tool for FsTool {
                         return ToolResult::error(e.to_string());
                     }
                     let tool = GrepTool;
-                    tool.execute(arguments).await
+                    tool.execute(arguments, permit).await
                 }
                 #[cfg(not(feature = "tools-grep"))]
                 {
@@ -682,7 +687,7 @@ impl Tool for FsTool {
                         return ToolResult::error(e.to_string());
                     }
                     let tool = GlobTool;
-                    tool.execute(arguments).await
+                    tool.execute(arguments, permit).await
                 }
                 #[cfg(not(feature = "tools-grep"))]
                 {
@@ -706,7 +711,7 @@ impl Tool for FsTool {
                 };
                 let tool = WriteFileTool;
                 super::file_mutation_queue::with_path_lock(&resolved, || async move {
-                    tool.execute(arguments).await
+                    tool.execute(arguments, permit).await
                 })
                 .await
             }
@@ -721,7 +726,7 @@ impl Tool for FsTool {
                 }
                 // EditFileTool already serializes via the mutation queue.
                 let tool = EditFileTool;
-                tool.execute(arguments).await
+                tool.execute(arguments, permit).await
             }
             "delete" => {
                 let recursive = params::extract_bool(&arguments, "recursive", false);
@@ -749,9 +754,10 @@ impl Tool for FsTool {
         &self,
         arguments: serde_json::Value,
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let Some(sandbox) = sandbox else {
-            return self.execute(arguments).await;
+            return self.execute(arguments, permit).await;
         };
         let op = match params::extract_string(&arguments, "op", None) {
             Ok(v) => v.to_lowercase(),
@@ -762,7 +768,7 @@ impl Tool for FsTool {
         let mut perf = crate::observability::perf::span(fs_hotpath_name(&op));
 
         let result = match op.as_str() {
-            "read" => execute_read_or_list(arguments, Some(sandbox)).await,
+            "read" => execute_read_or_list(arguments, Some(sandbox), permit).await,
             "list" => execute_list_sandboxed(arguments, sandbox).await,
             "grep" => {
                 #[cfg(feature = "tools-grep")]
@@ -795,7 +801,8 @@ impl Tool for FsTool {
                     );
                 }
                 let tool = WriteFileTool;
-                tool.execute_sandboxed(arguments, Some(sandbox)).await
+                tool.execute_sandboxed(arguments, Some(sandbox), permit)
+                    .await
             }
             "edit" => {
                 if self.mutation_style == MutationStyle::ApplyPatch {
@@ -804,7 +811,8 @@ impl Tool for FsTool {
                     );
                 }
                 let tool = EditFileTool;
-                tool.execute_sandboxed(arguments, Some(sandbox)).await
+                tool.execute_sandboxed(arguments, Some(sandbox), permit)
+                    .await
             }
             "delete" => {
                 let path_str = match params::extract_string(&arguments, "path", None) {

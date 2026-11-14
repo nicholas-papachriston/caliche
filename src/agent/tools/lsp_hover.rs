@@ -53,7 +53,11 @@ impl ToolMeta for LspHoverTool {
 
 #[async_trait]
 impl Tool for LspHoverTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = match params::extract_string(&arguments, "path", None) {
             Ok(path) => path,
             Err(error) => return ToolResult::error(error),

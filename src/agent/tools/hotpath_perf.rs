@@ -48,13 +48,16 @@ async fn grep_directory_stays_under_budget_when_not_measuring() {
     write_search_corpus(&root, 48, 80);
     let before = Instant::now();
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hotpath_token",
-            "context_lines": 0,
-            "max_matches": 50
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hotpath_token",
+                "context_lines": 0,
+                "max_matches": 50
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let elapsed = before.elapsed();
     assert!(result.success, "{}", result.error.unwrap_or_default());
@@ -84,9 +87,12 @@ async fn read_skips_stage_timing_payload_when_not_measuring() {
     let path = root.join("note.rs");
     fs::write(&path, "fn main() {}\n").expect("write");
     let result = super::read_file::ReadFileTool
-        .execute(json!({
-            "path": path.to_str().expect("utf8 path")
-        }))
+        .execute(
+            json!({
+                "path": path.to_str().expect("utf8 path")
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -104,12 +110,15 @@ async fn grep_records_granular_spans_when_measuring() {
     let root = fixture_root("grep-spans");
     write_search_corpus(&root, 16, 40);
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hotpath_token",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hotpath_token",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let names: Vec<&'static str> = perf::snapshot()
@@ -144,14 +153,17 @@ async fn edit_str_replace_stays_under_budget_when_not_measuring() {
 
     let before = Instant::now();
     let result = EditFileTool
-        .execute(json!({
-            "path": path.to_str().expect("utf8 path"),
-            "operations": [{
-                "type": "str_replace",
-                "old_string": "REPLACE_ME",
-                "new_string": "REPLACED"
-            }]
-        }))
+        .execute(
+            json!({
+                "path": path.to_str().expect("utf8 path"),
+                "operations": [{
+                    "type": "str_replace",
+                    "old_string": "REPLACE_ME",
+                    "new_string": "REPLACED"
+                }]
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let elapsed = before.elapsed();
     assert!(result.success, "{}", result.error.unwrap_or_default());
@@ -186,12 +198,15 @@ async fn apply_patch_update_records_when_measuring() {
     );
 
     let result = ApplyPatchTool::new()
-        .execute(json!({
-            "patch": format!(
-                "*** Begin Patch\n*** Update File: {}\n@@\n-world\n+WORLD\n*** End Patch\n",
-                path.display()
-            )
-        }))
+        .execute(
+            json!({
+                "patch": format!(
+                    "*** Begin Patch\n*** Update File: {}\n@@\n-world\n+WORLD\n*** End Patch\n",
+                    path.display()
+                )
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let names: Vec<&'static str> = perf::snapshot()
@@ -214,12 +229,15 @@ async fn glob_search_stays_under_budget_when_not_measuring() {
     write_search_corpus(&root, 32, 4);
     let before = Instant::now();
     let result = FsTool::new()
-        .execute(json!({
-            "op": "glob",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "*.rs",
-            "max_matches": 100
-        }))
+        .execute(
+            json!({
+                "op": "glob",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "*.rs",
+                "max_matches": 100
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let elapsed = before.elapsed();
     assert!(result.success, "{}", result.error.unwrap_or_default());
@@ -239,12 +257,15 @@ async fn grep_skips_vcs_metadata_trees() {
     fs::create_dir_all(&git_dir).expect("mkdir .git");
     fs::write(git_dir.join("HEAD"), "hotpath_token in git metadata\n").expect("write HEAD");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hotpath_token",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hotpath_token",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert!(
@@ -266,10 +287,13 @@ async fn fs_omits_duration_payload_when_not_measuring() {
     let root = fixture_root("fs-no-duration");
     fs::write(root.join("note.rs"), "fn main() {}\n").expect("write");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "read",
-            "path": root.join("note.rs").to_str().expect("utf8 path")
-        }))
+        .execute(
+            json!({
+                "op": "read",
+                "path": root.join("note.rs").to_str().expect("utf8 path")
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -290,12 +314,15 @@ async fn grep_streams_context_lines_without_slurping() {
     )
     .expect("write");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hotpath_token",
-            "context_lines": 2
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hotpath_token",
+                "context_lines": 2
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert!(
@@ -338,12 +365,15 @@ async fn list_directory_stays_under_budget_when_not_measuring() {
     fs::write(root.join("subdir").join("nested.rs"), "fn y() {}\n").expect("write nested");
     let before = Instant::now();
     let result = FsTool::new()
-        .execute(json!({
-            "op": "list",
-            "path": root.to_str().expect("utf8 path"),
-            "recursive": true,
-            "max_depth": 2
-        }))
+        .execute(
+            json!({
+                "op": "list",
+                "path": root.to_str().expect("utf8 path"),
+                "recursive": true,
+                "max_depth": 2
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let elapsed = before.elapsed();
     assert!(result.success, "{}", result.error.unwrap_or_default());
@@ -367,12 +397,15 @@ async fn list_hidden_files_do_not_consume_max_entries() {
         fs::write(root.join(format!(".secret_{idx}")), "x\n").expect("write hidden");
     }
     let result = FsTool::new()
-        .execute(json!({
-            "op": "list",
-            "path": root.to_str().expect("utf8 path"),
-            "max_entries": 1,
-            "include_hidden": false
-        }))
+        .execute(
+            json!({
+                "op": "list",
+                "path": root.to_str().expect("utf8 path"),
+                "max_entries": 1,
+                "include_hidden": false
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -393,13 +426,16 @@ async fn grep_file_pattern_rs_does_not_match_yours() {
     fs::write(root.join("lib.rs"), "unique_token in rust\n").expect("write rust");
     fs::write(root.join("yours"), "unique_token in name\n").expect("write yours");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "unique_token",
-            "file_pattern": "rs",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "unique_token",
+                "file_pattern": "rs",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert!(
@@ -422,13 +458,16 @@ async fn grep_files_with_matches_reports_paths_not_line_anchors() {
     fs::write(root.join("hit.rs"), "shared_token one\nshared_token two\n").expect("write hit");
     fs::write(root.join("other.rs"), "shared_token three\n").expect("write other");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "shared_token",
-            "mode": "files_with_matches",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "shared_token",
+                "mode": "files_with_matches",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -461,18 +500,24 @@ async fn grep_and_read_agree_on_line_hashes() {
     let line = "fn hashed_line() {}";
     fs::write(&path, format!("{line}\n")).expect("write");
     let read = super::read_file::ReadFileTool
-        .execute(json!({
-            "path": path.to_str().expect("utf8 path")
-        }))
+        .execute(
+            json!({
+                "path": path.to_str().expect("utf8 path")
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(read.success, "{}", read.error.unwrap_or_default());
     let grep = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": path.to_str().expect("utf8 path"),
-            "pattern": "hashed_line",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": path.to_str().expect("utf8 path"),
+                "pattern": "hashed_line",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(grep.success, "{}", grep.error.unwrap_or_default());
     let hash = crate::agent::tools::hashline::compute_line_hash(line);
@@ -499,12 +544,15 @@ async fn grep_skips_hidden_dirs_and_files_by_default() {
     fs::create_dir_all(&hidden_dir).expect("mkdir hidden");
     fs::write(hidden_dir.join("notes.rs"), "hidden_token in hidden dir\n").expect("write nested");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hidden_token",
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hidden_token",
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert!(
@@ -529,13 +577,16 @@ async fn grep_include_hidden_still_skips_vcs() {
     fs::create_dir_all(&git_dir).expect("mkdir .git");
     fs::write(git_dir.join("HEAD"), "hidden_token in git metadata\n").expect("write HEAD");
     let result = FsTool::new()
-        .execute(json!({
-            "op": "grep",
-            "path": root.to_str().expect("utf8 path"),
-            "pattern": "hidden_token",
-            "include_hidden": true,
-            "context_lines": 0
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": root.to_str().expect("utf8 path"),
+                "pattern": "hidden_token",
+                "include_hidden": true,
+                "context_lines": 0
+            }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert!(
@@ -565,17 +616,20 @@ async fn hashline_replace_relocates_after_concurrent_insert() {
         let path_str = path_str.clone();
         async move {
             EditFileTool
-                .execute(json!({
-                    "path": path_str,
-                    "operations": [{
-                        "type": "hashline_replace",
-                        "start_line": 1,
-                        "start_hash": alpha_hash,
-                        "end_line": 1,
-                        "end_hash": alpha_hash,
-                        "content": "alpha_unique\ninserted_one\ninserted_two"
-                    }]
-                }))
+                .execute(
+                    json!({
+                        "path": path_str,
+                        "operations": [{
+                            "type": "hashline_replace",
+                            "start_line": 1,
+                            "start_hash": alpha_hash,
+                            "end_line": 1,
+                            "end_hash": alpha_hash,
+                            "content": "alpha_unique\ninserted_one\ninserted_two"
+                        }]
+                    }),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
                 .await
         }
     });
@@ -583,17 +637,20 @@ async fn hashline_replace_relocates_after_concurrent_insert() {
         let path_str = path_str.clone();
         async move {
             EditFileTool
-                .execute(json!({
-                    "path": path_str,
-                    "operations": [{
-                        "type": "hashline_replace",
-                        "start_line": 3,
-                        "start_hash": beta_hash,
-                        "end_line": 3,
-                        "end_hash": beta_hash,
-                        "content": "beta_replaced"
-                    }]
-                }))
+                .execute(
+                    json!({
+                        "path": path_str,
+                        "operations": [{
+                            "type": "hashline_replace",
+                            "start_line": 3,
+                            "start_hash": beta_hash,
+                            "end_line": 3,
+                            "end_hash": beta_hash,
+                            "content": "beta_replaced"
+                        }]
+                    }),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
                 .await
         }
     });

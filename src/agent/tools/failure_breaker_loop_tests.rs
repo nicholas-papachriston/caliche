@@ -146,7 +146,11 @@ impl ToolMeta for CountingBash {
 
 #[async_trait]
 impl Tool for CountingBash {
-    async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         self.hits.fetch_add(1, Ordering::SeqCst);
         let mut result = ToolResult::error("Command failed with exit code 2:\nsrc/main.ts: nope");
         result.typed_payload = Some(serde_json::json!({"exit_code": 2}));

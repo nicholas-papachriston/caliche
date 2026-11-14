@@ -56,7 +56,11 @@ impl ToolMeta for GitLogTool {
 
 #[async_trait]
 impl Tool for GitLogTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let file_path = arguments["file"]
             .as_str()
@@ -160,7 +164,11 @@ impl Tool for GitLogTool {
         json!({})
     }
 
-    async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         ToolResult::error("Git tools require 'tools-git' feature to be enabled")
     }
 }

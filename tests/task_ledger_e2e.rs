@@ -41,7 +41,9 @@ async fn task_named(pool: &SqlitePool, name: &str) -> Row {
 }
 
 async fn bash(args: serde_json::Value) {
-    let _ = BashTool.execute(args).await;
+    let _ = BashTool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
 }
 
 #[expect(

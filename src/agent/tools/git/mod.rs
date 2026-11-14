@@ -166,14 +166,29 @@ mod tests {
         ];
         let mut refused = Vec::new();
         for (name, tool, args) in tools {
-            let result = tool.execute(args).await;
+            let result = tool
+                .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+                .await;
             let text = format!("{}{}", result.content, result.error.unwrap_or_default());
             refused.push((name, result.success, text.contains("OUTSIDE-COMMIT")));
         }
-        let own_log = GitLogTool.execute(json!({"path": "."})).await;
-        let linked_log = GitLogTool.execute(json!({"path": "linked"})).await;
+        let own_log = GitLogTool
+            .execute(
+                json!({"path": "."}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
+        let linked_log = GitLogTool
+            .execute(
+                json!({"path": "linked"}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         let link_error = GitLogTool
-            .execute(json!({"path": "g"}))
+            .execute(
+                json!({"path": "g"}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await
             .error
             .unwrap_or_default();

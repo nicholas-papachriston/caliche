@@ -13,7 +13,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
-use super::middleware::{ToolExecutionContext, ToolExecutionMiddleware};
+use super::middleware::{HookExecutionMiddleware, ToolExecutionContext};
+use crate::agent::tools::permit::ToolPermit;
 
 const TOOL_EXECUTION_TIMEOUT_DEFAULT_SECS: u64 = 900;
 /// Default cap on the number of tool calls executed concurrently within a single
@@ -77,7 +78,7 @@ struct ExecuteOneParallelArgs<'a> {
     user_context: Option<&'a UserContext>,
     metrics: Option<&'a Arc<ToolMetrics>>,
     cancellation_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
-    middlewares: &'a [&'a dyn ToolExecutionMiddleware],
+    gate: &'a HookExecutionMiddleware,
     semaphore: Arc<Semaphore>,
     retry_attempts: usize,
     tool_execution_timeout: Duration,
@@ -117,29 +118,23 @@ async fn execute_one_parallel_call(
         return Ok((args.idx, args.id, tool_name, tool_args, 0, blocked));
     }
 
-    if let Err(reason) = run_before_middleware(args.middlewares, &ctx).await {
-        let denied = ToolResult::error(reason.as_ref());
-        crate::agent::tools::failure_breaker::log_tool_end(
-            &tool_name, &args.id, &tool_args, &denied,
-        );
-        return Err((args.idx, args.id, tool_name, reason));
-    }
-
-    if let Err(reason) = admit_middlewares(args.middlewares, &ctx).await {
-        let denied = ToolResult::error(reason.as_ref());
-        crate::agent::tools::failure_breaker::log_tool_end(
-            &tool_name, &args.id, &tool_args, &denied,
-        );
-        return Err((args.idx, args.id, tool_name, reason));
-    }
+    let permit = match args.gate.admit(&ctx).await {
+        Ok(permit) => permit,
+        Err(reason) => {
+            let denied = ToolResult::error(reason.as_ref());
+            crate::agent::tools::failure_breaker::log_tool_end(
+                &tool_name, &args.id, &tool_args, &denied,
+            );
+            return Err((args.idx, args.id, tool_name, reason));
+        }
+    };
 
     crate::agent::tools::failure_breaker::log_tool_start(&tool_name, &args.id, &tool_args);
     let start_time = std::time::Instant::now();
-    let (mut result, retry_count) = execute_with_retries(&args, &tool_name, &tool_args).await;
+    let (mut result, retry_count) =
+        execute_with_retries(&args, &tool_name, &tool_args, &permit).await;
 
-    for middleware in args.middlewares {
-        middleware.after_execute(&ctx, &mut result).await;
-    }
+    args.gate.after_execute(&ctx, &mut result).await;
 
     #[cfg(feature = "tools-rag")]
     maybe_enrich_with_rag(&args, &tool_name, &tool_args, &mut result).await;
@@ -165,30 +160,11 @@ async fn execute_one_parallel_call(
     Ok((args.idx, args.id, tool_name, tool_args, duration_ms, result))
 }
 
-async fn run_before_middleware(
-    middlewares: &[&dyn ToolExecutionMiddleware],
-    ctx: &ToolExecutionContext<'_>,
-) -> Result<(), beef::lean::Cow<'static, str>> {
-    for middleware in middlewares {
-        middleware.before_execute(ctx).await?;
-    }
-    Ok(())
-}
-
-async fn admit_middlewares(
-    middlewares: &[&dyn ToolExecutionMiddleware],
-    ctx: &ToolExecutionContext<'_>,
-) -> Result<(), beef::lean::Cow<'static, str>> {
-    for middleware in middlewares {
-        middleware.admit_execution(ctx).await?;
-    }
-    Ok(())
-}
-
 async fn execute_with_retries(
     args: &ExecuteOneParallelArgs<'_>,
     tool_name: &str,
     tool_args: &serde_json::Value,
+    permit: &ToolPermit<'_>,
 ) -> (ToolResult, usize) {
     let mut retry_count = 0usize;
     loop {
@@ -203,7 +179,7 @@ async fn execute_with_retries(
             );
         }
 
-        let current_result = execute_one_attempt(args, tool_name, tool_args).await;
+        let current_result = execute_one_attempt(args, tool_name, tool_args, permit).await;
 
         if retry_count < args.retry_attempts && should_retry_tool_result(&current_result) {
             retry_count += 1;
@@ -219,6 +195,7 @@ async fn execute_one_attempt(
     args: &ExecuteOneParallelArgs<'_>,
     tool_name: &str,
     tool_args: &serde_json::Value,
+    permit: &ToolPermit<'_>,
 ) -> ToolResult {
     #[cfg(feature = "sandbox")]
     if should_execute_sandboxed(args, tool_name) {
@@ -231,6 +208,7 @@ async fn execute_one_attempt(
                     args.sandbox,
                     args.user_context,
                     args.metrics,
+                    permit,
                 ),
             )
             .await,
@@ -247,6 +225,7 @@ async fn execute_one_attempt(
                 tool_args.clone(),
                 args.user_context,
                 args.metrics,
+                permit,
             ),
         )
         .await,
@@ -403,10 +382,11 @@ impl ToolExecutionEngine {
         Self
     }
 
+    /// Run a batch of tool calls, each one only after `gate` admits it.
     pub async fn execute_parallel(
         &self,
         request: ToolExecutionRequest<'_>,
-        middlewares: &[&dyn ToolExecutionMiddleware],
+        gate: &HookExecutionMiddleware,
     ) -> ToolExecutionResult {
         let retry_attempts = configured_tool_retry_attempts();
         let tool_execution_timeout = configured_tool_execution_timeout();
@@ -431,7 +411,7 @@ impl ToolExecutionEngine {
                     user_context: request.user_context,
                     metrics: request.metrics,
                     cancellation_flag: cancellation_flag.clone(),
-                    middlewares,
+                    gate,
                     semaphore: Arc::clone(&semaphore),
                     retry_attempts,
                     tool_execution_timeout,
@@ -616,7 +596,11 @@ mod tests {
 
     #[async_trait]
     impl Tool for WorkspaceRootProbe {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             if self.delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             }
@@ -672,7 +656,9 @@ mod tests {
                     #[cfg(feature = "tools-rag")]
                     workspace_rag_min_similarity: 0.0,
                 },
-                &[],
+                &crate::agent::tools::execution::HookExecutionMiddleware::new(
+                    crate::agent::hooks::HookRegistry::new(),
+                ),
             )
             .await;
 

@@ -7,8 +7,8 @@ use caliche::harness::coding::{
 };
 use caliche::harness::config::PermissionModeConfig;
 use caliche::harness::{
-    AgentEvent, ContextManager, ConversationExport, DiffTracker, EventStream,
-    PlanStatus, ProjectType, SessionPersistence, SnapshotChangeKind, StateManager, StepStatus,
+    AgentEvent, ContextManager, ConversationExport, DiffTracker, EventStream, PlanStatus,
+    ProjectType, SessionPersistence, SnapshotChangeKind, StateManager, StepStatus,
     StreamingResponseHandler, TaskPlan, TaskPlanner, ToolCallAnalysis, detect_language,
     detect_thinking_blocks, extract_code_blocks,
 };

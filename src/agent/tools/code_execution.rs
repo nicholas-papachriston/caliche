@@ -191,7 +191,11 @@ impl ToolMeta for CodeExecutionTool {
 #[async_trait]
 impl Tool for CodeExecutionTool {
     /// Without a sandbox handle the tool fails closed.
-    async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         ToolResult::error(NO_SANDBOX_ERROR.to_string())
     }
 
@@ -200,6 +204,7 @@ impl Tool for CodeExecutionTool {
         &self,
         arguments: serde_json::Value,
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let Some(sandbox) =
             sandbox.filter(|handle| handle.sandbox_active() && handle.confines_filesystem())
@@ -295,7 +300,10 @@ mod tests {
     #[tokio::test]
     async fn refuses_without_a_sandbox() {
         let result = CodeExecutionTool
-            .execute(json!({ "code": "print('host')" }))
+            .execute(
+                json!({ "code": "print('host')" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert_eq!(
             (result.success, result.error.as_deref()),
@@ -403,7 +411,11 @@ mod tests {
     #[tokio::test]
     async fn refuses_a_missing_sandbox_handle() {
         let result = CodeExecutionTool
-            .execute_sandboxed(json!({ "code": "print('host')" }), None)
+            .execute_sandboxed(
+                json!({ "code": "print('host')" }),
+                None,
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert_eq!(
             (result.success, result.error.as_deref()),
@@ -433,7 +445,11 @@ mod tests {
         let handle = SandboxHandle::new(instance, ToolPolicy::default())
             .with_capabilities(&NoopBackend.capabilities());
         let result = CodeExecutionTool
-            .execute_sandboxed(json!({ "code": "print('host')" }), Some(&handle))
+            .execute_sandboxed(
+                json!({ "code": "print('host')" }),
+                Some(&handle),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert_eq!(
             (result.success, result.error.as_deref()),
@@ -487,7 +503,11 @@ mod tests {
 
         async fn run(handle: &SandboxHandle, code: &str) -> ToolResult {
             CodeExecutionTool
-                .execute_sandboxed(json!({ "code": code }), Some(handle))
+                .execute_sandboxed(
+                    json!({ "code": code }),
+                    Some(handle),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
                 .await
         }
 

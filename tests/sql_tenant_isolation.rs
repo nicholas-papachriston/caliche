@@ -84,9 +84,13 @@ fn acme() -> UserContext {
 }
 
 async fn run(tool: &SqlExecutionTool, sql: &str, context: Option<&UserContext>) -> Option<String> {
-    tool.execute_with_context(json!({ "sql": sql }), context)
-        .await
-        .error
+    tool.execute_with_context(
+        json!({ "sql": sql }),
+        context,
+        &caliche::agent::tools::ToolPermit::for_tests(),
+    )
+    .await
+    .error
 }
 
 fn unsupported(strategy: &str) -> Option<String> {
@@ -218,7 +222,11 @@ async fn disabled_runs_sql_unchanged() {
     let (executor, tool) = tool(TenantFilterConfig::default());
     let sql = "SELECT * FROM t WHERE a = 1 OR 1=1";
     let result = tool
-        .execute_with_context(json!({ "sql": sql }), Some(&acme()))
+        .execute_with_context(
+            json!({ "sql": sql }),
+            Some(&acme()),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert_eq!(result.error, None);
     let payload: Value = serde_json::from_str(&result.content).unwrap_or_default();

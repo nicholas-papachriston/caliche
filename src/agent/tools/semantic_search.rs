@@ -510,7 +510,11 @@ impl ToolMeta for SemanticSearchTool {
 
 #[async_trait]
 impl Tool for SemanticSearchTool {
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = match params::extract_string(&args, "operation", Some("search")) {
             Ok(op) => op,
             Err(e) => return ToolResult::error(e),
@@ -658,7 +662,12 @@ mod link_tests {
         };
         let tool = SemanticSearchTool::new(Arc::new(FlatEmbedding), config);
 
-        let result = tool.execute(json!({ "operation": "index" })).await;
+        let result = tool
+            .execute(
+                json!({ "operation": "index" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
 
         assert!(result.success, "{:?}", result.error);
         assert_eq!(result.content, "Indexed 1 files (1 chunks)");

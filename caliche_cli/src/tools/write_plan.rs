@@ -66,7 +66,11 @@ impl ToolMeta for WritePlanTool {
 
 #[async_trait]
 impl Tool for WritePlanTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let content = match params::extract_string(&arguments, "content", None) {
             Ok(c) => c,
             Err(e) => return ToolResult::error(e),

@@ -179,6 +179,7 @@ async fn report(dir: &Path, name: &str, bytes: &[u8]) -> Report {
     let result = ProcessDocumentTool
         .execute(
             json!({ "path": path.to_str().expect("UTF-8 temp path"), "operation": "metadata" }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
         )
         .await;
     if !result.success {

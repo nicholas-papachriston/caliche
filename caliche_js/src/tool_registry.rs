@@ -6,6 +6,8 @@
 
 use crate::builtin_tools::BuiltinTool;
 use crate::get_runtime;
+use caliche::agent::hooks::HookRegistry;
+use caliche::agent::tools::execution::HookExecutionMiddleware;
 use caliche::agent::tools::{Tool, ToolRegistry};
 use napi_derive::napi;
 use serde_json::Value;
@@ -83,16 +85,26 @@ impl JsToolRegistry {
         self.inner.active_tool_names()
     }
 
-    /// Execute a tool by name (honors active-set filtering).
+    /// Execute a tool by name through the tool gate (honors active-set
+    /// filtering).
+    ///
+    /// `workspace` is the root the filesystem tools may use; without it,
+    /// every filesystem call is refused. A refused call returns
+    /// `success: false` and the tool does not run.
     #[napi]
     ///
     /// # Errors
     ///
     /// Returns a NAPI error when validation, synchronization, serialization,
     /// or an underlying runtime operation fails.
-    pub async fn execute(&self, name: String, arguments: Value) -> napi::Result<Value> {
+    pub async fn execute(
+        &self,
+        name: String,
+        arguments: Value,
+        workspace: Option<String>,
+    ) -> napi::Result<Value> {
         let registry = Arc::clone(&self.inner);
-        let result = registry.execute(&name, arguments).await;
+        let result = tool_gate(workspace).run(&registry, &name, arguments).await;
         Ok(tool_result_to_value(result))
     }
 
@@ -146,14 +158,32 @@ fn tool_result_to_value(result: caliche::agent::tools::ToolResult) -> Value {
     obj
 }
 
-/// Shared helper used by `BuiltinTool::execute`.
+/// The tool gate for a call from JavaScript.
+fn tool_gate(workspace: Option<String>) -> HookExecutionMiddleware {
+    let gate = HookExecutionMiddleware::new(HookRegistry::new());
+    match workspace {
+        Some(root) => gate.with_workspace(root),
+        None => gate,
+    }
+}
+
+/// Shared helper used by `BuiltinTool::execute`: runs the tool through the
+/// tool gate.
 ///
 /// # Errors
 ///
 /// Returns a NAPI error when validation, synchronization, serialization,
 /// or an underlying runtime operation fails.
-pub fn execute_tool(tool: Arc<dyn Tool>, arguments: Value) -> napi::Result<Value> {
+pub fn execute_tool(
+    tool: Arc<dyn Tool>,
+    arguments: Value,
+    workspace: Option<String>,
+) -> napi::Result<Value> {
     let rt = get_runtime()?;
-    let result = rt.block_on(async move { tool.execute(arguments).await });
+    let result = rt.block_on(async move {
+        tool_gate(workspace)
+            .run_tool(tool.as_ref(), arguments)
+            .await
+    });
     Ok(tool_result_to_value(result))
 }

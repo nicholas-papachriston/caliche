@@ -1,21 +1,23 @@
 //! Translate → commit → execute → format, used when an [`OperationManager`] is set.
 
 use super::{OperationManager, ToolCallStatus, TranslatorRegistry};
-use crate::agent::tools::execution::{ToolExecutionContext, ToolExecutionMiddleware};
+use crate::agent::tools::ToolPermit;
+use crate::agent::tools::execution::{HookExecutionMiddleware, ToolExecutionContext};
 use crate::agent::tools::tool::{ToolCall, ToolResult};
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Run one validated tool call through the operation layer.
 ///
-/// Hooks still run via `middleware` so permission / audit behavior matches the
-/// engine path. MCP and other registry tools use [`super::RegistryToolTranslator`].
+/// The call runs only after `gate` admits it, so permission and audit
+/// behavior match the engine path. MCP and other registry tools use
+/// [`super::RegistryToolTranslator`].
 pub async fn execute_tool_call_via_operations(
     call: &ToolCall,
     call_id: &str,
     translators: &TranslatorRegistry,
     manager: &dyn OperationManager,
-    middleware: &dyn ToolExecutionMiddleware,
+    gate: &HookExecutionMiddleware,
 ) -> (u64, ToolResult) {
     let start = Instant::now();
     let ctx = ToolExecutionContext {
@@ -23,36 +25,41 @@ pub async fn execute_tool_call_via_operations(
         arguments: &call.arguments,
         call_id,
     };
-    if let Err(reason) = middleware.before_execute(&ctx).await {
-        return (
-            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-            ToolResult::error(reason.into_owned()),
-        );
-    }
+    let mut result = match gate.admit(&ctx).await {
+        Ok(permit) => execute_admitted_via_operations(call, translators, manager, &permit).await,
+        Err(reason) => ToolResult::error(reason.into_owned()),
+    };
+    gate.after_execute(&ctx, &mut result).await;
+    (
+        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        result,
+    )
+}
 
+/// Translate, commit and execute one call the gate already admitted.
+pub async fn execute_admitted_via_operations(
+    call: &ToolCall,
+    translators: &TranslatorRegistry,
+    manager: &dyn OperationManager,
+    permit: &ToolPermit<'_>,
+) -> ToolResult {
     let translator = translators.resolve(call.name.as_ref());
     let translation = translator.translate(call);
-    let mut result = match &translation.status {
+    match &translation.status {
         ToolCallStatus::Invalid { message } => ToolResult::error(message.clone()),
         ToolCallStatus::Submitted { .. } => match manager.commit(&translation.operations).await {
             Ok(ids) => {
                 let status = ToolCallStatus::Submitted {
                     operation_ids: ids.clone(),
                 };
-                match manager.execute(&ids).await {
+                match manager.execute(&ids, permit).await {
                     Ok(executions) => translator.format_result(&status, &executions),
                     Err(err) => ToolResult::error(format!("operation execute failed: {err}")),
                 }
             }
             Err(err) => ToolResult::error(format!("operation commit failed: {err}")),
         },
-    };
-
-    middleware.after_execute(&ctx, &mut result).await;
-    (
-        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-        result,
-    )
+    }
 }
 
 /// Shared translator table used when an agent opts into operation dispatch.
@@ -64,13 +71,8 @@ pub fn shared_builtin_translators() -> Arc<TranslatorRegistry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
+    use crate::agent::hooks::HookRegistry;
     use beef::lean::Cow;
-
-    struct AllowAll;
-
-    #[async_trait]
-    impl ToolExecutionMiddleware for AllowAll {}
 
     #[tokio::test]
     async fn translate_commit_execute_format_uses_remote_execute() {
@@ -86,8 +88,9 @@ mod tests {
             name: Cow::const_str("add"),
             arguments: serde_json::json!({"a": 2, "b": 3}),
         };
+        let gate = HookExecutionMiddleware::new(HookRegistry::new());
         let (_ms, via_ops) =
-            execute_tool_call_via_operations(&call, "c1", &translators, &manager, &AllowAll).await;
+            execute_tool_call_via_operations(&call, "c1", &translators, &manager, &gate).await;
         assert!(via_ops.success);
         assert_eq!(via_ops.content, "5");
     }

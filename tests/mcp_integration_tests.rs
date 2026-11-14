@@ -51,7 +51,11 @@ impl ToolMeta for TestTool {
 
 #[async_trait]
 impl Tool for TestTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let input = args
             .get("input")
             .and_then(|v| v.as_str())

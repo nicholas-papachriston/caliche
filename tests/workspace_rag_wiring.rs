@@ -333,29 +333,38 @@ async fn rag_tool_default_query_uses_hybrid_full_text() {
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbeddingProvider);
     let tool = RagTool::new(embedding, None::<String>);
     let index_prose = tool
-        .execute(serde_json::json!({
-            "operation": "index",
-            "doc_id": "prose",
-            "document": "hello world narrative text about driving tours"
-        }))
+        .execute(
+            serde_json::json!({
+                "operation": "index",
+                "doc_id": "prose",
+                "document": "hello world narrative text about driving tours"
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(index_prose.success, "{}", index_prose.content);
     let index_code = tool
-        .execute(serde_json::json!({
-            "operation": "index",
-            "doc_id": "code",
-            "document": "fn unique_identifier_xyz() {}"
-        }))
+        .execute(
+            serde_json::json!({
+                "operation": "index",
+                "doc_id": "code",
+                "document": "fn unique_identifier_xyz() {}"
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(index_code.success, "{}", index_code.content);
 
     let result = tool
-        .execute(serde_json::json!({
-            "operation": "query",
-            "query": "unique_identifier_xyz",
-            "top_k": 4,
-            "min_similarity": 0.0
-        }))
+        .execute(
+            serde_json::json!({
+                "operation": "query",
+                "query": "unique_identifier_xyz",
+                "top_k": 4,
+                "min_similarity": 0.0
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.content);
     assert!(

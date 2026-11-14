@@ -5,6 +5,7 @@ use super::{
     Operation, OperationExecution, OperationExecutionMode, OperationId, OperationManager,
     OperationStatus,
 };
+use crate::agent::tools::ToolPermit;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -49,7 +50,11 @@ impl OperationManager for LocalOperationManager {
         self.store.commit(ops)
     }
 
-    async fn execute(&self, ids: &[OperationId]) -> Result<Vec<OperationExecution>> {
+    async fn execute(
+        &self,
+        ids: &[OperationId],
+        _permit: &ToolPermit<'_>,
+    ) -> Result<Vec<OperationExecution>> {
         self.store.audit_resolve(ids)
     }
 
@@ -91,7 +96,7 @@ mod tests {
             OperationStatus::Ready
         );
         let err = manager
-            .execute(&ids)
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
             .await
             .expect_err("Ready ops must not run via Local::execute");
         assert!(
@@ -117,7 +122,10 @@ mod tests {
             manager.cancel(&ids[0]).await.expect("cancel"),
             OperationStatus::Canceled
         );
-        let executions = manager.execute(&ids).await.expect("audit resolve");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("audit resolve");
         assert_eq!(executions[0].status, OperationStatus::Canceled);
     }
 

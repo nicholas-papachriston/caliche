@@ -36,7 +36,9 @@ mod spec;
 mod store;
 mod translator;
 
-pub use dispatch::{execute_tool_call_via_operations, shared_builtin_translators};
+pub use dispatch::{
+    execute_admitted_via_operations, execute_tool_call_via_operations, shared_builtin_translators,
+};
 pub use local::LocalOperationManager;
 pub use manager::{OperationExecutionMode, OperationManager};
 #[cfg(feature = "sandbox")]

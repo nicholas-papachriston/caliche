@@ -91,7 +91,11 @@ impl ToolMeta for GreetTool {
 
 #[async_trait]
 impl Tool for GreetTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
         ToolResult::success(format!("Hello, {}!", name))
     }

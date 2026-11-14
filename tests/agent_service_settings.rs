@@ -180,6 +180,7 @@ async fn apply_interaction_mode_plan_keeps_write_plan_exception() {
         async fn execute(
             &self,
             _arguments: serde_json::Value,
+            _permit: &caliche::agent::tools::ToolPermit<'_>,
         ) -> caliche::agent::tools::ToolResult {
             caliche::agent::tools::ToolResult::success("ok")
         }

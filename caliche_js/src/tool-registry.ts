@@ -61,8 +61,16 @@ export class ToolRegistry {
     return this._inner.activeToolNames();
   }
 
-  async execute(name: string, arguments_: Record<string, unknown>): Promise<ToolExecutionResult> {
-    return await this._inner.execute(name, arguments_);
+  /**
+   * Run a tool through the tool gate. `workspace` is the root the
+   * filesystem tools may use; without it, every filesystem call is refused.
+   */
+  async execute(
+    name: string,
+    arguments_: Record<string, unknown>,
+    workspace?: string,
+  ): Promise<ToolExecutionResult> {
+    return await this._inner.execute(name, arguments_, workspace);
   }
 
   getToolSchemas(): Array<{ name: string; description: string; parameters: unknown }> {

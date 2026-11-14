@@ -19,6 +19,6 @@ pub mod hooks {
 
 pub mod tools {
     pub use crate::agent::tools::{
-        BuiltInTool, Tool, ToolCall, ToolCapability, ToolMeta, ToolResult, Toolkit,
+        BuiltInTool, Tool, ToolCall, ToolCapability, ToolMeta, ToolPermit, ToolResult, Toolkit,
     };
 }

@@ -260,7 +260,11 @@ impl ToolMeta for CodeModeSearchTool {
 
 #[async_trait]
 impl Tool for CodeModeSearchTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let code = arguments
             .get("code")
             .and_then(Value::as_str)
@@ -311,7 +315,11 @@ impl ToolMeta for CodeModeExecuteTool {
 
 #[async_trait]
 impl Tool for CodeModeExecuteTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let code = arguments
             .get("code")
             .and_then(Value::as_str)

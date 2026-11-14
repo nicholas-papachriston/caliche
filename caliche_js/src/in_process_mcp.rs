@@ -49,7 +49,11 @@ impl ToolMeta for JsInProcessMcpTool {
 
 #[async_trait]
 impl Tool for JsInProcessMcpTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         // Call the JS function using sync bridge
         let result_str = match call_js_sync_bridge(&self.execute_fn, arguments).await {
             Ok(s) => s,

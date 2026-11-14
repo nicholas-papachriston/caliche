@@ -159,7 +159,11 @@ fn resolve_workspace_path(path_str: &str) -> Result<PathBuf, String> {
 
 #[async_trait]
 impl Tool for WorkspaceTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let action = params::extract_string_or(&arguments, "action", "detect");
 
@@ -618,7 +622,10 @@ mod tests {
             outside.display().to_string(),
         ] {
             let result = WorkspaceTool
-                .execute(serde_json::json!({"action": "detect", "path": path}))
+                .execute(
+                    serde_json::json!({"action": "detect", "path": path}),
+                    &crate::agent::tools::ToolPermit::for_tests(),
+                )
                 .await;
             seen.push((
                 result.success,
@@ -820,7 +827,10 @@ mod link_tests {
         use crate::agent::tools::common::set_tool_workspace_root;
         set_tool_workspace_root(Some(ws.to_path_buf()));
         let result = WorkspaceTool
-            .execute(json!({ "path": ws.to_string_lossy(), "action": action }))
+            .execute(
+                json!({ "path": ws.to_string_lossy(), "action": action }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         set_tool_workspace_root(None);
         result

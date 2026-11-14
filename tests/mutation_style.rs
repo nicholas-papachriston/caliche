@@ -17,7 +17,12 @@ async fn apply_patch_tool_mutates_files() {
         target.display()
     );
     let tool = ApplyPatchTool::new();
-    let result = tool.execute(json!({ "patch": patch })).await;
+    let result = tool
+        .execute(
+            json!({ "patch": patch }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{:?}", result.error);
     let body = std::fs::read_to_string(&target).expect("read");
     assert_eq!(body, "alpha\nbeta\n");
@@ -27,11 +32,14 @@ async fn apply_patch_tool_mutates_files() {
 async fn fs_apply_patch_style_rejects_write_ops() {
     let tool = FsTool::with_mutation_style(MutationStyle::ApplyPatch);
     let result = tool
-        .execute(json!({
-            "op": "write",
-            "path": "x.txt",
-            "content": "nope"
-        }))
+        .execute(
+            json!({
+                "op": "write",
+                "path": "x.txt",
+                "content": "nope"
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(!result.success);
     assert!(
@@ -54,7 +62,10 @@ async fn registry_builder_xor_is_consistent_at_runtime() {
     assert!(registry.get("apply_patch").is_some());
     let fs = registry.get("fs").expect("fs");
     let denied = fs
-        .execute(json!({"op":"edit","path":"a","operations":[]}))
+        .execute(
+            json!({"op":"edit","path":"a","operations":[]}),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(!denied.success);
 }

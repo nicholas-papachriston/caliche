@@ -169,8 +169,6 @@ pub async fn index_documents_handler(
         let mut indexed_count = 0;
 
         for (idx, doc) in request.documents.iter().enumerate() {
-            use caliche::agent::tools::Tool;
-
             let doc_id = format!("{}_{}", request.collection_name, idx);
             let args = serde_json::json!({
                 "operation": "index",
@@ -178,7 +176,7 @@ pub async fn index_documents_handler(
                 "doc_id": doc_id
             });
 
-            match Tool::execute(rag_tool.as_ref(), args).await {
+            match document_gate().run_tool(rag_tool.as_ref(), args).await {
                 result if result.success => {
                     ids.push(doc_id);
                     indexed_count += 1;
@@ -241,8 +239,6 @@ pub async fn batch_index_documents_handler(
     async move {
         use serde_json::json;
 
-        use caliche::agent::tools::Tool;
-
         tracing::info!(
             "Received batch index request for {} documents",
             request.documents.len()
@@ -276,7 +272,7 @@ pub async fn batch_index_documents_handler(
             }).collect::<Vec<_>>()
         });
 
-        match rag_tool.execute(args).await {
+        match document_gate().run_tool(rag_tool.as_ref(), args).await {
             result if result.success => {
                 // Parse the result JSON
                 let result_json: serde_json::Value = serde_json::from_str(&result.content)
@@ -751,4 +747,13 @@ mod tests {
             ))
         );
     }
+}
+
+/// The tool gate for document indexing: the same policy gate as an agent's
+/// tool call, so the server never runs the RAG tool around it.
+#[cfg(feature = "tools-rag")]
+fn document_gate() -> caliche::agent::tools::execution::HookExecutionMiddleware {
+    caliche::agent::tools::execution::HookExecutionMiddleware::new(
+        caliche::agent::hooks::HookRegistry::new(),
+    )
 }

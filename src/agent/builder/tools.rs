@@ -183,7 +183,7 @@ impl AgentBuilder {
     ///
     /// #[async_trait]
     /// impl Tool for MyTool {
-    ///     async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+    ///     async fn execute(&self, _args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
     ///         ToolResult::success("Tool executed".to_string())
     ///     }
     /// }
@@ -217,7 +217,7 @@ impl AgentBuilder {
     /// # }
     /// # #[async_trait]
     /// # impl Tool for Tool1 {
-    /// #     async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+    /// #     async fn execute(&self, _args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
     /// #         ToolResult::success("".to_string())
     /// #     }
     /// # }
@@ -228,7 +228,7 @@ impl AgentBuilder {
     /// # }
     /// # #[async_trait]
     /// # impl Tool for Tool2 {
-    /// #     async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+    /// #     async fn execute(&self, _args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
     /// #         ToolResult::success("".to_string())
     /// #     }
     /// # }
@@ -810,7 +810,7 @@ impl AgentBuilder {
     ///
     /// #[async_trait]
     /// impl Tool for MyCustomTool {
-    ///     async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+    ///     async fn execute(&self, _args: serde_json::Value, _permit: &crate::agent::tools::ToolPermit<'_>) -> ToolResult {
     ///         ToolResult::success("done".to_string())
     ///     }
     /// }

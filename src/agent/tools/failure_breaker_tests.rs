@@ -7,9 +7,7 @@ use crate::agent::hooks::{
 };
 use crate::agent::tools::ToolRegistry;
 use crate::agent::tools::execution::middleware::HookExecutionMiddleware;
-use crate::agent::tools::execution::{
-    ToolExecutionEngine, ToolExecutionMiddleware, ToolExecutionRequest,
-};
+use crate::agent::tools::execution::{ToolExecutionEngine, ToolExecutionRequest};
 use crate::agent::tools::tool::{Tool, ToolCall, ToolMeta, ToolResult};
 
 #[test]
@@ -182,7 +180,11 @@ async fn run_failure_sequence(hits: std::sync::Arc<std::sync::atomic::AtomicUsiz
 
     #[async_trait]
     impl Tool for CountingBash {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut result = ToolResult::error(
                 "Command failed with exit code 2:\nsrc/main.ts(1,1): Cannot find name 'x'.",
@@ -210,7 +212,11 @@ async fn run_failure_sequence(hits: std::sync::Arc<std::sync::atomic::AtomicUsiz
 
     #[async_trait]
     impl Tool for TouchFile {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             ToolResult::success("edited")
         }
     }
@@ -228,13 +234,13 @@ async fn run_failure_sequence(hits: std::sync::Arc<std::sync::atomic::AtomicUsiz
     let _ = engine
         .execute_parallel(
             execution_request(&tools, &intelligence, "bash", "call-1", bash.clone()),
-            &[],
+            &open_gate(),
         )
         .await;
     let second = engine
         .execute_parallel(
             execution_request(&tools, &intelligence, "bash", "call-1", bash.clone()),
-            &[],
+            &open_gate(),
         )
         .await;
     let blocked = &second.executed[0].5;
@@ -255,13 +261,13 @@ async fn run_failure_sequence(hits: std::sync::Arc<std::sync::atomic::AtomicUsiz
                 "call-edit",
                 serde_json::json!({"op": "edit", "path": "src/main.ts"}),
             ),
-            &[],
+            &open_gate(),
         )
         .await;
     let _ = engine
         .execute_parallel(
             execution_request(&tools, &intelligence, "bash", "call-1", bash),
-            &[],
+            &open_gate(),
         )
         .await;
 }
@@ -284,7 +290,11 @@ async fn run_approval_pause() {
 
     #[async_trait]
     impl Tool for OkTool {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             ToolResult::success("ok")
         }
     }
@@ -320,7 +330,6 @@ async fn run_approval_pause() {
     hooks.register(HookMatcher::tool("bash"), std::sync::Arc::new(PauseHook));
     let middleware = HookExecutionMiddleware::new(hooks)
         .with_approval_resolver(Some(std::sync::Arc::new(AllowOnce)));
-    let middlewares: [&dyn ToolExecutionMiddleware; 1] = [&middleware];
     let intelligence =
         std::sync::Arc::new(tokio::sync::Mutex::new(ToolIntelligenceState::default()));
     let _ = ToolExecutionEngine::new()
@@ -332,7 +341,7 @@ async fn run_approval_pause() {
                 "call-hitl",
                 serde_json::json!({"command": "bun test"}),
             ),
-            &middlewares,
+            &middleware,
         )
         .await;
 }
@@ -357,7 +366,11 @@ async fn run_blocked_retry_with_pause(hits: std::sync::Arc<std::sync::atomic::At
 
     #[async_trait]
     impl Tool for CountingBash {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut result = ToolResult::error("Command failed with exit code 2:\nnope");
             result.typed_payload = Some(serde_json::json!({"exit_code": 2}));
@@ -396,7 +409,6 @@ async fn run_blocked_retry_with_pause(hits: std::sync::Arc<std::sync::atomic::At
     hooks.register(HookMatcher::tool(TOOL_BASH), std::sync::Arc::new(PauseHook));
     let middleware = HookExecutionMiddleware::new(hooks)
         .with_approval_resolver(Some(std::sync::Arc::new(AllowOnce)));
-    let middlewares: [&dyn ToolExecutionMiddleware; 1] = [&middleware];
     let intelligence =
         std::sync::Arc::new(tokio::sync::Mutex::new(ToolIntelligenceState::default()));
     let bash =
@@ -405,13 +417,13 @@ async fn run_blocked_retry_with_pause(hits: std::sync::Arc<std::sync::atomic::At
     let _ = engine
         .execute_parallel(
             execution_request(&tools, &intelligence, TOOL_BASH, "call-1", bash.clone()),
-            &middlewares,
+            &middleware,
         )
         .await;
     let _ = engine
         .execute_parallel(
             execution_request(&tools, &intelligence, TOOL_BASH, "call-2", bash),
-            &middlewares,
+            &middleware,
         )
         .await;
 }
@@ -514,4 +526,10 @@ impl tracing::field::Visit for MessageVisit<'_> {
             *self.0 = value.to_string();
         }
     }
+}
+
+/// A gate with no hooks over this crate's directory, so the fake tools run.
+fn open_gate() -> HookExecutionMiddleware {
+    HookExecutionMiddleware::new(crate::agent::hooks::HookRegistry::new())
+        .with_workspace(env!("CARGO_MANIFEST_DIR"))
 }

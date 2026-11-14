@@ -102,7 +102,11 @@ impl ToolMeta for WebSearchTool {
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let query = match params::extract_string(&arguments, "query", None) {
             Ok(value) => value,
             Err(err) => return ToolResult::error(err),

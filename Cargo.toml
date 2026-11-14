@@ -953,3 +953,44 @@ required-features = ["agentfs", "openai"]
 [[test]]
 name = "distributed_tests"
 required-features = ["redis"]
+
+# These tests run a tool by itself, which needs the test-only permit.
+[[test]]
+name = "lmstudio_integration"
+required-features = ["testing"]
+
+[[test]]
+name = "mutation_style"
+required-features = ["testing"]
+
+[[test]]
+name = "orchestration"
+required-features = ["testing"]
+
+[[test]]
+name = "process_document_formats"
+required-features = ["testing"]
+
+[[test]]
+name = "process_document_headers"
+required-features = ["testing"]
+
+[[test]]
+name = "sql_tenant_isolation"
+required-features = ["testing"]
+
+[[test]]
+name = "task_ledger_e2e"
+required-features = ["testing"]
+
+[[test]]
+name = "tool_registry"
+required-features = ["testing"]
+
+[[test]]
+name = "tools"
+required-features = ["testing"]
+
+[[test]]
+name = "workspace_rag_wiring"
+required-features = ["testing"]

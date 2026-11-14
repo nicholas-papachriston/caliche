@@ -53,7 +53,11 @@ impl ToolMeta for VerifyIntegrationTool {
 
 #[async_trait]
 impl Tool for VerifyIntegrationTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let project_root = params::extract_string_or(&arguments, "project_root", ".");
         // The root resolves against the tool workspace and is refused outside
         // it; the walks below read files under the canonical root without
@@ -432,10 +436,16 @@ mod link_tests {
         set_tool_workspace_root(Some(root.clone()));
 
         let own = super::VerifyIntegrationTool
-            .execute(serde_json::json!({}))
+            .execute(
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         let out = super::VerifyIntegrationTool
-            .execute(serde_json::json!({ "project_root": outside_root.to_string_lossy() }))
+            .execute(
+                serde_json::json!({ "project_root": outside_root.to_string_lossy() }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         set_tool_workspace_root(None);
 

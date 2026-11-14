@@ -24,6 +24,8 @@
 
 use anyhow::{Context, Result};
 use caliche::AgentBuilder;
+use caliche::agent::hooks::HookRegistry;
+use caliche::agent::tools::execution::HookExecutionMiddleware;
 use caliche::prelude::ProviderType;
 use serde_json::json;
 
@@ -45,11 +47,14 @@ async fn main() -> Result<()> {
         .context("Build agent (plugins feature + provider)")?;
 
     let tools = service.agent().tools.clone();
+    // Every tool call goes through the gate, as it does in the agent loop.
+    let gate = HookExecutionMiddleware::new(HookRegistry::new());
 
     println!("\n1. Create a 'greet' plugin (tool with one return step)");
 
-    let create_result = tools
-        .execute(
+    let create_result = gate
+        .run(
+            &tools,
             "plugin",
             json!({
                 "op": "create",
@@ -93,7 +98,7 @@ async fn main() -> Result<()> {
 
     println!("\n2. Invoke the new 'greet' tool with name=\"World\"");
 
-    let greet_result = tools.execute("greet", json!({ "name": "World" })).await;
+    let greet_result = gate.run(&tools, "greet", json!({ "name": "World" })).await;
 
     if greet_result.success {
         println!("   Result: {}", greet_result.content);
@@ -106,7 +111,7 @@ async fn main() -> Result<()> {
 
     println!("\n3. List plugins");
 
-    let list_result = tools.execute("plugin", json!({ "op": "list" })).await;
+    let list_result = gate.run(&tools, "plugin", json!({ "op": "list" })).await;
 
     if list_result.success {
         println!("   {}", list_result.content);
@@ -119,8 +124,8 @@ async fn main() -> Result<()> {
 
     println!("\n4. Export the 'greet' plugin (JSON)");
 
-    let export_result = tools
-        .execute("plugin", json!({ "op": "export", "name": "greet" }))
+    let export_result = gate
+        .run(&tools, "plugin", json!({ "op": "export", "name": "greet" }))
         .await;
 
     if export_result.success {

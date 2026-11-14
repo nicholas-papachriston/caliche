@@ -696,7 +696,11 @@ fn apply_edit_sync(
 
 #[async_trait]
 impl Tool for EditFileTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         execute_edit_file(arguments).await
     }
 }
@@ -740,7 +744,9 @@ mod tests {
             ]
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         let content = tokio::fs::read_to_string(&file_path)
@@ -770,7 +776,9 @@ mod tests {
             ]
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         let content = tokio::fs::read_to_string(&file_path)
@@ -800,7 +808,9 @@ mod tests {
             ]
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         let content = tokio::fs::read_to_string(&file_path)
@@ -821,14 +831,17 @@ mod tests {
 
         let tool = EditFileTool;
         let result = tool
-            .execute(json!({
-                "path": file_path.to_str().expect("path"),
-                "operations": [{
-                    "type": "str_replace",
-                    "old_string": "foo",
-                    "new_string": "baz"
-                }]
-            }))
+            .execute(
+                json!({
+                    "path": file_path.to_str().expect("path"),
+                    "operations": [{
+                        "type": "str_replace",
+                        "old_string": "foo",
+                        "new_string": "baz"
+                    }]
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!result.success);
         assert!(
@@ -851,21 +864,24 @@ mod tests {
 
         let tool = EditFileTool;
         let result = tool
-            .execute(json!({
-                "path": file_path.to_str().expect("path"),
-                "operations": [
-                    {
-                        "type": "str_replace",
-                        "old_string": "alpha",
-                        "new_string": "ALPHA"
-                    },
-                    {
-                        "type": "str_replace",
-                        "old_string": "gamma",
-                        "new_string": "GAMMA"
-                    }
-                ]
-            }))
+            .execute(
+                json!({
+                    "path": file_path.to_str().expect("path"),
+                    "operations": [
+                        {
+                            "type": "str_replace",
+                            "old_string": "alpha",
+                            "new_string": "ALPHA"
+                        },
+                        {
+                            "type": "str_replace",
+                            "old_string": "gamma",
+                            "new_string": "GAMMA"
+                        }
+                    ]
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(result.success, "{:?}", result.error);
         let content = tokio::fs::read_to_string(&file_path).await.expect("read");
@@ -900,10 +916,13 @@ mod tests {
 
         let tool = EditFileTool;
         let result = tool
-            .execute(json!({
-                "path": file_path.to_str().expect("path"),
-                "operations": operations
-            }))
+            .execute(
+                json!({
+                    "path": file_path.to_str().expect("path"),
+                    "operations": operations
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(result.success, "{:?}", result.error);
         let content = tokio::fs::read_to_string(&file_path).await.expect("read");

@@ -55,7 +55,11 @@ impl ToolMeta for ContextGetTool {
 
 #[async_trait]
 impl Tool for ContextGetTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path = match arguments.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {
@@ -128,7 +132,11 @@ impl ToolMeta for ContextSetTool {
 
 #[async_trait]
 impl Tool for ContextSetTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path = match arguments.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => {

@@ -185,7 +185,11 @@ impl ToolMeta for ReadFileTool {
 
 #[async_trait]
 impl Tool for ReadFileTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let total_start = measure_start();
         let mut timings = ReadStageTimings::default();
         let path_str = match params::extract_string(&arguments, "path", None) {
@@ -300,9 +304,10 @@ impl Tool for ReadFileTool {
         &self,
         arguments: serde_json::Value,
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let Some(sandbox) = sandbox else {
-            return self.execute(arguments).await;
+            return self.execute(arguments, permit).await;
         };
         let path_str = match params::extract_string(&arguments, "path", None) {
             Ok(p) => p,
@@ -311,8 +316,8 @@ impl Tool for ReadFileTool {
         let has_query = arguments.get("query").and_then(|v| v.as_str()).is_some();
         match resolve_read_window(&arguments) {
             Err(error) => return ToolResult::error(error),
-            Ok(Some(_)) => return self.execute(arguments).await,
-            Ok(None) if has_query => return self.execute(arguments).await,
+            Ok(Some(_)) => return self.execute(arguments, permit).await,
+            Ok(None) if has_query => return self.execute(arguments, permit).await,
             Ok(None) => {}
         }
         let total_start = measure_start();

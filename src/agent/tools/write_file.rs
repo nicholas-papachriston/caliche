@@ -136,7 +136,11 @@ impl ToolMeta for WriteFileTool {
 
 #[async_trait]
 impl Tool for WriteFileTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = match params::extract_string(&arguments, "path", None) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(e),
@@ -244,9 +248,10 @@ impl Tool for WriteFileTool {
         &self,
         arguments: serde_json::Value,
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let Some(sandbox) = sandbox else {
-            return self.execute(arguments).await;
+            return self.execute(arguments, permit).await;
         };
         let path_str = match params::extract_string(&arguments, "path", None) {
             Ok(p) => p,
@@ -341,7 +346,9 @@ mod tests {
             "content": "Hello, World!"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         // Verify file was created
@@ -368,7 +375,9 @@ mod tests {
             "content": "New content"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         // Verify file was overwritten
@@ -396,7 +405,9 @@ mod tests {
             "append": true
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         // Verify content was appended
@@ -419,7 +430,9 @@ mod tests {
             "create_dirs": true
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success);
 
         // Verify file was created
@@ -444,7 +457,9 @@ mod tests {
             "path": file_path.to_str().expect("path"),
             "content": "A"
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(!result.success, "should be rejected");
         let err = result.error.as_deref().unwrap_or("");
         assert!(
@@ -475,7 +490,9 @@ mod tests {
             "content": "A",
             "force": true
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "force=true should bypass guard");
         let on_disk = tokio::fs::read_to_string(&file_path).await.expect("read");
         assert_eq!(on_disk, "A");
@@ -496,7 +513,9 @@ mod tests {
             "path": file_path.to_str().expect("path"),
             "content": "A"
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "small existing file should not be blocked");
     }
 
@@ -515,7 +534,9 @@ mod tests {
             "path": file_path.to_str().expect("path"),
             "content": "y".repeat(200)
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "large-to-large overwrite should be allowed");
     }
 
@@ -530,7 +551,9 @@ mod tests {
             "path": file_path.to_str().expect("path"),
             "content": "A"
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "new file should never be blocked");
     }
 
@@ -549,7 +572,9 @@ mod tests {
             "content": "A",
             "append": true
         });
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "append should never be blocked");
     }
 
@@ -561,7 +586,9 @@ mod tests {
             "content": "malicious"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(!result.success, "Expected tool execution to fail");
         assert!(
             result.error.is_some(),

@@ -48,7 +48,10 @@ async fn metadata_reads_dimensions_for_each_decodable_format() {
             continue;
         }
         let result = ProcessDocumentTool
-            .execute(json!({ "path": path.to_str().unwrap(), "operation": "metadata" }))
+            .execute(
+                json!({ "path": path.to_str().unwrap(), "operation": "metadata" }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         if !(result.success && result.content.contains("- Dimensions: 3x2 pixels")) {
             failures.push(format!(

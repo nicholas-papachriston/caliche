@@ -96,7 +96,11 @@ async fn test_agent_with_custom_tool() {
 
     #[async_trait]
     impl Tool for TestTool {
-        async fn execute(&self, _args: serde_json::Value) -> caliche::ToolResult {
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _permit: &caliche::agent::tools::ToolPermit<'_>,
+        ) -> caliche::ToolResult {
             caliche::ToolResult::success("Test result".to_string())
         }
     }

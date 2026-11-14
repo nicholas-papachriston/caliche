@@ -117,7 +117,11 @@ impl crate::agent::tools::tool::ToolMeta for SessionsListTool {
 
 #[async_trait]
 impl crate::agent::tools::tool::Tool for SessionsListTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let registry = LiveSessionRegistry::global();
         let tag = arguments.get("tag").and_then(|v| v.as_str());
         let sessions = match tag {
@@ -191,7 +195,11 @@ impl crate::agent::tools::tool::ToolMeta for SessionsHistoryTool {
 
 #[async_trait]
 impl crate::agent::tools::tool::Tool for SessionsHistoryTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let session_id = match arguments.get("session_id").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return ToolResult::error("session_id is required"),
@@ -249,7 +257,11 @@ impl crate::agent::tools::tool::ToolMeta for SessionsSendTool {
 
 #[async_trait]
 impl crate::agent::tools::tool::Tool for SessionsSendTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let session_id = match arguments.get("session_id").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return ToolResult::error("session_id is required"),
@@ -368,7 +380,11 @@ impl crate::agent::tools::tool::ToolMeta for SessionsSpawnTool {
 
 #[async_trait]
 impl crate::agent::tools::tool::Tool for SessionsSpawnTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let Some(ref spawner) = self.spawner else {
             return ToolResult::error("Sessions spawn not configured (no spawner)");
         };

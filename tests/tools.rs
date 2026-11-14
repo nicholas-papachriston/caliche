@@ -45,7 +45,11 @@ impl ToolMeta for AdditionTool {
 
 #[async_trait]
 impl Tool for AdditionTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let a = args["a"].as_f64().unwrap_or(0.0);
         let b = args["b"].as_f64().unwrap_or(0.0);
         let result = a + b;
@@ -84,7 +88,11 @@ impl ToolMeta for FailingTool {
 
 #[async_trait]
 impl Tool for FailingTool {
-    async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         ToolResult::error("This tool always fails".to_string())
     }
 }
@@ -128,7 +136,9 @@ async fn test_tool_execution_success() {
     let tool = AdditionTool;
     let args = json!({"a": 5, "b": 3});
 
-    let result = tool.execute(args).await;
+    let result = tool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
 
     assert!(result.success);
     assert!(result.content.contains("8"));
@@ -139,7 +149,9 @@ async fn test_tool_execution_failure() {
     let tool = FailingTool;
     let args = json!({});
 
-    let result = tool.execute(args).await;
+    let result = tool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
 
     assert!(!result.success);
     assert!(result.error.is_some());
@@ -208,7 +220,10 @@ async fn test_calculator_tool_basic() {
 
     // Test addition
     let result = tool
-        .execute(json!({"operation": "add", "a": 2, "b": 2}))
+        .execute(
+            json!({"operation": "add", "a": 2, "b": 2}),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("4"));
@@ -223,7 +238,10 @@ async fn test_calculator_tool_multiply() {
 
     // Test multiplication
     let result = tool
-        .execute(json!({"operation": "multiply", "a": 15, "b": 2}))
+        .execute(
+            json!({"operation": "multiply", "a": 15, "b": 2}),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("30"));
@@ -237,7 +255,12 @@ async fn test_calculator_tool_invalid() {
     let tool = CalculatorTool;
 
     // Test missing required parameter
-    let result = tool.execute(json!({"operation": "add", "a": 5})).await;
+    let result = tool
+        .execute(
+            json!({"operation": "add", "a": 5}),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(!result.success);
     assert!(result.error.is_some());
 }
@@ -254,7 +277,12 @@ async fn test_fs_tool_read() -> anyhow::Result<()> {
     tokio::fs::write(&file_path, "[package]\nname = \"fixture\"\n").await?;
 
     let tool = FsTool::new();
-    let result = tool.execute(json!({"op": "read", "path": file_path})).await;
+    let result = tool
+        .execute(
+            json!({"op": "read", "path": file_path}),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{:?}", result.error);
     assert!(result.content.contains("[package]"));
     assert!(result.content.contains("name = \"fixture\""));
@@ -272,12 +300,15 @@ async fn test_fs_tool_read_line_range_has_payload() -> anyhow::Result<()> {
 
     let tool = FsTool::new();
     let result = tool
-        .execute(json!({
-            "op": "read",
-            "path": file_path,
-            "start_line": 2,
-            "end_line": 3
-        }))
+        .execute(
+            json!({
+                "op": "read",
+                "path": file_path,
+                "start_line": 2,
+                "end_line": 3
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
 
     assert!(result.success, "{:?}", result.error);
@@ -305,11 +336,14 @@ async fn test_fs_tool_glob_respects_pattern_and_payload() -> anyhow::Result<()> 
 
     let tool = FsTool::new();
     let result = tool
-        .execute(json!({
-            "op": "glob",
-            "path": dir.path(),
-            "pattern": "*.rs"
-        }))
+        .execute(
+            json!({
+                "op": "glob",
+                "path": dir.path(),
+                "pattern": "*.rs"
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
 
     assert!(result.success, "{:?}", result.error);
@@ -334,13 +368,16 @@ async fn test_fs_tool_grep_files_with_matches_mode() -> anyhow::Result<()> {
 
     let tool = FsTool::new();
     let result = tool
-        .execute(json!({
-            "op": "grep",
-            "path": dir.path(),
-            "pattern": "target",
-            "file_pattern": ".rs",
-            "mode": "files_with_matches"
-        }))
+        .execute(
+            json!({
+                "op": "grep",
+                "path": dir.path(),
+                "pattern": "target",
+                "file_pattern": ".rs",
+                "mode": "files_with_matches"
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
 
     assert!(result.success, "{:?}", result.error);
@@ -367,11 +404,14 @@ async fn test_fs_tool_list_extension_summary_and_payload() -> anyhow::Result<()>
 
     let tool = FsTool::new();
     let result = tool
-        .execute(json!({
-            "op": "list",
-            "path": dir.path(),
-            "extensions_summary": true
-        }))
+        .execute(
+            json!({
+                "op": "list",
+                "path": dir.path(),
+                "extensions_summary": true
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
 
     assert!(result.success, "{:?}", result.error);
@@ -406,8 +446,15 @@ async fn test_fs_tool_read_query_cache_hit_payload() -> anyhow::Result<()> {
         "query": "target",
         "num_chunks": 1
     });
-    let first = tool.execute(args.clone()).await;
-    let second = tool.execute(args).await;
+    let first = tool
+        .execute(
+            args.clone(),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
+    let second = tool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
 
     assert!(first.success, "{:?}", first.error);
     assert!(second.success, "{:?}", second.error);
@@ -465,7 +512,11 @@ async fn test_toolkit_trait() {
 
             #[async_trait]
             impl Tool for TestTool {
-                async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+                async fn execute(
+                    &self,
+                    _args: serde_json::Value,
+                    _permit: &caliche::agent::tools::ToolPermit<'_>,
+                ) -> ToolResult {
                     ToolResult::success("test".to_string())
                 }
             }
@@ -533,7 +584,11 @@ async fn test_toolkit_registration_with_builder() {
 
             #[async_trait]
             impl Tool for TestTool {
-                async fn execute(&self, _args: serde_json::Value) -> ToolResult {
+                async fn execute(
+                    &self,
+                    _args: serde_json::Value,
+                    _permit: &caliche::agent::tools::ToolPermit<'_>,
+                ) -> ToolResult {
                     ToolResult::success("test".to_string())
                 }
             }
@@ -583,7 +638,9 @@ async fn test_context_tools() {
 
     // Test get tool
     let get_args = json!({ "path": "/order_id" });
-    let get_result = get_tool.execute(get_args).await;
+    let get_result = get_tool
+        .execute(get_args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(get_result.success);
     assert!(get_result.content.contains("ORD-123"));
 
@@ -592,7 +649,9 @@ async fn test_context_tools() {
         "path": "/status",
         "value": "processing"
     });
-    let set_result = set_tool.execute(set_args).await;
+    let set_result = set_tool
+        .execute(set_args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(set_result.success);
 
     // Verify the value was set
@@ -617,12 +676,16 @@ async fn test_context_tools_with_nested_paths() {
         "path": "/order/items/0/name",
         "value": "Widget"
     });
-    let set_result = set_tool.execute(set_args).await;
+    let set_result = set_tool
+        .execute(set_args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(set_result.success);
 
     // Get nested value
     let get_args = json!({ "path": "/order/items/0/name" });
-    let get_result = get_tool.execute(get_args).await;
+    let get_result = get_tool
+        .execute(get_args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(get_result.success);
     assert!(get_result.content.contains("Widget"));
 }
@@ -639,7 +702,9 @@ async fn test_context_get_missing_path() {
 
     // Get non-existent path should return a message indicating no value found
     let get_args = json!({ "path": "/nonexistent" });
-    let get_result = get_tool.execute(get_args).await;
+    let get_result = get_tool
+        .execute(get_args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(get_result.success);
     // Should return a message indicating no value was found
     assert!(
@@ -696,17 +761,20 @@ mod fs_edit_search_read {
         let tool = FsTool::new();
 
         let deleted = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_delete",
-                    "start_line": "2",
-                    "end_line": "2",
-                    "start_hash": format!("2:{delete_hash}| delete_me"),
-                    "end_hash": delete_hash
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_delete",
+                        "start_line": "2",
+                        "end_line": "2",
+                        "start_hash": format!("2:{delete_hash}| delete_me"),
+                        "end_hash": delete_hash
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(deleted.success, "delete: {:?}", deleted.error);
 
@@ -717,7 +785,7 @@ mod fs_edit_search_read {
                 "operations": format!(
                     "[{{\"type\":\"hashline_replace\",\"start_line\":2,\"end_line\":2,\"start_hash\":\"{replace_hash}\",\"end_hash\":\"{replace_hash}\",\"content\":\"replaced\"}}]"
                 )
-            }))
+            }), &caliche::agent::tools::ToolPermit::for_tests())
             .await;
         assert!(replaced.success, "replace: {:?}", replaced.error);
 
@@ -742,17 +810,20 @@ mod fs_edit_search_read {
         let beta = compute_line_hash("beta_unique");
         let tool = FsTool::new();
         let relocated = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_delete",
-                    "start_line": 2,
-                    "end_line": 2,
-                    "start_hash": beta,
-                    "end_hash": beta
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_delete",
+                        "start_line": 2,
+                        "end_line": 2,
+                        "start_hash": beta,
+                        "end_hash": beta
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(relocated.success, "relocate: {:?}", relocated.error);
         let text = tokio::fs::read_to_string(&path).await.expect("read");
@@ -766,18 +837,21 @@ mod fs_edit_search_read {
             .find(|candidate| *candidate != inserted_hash && *candidate != alpha_hash)
             .expect("unused hash");
         let missed = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_replace",
-                    "start_line": 1,
-                    "end_line": 1,
-                    "start_hash": wrong,
-                    "end_hash": wrong,
-                    "content": "nope"
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_replace",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "start_hash": wrong,
+                        "end_hash": wrong,
+                        "content": "nope"
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!missed.success, "mismatch must fail");
         let error = missed.error.unwrap_or_default();
@@ -804,12 +878,15 @@ mod fs_edit_search_read {
         let tool = FsTool::new();
 
         let sliced = tool
-            .execute(json!({
-                "op": "read",
-                "path": &path,
-                "offset": 10,
-                "limit": 3
-            }))
+            .execute(
+                json!({
+                    "op": "read",
+                    "path": &path,
+                    "offset": 10,
+                    "limit": 3
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(sliced.success, "{:?}", sliced.error);
         assert!(sliced.content.contains("line-10"), "{}", sliced.content);
@@ -825,12 +902,15 @@ mod fs_edit_search_read {
         assert_eq!(payload["end_line"], 12);
 
         let strings = tool
-            .execute(json!({
-                "op": "read",
-                "path": &path,
-                "start_line": "15",
-                "end_line": "16"
-            }))
+            .execute(
+                json!({
+                    "op": "read",
+                    "path": &path,
+                    "start_line": "15",
+                    "end_line": "16"
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(strings.success, "{:?}", strings.error);
         assert!(strings.content.contains("line-15"), "{}", strings.content);
@@ -842,11 +922,14 @@ mod fs_edit_search_read {
         );
 
         let bad = tool
-            .execute(json!({
-                "op": "read",
-                "path": &path,
-                "start_line": "head"
-            }))
+            .execute(
+                json!({
+                    "op": "read",
+                    "path": &path,
+                    "start_line": "head"
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(
             !bad.success,
@@ -871,12 +954,15 @@ mod fs_edit_search_read {
         let tool = FsTool::new();
 
         let quoted = tool
-            .execute(json!({
-                "op": "grep",
-                "path": &path,
-                "pattern": "\"fn foo(bar)\"",
-                "context_lines": 0
-            }))
+            .execute(
+                json!({
+                    "op": "grep",
+                    "path": &path,
+                    "pattern": "\"fn foo(bar)\"",
+                    "context_lines": 0
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(quoted.success, "{:?}", quoted.error);
         assert!(
@@ -891,12 +977,15 @@ mod fs_edit_search_read {
         );
 
         let invalid = tool
-            .execute(json!({
-                "op": "grep",
-                "path": &path,
-                "pattern": "foo(",
-                "context_lines": 0
-            }))
+            .execute(
+                json!({
+                    "op": "grep",
+                    "path": &path,
+                    "pattern": "foo(",
+                    "context_lines": 0
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(invalid.success, "{:?}", invalid.error);
         assert!(
@@ -970,17 +1059,20 @@ mod fs_edit_search_read {
 
         for raw in ["#12", "L42:ab", "line 42", "42-ab"] {
             let deleted = tool
-                .execute(json!({
-                    "op": "edit",
-                    "path": &path,
-                    "operations": [{
-                        "type": "hashline_delete",
-                        "start_line": 12,
-                        "end_line": 12,
-                        "start_hash": raw,
-                        "end_hash": raw
-                    }]
-                }))
+                .execute(
+                    json!({
+                        "op": "edit",
+                        "path": &path,
+                        "operations": [{
+                            "type": "hashline_delete",
+                            "start_line": 12,
+                            "end_line": 12,
+                            "start_hash": raw,
+                            "end_hash": raw
+                        }]
+                    }),
+                    &caliche::agent::tools::ToolPermit::for_tests(),
+                )
                 .await;
             assert!(
                 !deleted.success,
@@ -1034,18 +1126,21 @@ mod fs_edit_search_read {
         let tool = FsTool::new();
 
         let missed = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_replace",
-                    "start_line": 1,
-                    "end_line": 1,
-                    "start_hash": legacy,
-                    "end_hash": legacy,
-                    "content": "OVERWROTE"
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_replace",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "start_hash": legacy,
+                        "end_hash": legacy,
+                        "content": "OVERWROTE"
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!missed.success, "2-hex relocated: {:?}", missed.error);
         let error = missed.error.unwrap_or_default();
@@ -1056,18 +1151,21 @@ mod fs_edit_search_read {
         assert!(!text.contains("OVERWROTE"), "{text}");
 
         let relocated = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_replace",
-                    "start_line": 1,
-                    "end_line": 1,
-                    "start_hash": full,
-                    "end_hash": full,
-                    "content": "moved"
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_replace",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "start_hash": full,
+                        "end_hash": full,
+                        "content": "moved"
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(
             relocated.success,
@@ -1089,18 +1187,21 @@ mod fs_edit_search_read {
         let hash = compute_line_hash("alpha");
         let tool = FsTool::new();
         let missed = tool
-            .execute(json!({
-                "op": "edit",
-                "path": &path,
-                "operations": [{
-                    "type": "hashline_replace",
-                    "start_line": 1,
-                    "end_line": 1,
-                    "start_hash": hash,
-                    "end_hash": hash,
-                    "content": "OVERWROTE"
-                }]
-            }))
+            .execute(
+                json!({
+                    "op": "edit",
+                    "path": &path,
+                    "operations": [{
+                        "type": "hashline_replace",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "start_hash": hash,
+                        "end_hash": hash,
+                        "content": "OVERWROTE"
+                    }]
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(
             !missed.success,
@@ -1124,12 +1225,15 @@ mod fs_edit_search_read {
         let path = write_file(dir.path(), "tail.txt", &body).await;
         let tool = FsTool::new();
         let past = tool
-            .execute(json!({
-                "op": "read",
-                "path": &path,
-                "offset": 500,
-                "limit": 10
-            }))
+            .execute(
+                json!({
+                    "op": "read",
+                    "path": &path,
+                    "offset": 500,
+                    "limit": 10
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(
             !past.success,

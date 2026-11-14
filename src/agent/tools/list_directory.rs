@@ -82,7 +82,11 @@ impl ToolMeta for ListDirectoryTool {
 
 #[async_trait]
 impl Tool for ListDirectoryTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let recursive = params::extract_bool(&arguments, "recursive", false);
         let max_depth = params::extract_number_or(&arguments, "max_depth", 2) as usize;
@@ -423,7 +427,10 @@ mod tests {
         fs::create_dir(root.join("d".repeat(pad))).expect("pad dir");
 
         let result = ListDirectoryTool
-            .execute(json!({ "path": root.display().to_string() }))
+            .execute(
+                json!({ "path": root.display().to_string() }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
 
         assert_eq!(result.error, None);

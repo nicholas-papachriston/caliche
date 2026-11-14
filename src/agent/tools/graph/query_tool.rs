@@ -339,7 +339,11 @@ impl ToolMeta for GraphQueryTool {
 
 #[async_trait]
 impl Tool for GraphQueryTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = match params::extract_operation(&arguments) {
             Ok(op) => op,
             Err(e) => return ToolResult::error(e),

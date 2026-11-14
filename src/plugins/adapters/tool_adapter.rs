@@ -65,7 +65,11 @@ impl ToolMeta for SchemaToolAdapter {
 
 #[async_trait]
 impl Tool for SchemaToolAdapter {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         match self
             .runtime
             .execute(&self.spec, arguments, &self.capabilities)

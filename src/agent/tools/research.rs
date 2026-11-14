@@ -155,7 +155,11 @@ impl ToolMeta for ResearchTool {
 
 #[async_trait]
 impl Tool for ResearchTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let query = match arguments.get("query").and_then(|v| v.as_str()) {
             Some(q) => q.trim(),
             None => {

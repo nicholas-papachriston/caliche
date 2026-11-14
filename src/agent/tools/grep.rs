@@ -111,7 +111,11 @@ impl ToolMeta for GrepTool {
 
 #[async_trait]
 impl Tool for GrepTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let pattern_str = match params::extract_string(&arguments, "pattern", None) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(e),
@@ -1317,7 +1321,9 @@ mod tests {
         if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
             args.extend(extra.clone());
         }
-        let result = GrepTool.execute(args).await;
+        let result = GrepTool
+            .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+            .await;
         assert!(result.success, "{:?}", result.error);
         result
     }
@@ -1512,7 +1518,10 @@ mod link_tests {
         let root = ws.path().canonicalize().expect("canonical workspace");
 
         let result = GrepTool
-            .execute(json!({ "pattern": "needle", "path": root.to_string_lossy() }))
+            .execute(
+                json!({ "pattern": "needle", "path": root.to_string_lossy() }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
 
         assert!(result.success, "{:?}", result.error);

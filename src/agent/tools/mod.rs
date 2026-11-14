@@ -55,6 +55,7 @@ pub mod mcp_remote;
 pub mod media_understanding;
 pub mod metadata;
 pub mod names;
+pub mod permit;
 pub mod perplexity_search;
 #[cfg(feature = "tools-document")]
 pub mod process_document;
@@ -138,6 +139,7 @@ pub use media_understanding::{
     MediaUnderstandingProvider, MediaUnderstandingRunner,
 };
 pub use metadata::{ToolCategory, ToolCost, ToolDependencies, ToolMetadata, ToolRelevanceScore};
+pub use permit::ToolPermit;
 pub use perplexity_search::PerplexitySearchTool;
 #[cfg(feature = "tools-document")]
 pub use process_document::ProcessDocumentTool;

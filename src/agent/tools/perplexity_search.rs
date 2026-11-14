@@ -229,14 +229,19 @@ impl ToolMeta for PerplexitySearchTool {
 
 #[async_trait]
 impl Tool for PerplexitySearchTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
-        self.execute_with_context(arguments, None).await
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
+        self.execute_with_context(arguments, None, permit).await
     }
 
     async fn execute_with_context(
         &self,
         arguments: serde_json::Value,
         context: Option<&UserContext>,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         tracing::debug!("Perplexity search called with arguments: {:?}", arguments);
 

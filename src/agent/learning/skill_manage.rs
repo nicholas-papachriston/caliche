@@ -79,7 +79,11 @@ impl crate::agent::tools::tool::ToolMeta for SkillManageTool {
 
 #[async_trait]
 impl Tool for SkillManageTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some(a) => a,
             None => return ToolResult::error("Missing required field: action"),

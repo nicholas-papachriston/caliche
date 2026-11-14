@@ -11,9 +11,7 @@ use async_trait::async_trait;
 use caliche::agent::hooks::{
     ApprovalResolver, HookContext, HookMatcher, HookRegistry, HookResult, LifecycleHook,
 };
-use caliche::agent::tools::execution::{
-    HookExecutionMiddleware, ToolExecutionContext, ToolExecutionMiddleware,
-};
+use caliche::agent::tools::execution::{HookExecutionMiddleware, ToolExecutionContext};
 use caliche::messages::{Message, StreamEvent};
 use chrono::TimeZone;
 use serde_json::{Value, json};

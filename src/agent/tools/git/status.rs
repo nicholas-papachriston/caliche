@@ -111,7 +111,11 @@ fn format_status_output(lists: &StatusLists) -> String {
 
 #[async_trait]
 impl Tool for GitStatusTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = params::extract_string_or(&arguments, "path", ".");
         let repo = match super::open_tool_repository(&path_str) {
             Ok(r) => r,
@@ -159,7 +163,11 @@ impl Tool for GitStatusTool {
         json!({})
     }
 
-    async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         ToolResult::error("Git tools require 'tools-git' feature to be enabled")
     }
 }

@@ -852,6 +852,7 @@ mod tests {
             async fn execute(
                 &self,
                 arguments: serde_json::Value,
+                _permit: &crate::agent::tools::ToolPermit<'_>,
             ) -> crate::agent::tools::ToolResult {
                 let x = arguments.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let y = arguments.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);

@@ -70,7 +70,11 @@ fn glob_chars_budget(matched_count: usize) -> usize {
 #[cfg(feature = "tools-grep")]
 #[async_trait]
 impl Tool for GlobTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let pattern = match params::extract_string(&arguments, "pattern", None) {
             Ok(pattern) => pattern,
             Err(e) => return ToolResult::error(e),
@@ -358,10 +362,13 @@ mod tests {
             std::fs::write(dir.path().join(long_path_name(i)), "x").expect("write");
         }
         let result = GlobTool
-            .execute(json!({
-                "path": dir.path().to_string_lossy(),
-                "pattern": "*.txt",
-            }))
+            .execute(
+                json!({
+                    "path": dir.path().to_string_lossy(),
+                    "pattern": "*.txt",
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(result.success, "{:?}", result.error);
         (dir, result)
@@ -419,7 +426,10 @@ mod tests {
             std::fs::write(dir.path().join(name), "x").expect("write");
         }
         let result = GlobTool
-            .execute(json!({ "path": dir.path().to_string_lossy(), "pattern": "*.rs" }))
+            .execute(
+                json!({ "path": dir.path().to_string_lossy(), "pattern": "*.rs" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(
             result.content.ends_with(":\na.rs\nb.rs"),

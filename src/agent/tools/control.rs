@@ -104,7 +104,11 @@ impl ToolMeta for HandoffTool {
 
 #[async_trait]
 impl Tool for HandoffTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let target_agent = match arguments.get("target_agent").and_then(|v| v.as_str()) {
             Some(t) => t.to_string(),
             None => {
@@ -194,7 +198,10 @@ mod tests {
     #[tokio::test]
     async fn open_policy_passes_the_handoff_through() {
         let result = HandoffTool::new()
-            .execute(handoff_args("reviewer", None))
+            .execute(
+                handoff_args("reviewer", None),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(result.success);
         assert!(result.content.contains("reviewer"));
@@ -206,7 +213,12 @@ mod tests {
             .with_policy(TaskInvocationPolicy::deny_all())
             .with_caller("planner");
 
-        let result = tool.execute(handoff_args("shell-runner", None)).await;
+        let result = tool
+            .execute(
+                handoff_args("shell-runner", None),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         assert!(!result.success);
         let error = result.error.unwrap_or_default();
         assert!(error.contains("planner"));
@@ -218,8 +230,23 @@ mod tests {
         let policy = TaskInvocationPolicy::deny_all().with_rule("reviewer", PolicyEffect::Allow);
         let tool = HandoffTool::new().with_policy(policy);
 
-        assert!(tool.execute(handoff_args("reviewer", None)).await.success);
-        assert!(!tool.execute(handoff_args("other", None)).await.success);
+        assert!(
+            tool.execute(
+                handoff_args("reviewer", None),
+                &crate::agent::tools::ToolPermit::for_tests()
+            )
+            .await
+            .success
+        );
+        assert!(
+            !tool
+                .execute(
+                    handoff_args("other", None),
+                    &crate::agent::tools::ToolPermit::for_tests()
+                )
+                .await
+                .success
+        );
     }
 
     #[tokio::test]
@@ -227,7 +254,10 @@ mod tests {
         let tool = HandoffTool::new().with_max_tools(vec!["fs".to_string()]);
 
         let result = tool
-            .execute(handoff_args("reviewer", Some(vec!["fs", "bash"])))
+            .execute(
+                handoff_args("reviewer", Some(vec!["fs", "bash"])),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(result.success);
 

@@ -1631,7 +1631,11 @@ fn parse_js_tool_result(result: String) -> ToolResult {
 
 #[async_trait]
 impl Tool for JsTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let result = call_js_sync_bridge(&self.execute_fn, arguments).await;
 
         match result {

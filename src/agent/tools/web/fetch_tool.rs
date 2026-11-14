@@ -96,7 +96,11 @@ impl ToolMeta for WebFetchTool {
 
 #[async_trait]
 impl Tool for WebFetchTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let url = match params::extract_string(&arguments, "url", None) {
             Ok(value) => value,
             Err(err) => return ToolResult::error(err),

@@ -75,7 +75,11 @@ impl ToolMeta for ImageGenerationTool {
 
 #[async_trait]
 impl Tool for ImageGenerationTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         match self.execute_inner(arguments).await {
             Ok(result) => result,
             Err(error) => ToolResult::error(error.to_string()),

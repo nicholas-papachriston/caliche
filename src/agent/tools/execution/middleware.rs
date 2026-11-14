@@ -1,11 +1,12 @@
-use async_trait::async_trait;
 use beef::lean::Cow;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::hooks::{
     AmendmentPersister, ApprovalOutcome, ApprovalResolver, HookContext, HookRegistry,
 };
-use crate::agent::tools::tool::ToolResult;
+use crate::agent::tools::permit::ToolPermit;
+use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::tools::tool::{Tool, ToolResult};
 use crate::policy::{
     ApprovalAnswer, ApprovalBroker, ApprovalRequest, ApprovalWaiter, BrokerError, Effect, FsRoots,
     HumanChannel, ModeOverlay, PendingId, Principal, evaluate_tool_gate,
@@ -33,29 +34,12 @@ impl<'a> ToolExecutionContext<'a> {
     }
 }
 
-#[async_trait]
-pub trait ToolExecutionMiddleware: Send + Sync {
-    async fn before_execute(
-        &self,
-        _ctx: &ToolExecutionContext<'_>,
-    ) -> Result<(), Cow<'static, str>> {
-        Ok(())
-    }
-
-    /// Re-check a granted approval immediately before the tool runs.
-    ///
-    /// The default does nothing. [`HookExecutionMiddleware`] hashes the
-    /// arguments about to run and drops a stale grant.
-    async fn admit_execution(
-        &self,
-        _ctx: &ToolExecutionContext<'_>,
-    ) -> Result<(), Cow<'static, str>> {
-        Ok(())
-    }
-
-    async fn after_execute(&self, _ctx: &ToolExecutionContext<'_>, _result: &mut ToolResult) {}
-}
-
+/// The tool gate.
+///
+/// It runs the policy gate and the lifecycle hooks before a tool call and
+/// hands out the [`ToolPermit`] the call needs to run. Every path that runs a
+/// tool asks it first: the agent loop, the operation layer, and a host
+/// through [`HookExecutionMiddleware::run`].
 #[derive(Clone)]
 pub struct HookExecutionMiddleware {
     hooks: HookRegistry,
@@ -322,9 +306,73 @@ fn tool_dialect(tool: &str) -> Option<&'static str> {
     }
 }
 
-#[async_trait]
-impl ToolExecutionMiddleware for HookExecutionMiddleware {
-    async fn before_execute(
+impl HookExecutionMiddleware {
+    /// Ask the gate whether this call may run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when the policy, a hook, or a stale approval
+    /// refuses the call.
+    pub async fn admit(
+        &self,
+        ctx: &ToolExecutionContext<'_>,
+    ) -> Result<ToolPermit<'_>, Cow<'static, str>> {
+        self.before_execute(ctx).await?;
+        self.admit_execution(ctx).await?;
+        Ok(ToolPermit::admitted())
+    }
+
+    /// Run one tool call by name through the gate, then the post-use hooks.
+    ///
+    /// A refused call returns an error result naming the reason; the tool
+    /// does not run.
+    pub async fn run(
+        &self,
+        tools: &ToolRegistry,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> ToolResult {
+        let call_id = new_call_id();
+        let ctx = ToolExecutionContext {
+            tool_name: name,
+            arguments: &arguments,
+            call_id: &call_id,
+        };
+        let permit = match self.admit(&ctx).await {
+            Ok(permit) => permit,
+            Err(reason) => return refused(name, &reason),
+        };
+        let mut result = tools.execute(name, arguments.clone(), &permit).await;
+        self.after_execute(&ctx, &mut result).await;
+        result
+    }
+
+    /// Run one tool through the gate, then the post-use hooks.
+    ///
+    /// The gate sees the call under the tool's own name. A refused call
+    /// returns an error result naming the reason; the tool does not run.
+    pub async fn run_tool(&self, tool: &dyn Tool, arguments: serde_json::Value) -> ToolResult {
+        let call_id = new_call_id();
+        let ctx = ToolExecutionContext {
+            tool_name: tool.name(),
+            arguments: &arguments,
+            call_id: &call_id,
+        };
+        let permit = match self.admit(&ctx).await {
+            Ok(permit) => permit,
+            Err(reason) => return refused(tool.name(), &reason),
+        };
+        let mut result = tool.execute(arguments.clone(), &permit).await;
+        self.after_execute(&ctx, &mut result).await;
+        result
+    }
+
+    /// Check the call against the policy gate and the pre-use hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when the policy or a hook refuses the call.
+    pub async fn before_execute(
         &self,
         ctx: &ToolExecutionContext<'_>,
     ) -> Result<(), Cow<'static, str>> {
@@ -338,7 +386,12 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
         outcome
     }
 
-    async fn admit_execution(
+    /// Re-check a granted approval immediately before the tool runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when the approved arguments changed.
+    pub async fn admit_execution(
         &self,
         ctx: &ToolExecutionContext<'_>,
     ) -> Result<(), Cow<'static, str>> {
@@ -363,7 +416,8 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
         Ok(())
     }
 
-    async fn after_execute(&self, ctx: &ToolExecutionContext<'_>, result: &mut ToolResult) {
+    /// Run the post-use hooks on a finished call.
+    pub async fn after_execute(&self, ctx: &ToolExecutionContext<'_>, result: &mut ToolResult) {
         let ctx = &ctx.as_run();
         let matching_hooks = self.hooks.get_matching(ctx.tool_name);
         let hook_ctx = HookContext::new(ctx.tool_name, ctx.arguments, ctx.call_id);
@@ -378,6 +432,14 @@ impl ToolExecutionMiddleware for HookExecutionMiddleware {
             result.content.push_str(&output.to_string());
         }
     }
+}
+
+fn new_call_id() -> String {
+    crate::utils::time_id::generate_time_id().to_string()
+}
+
+fn refused(name: &str, reason: &str) -> ToolResult {
+    ToolResult::error(format!("Tool '{name}' was refused: {reason}"))
 }
 
 #[cfg(test)]

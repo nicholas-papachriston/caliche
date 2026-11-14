@@ -64,7 +64,11 @@ impl ToolMeta for JsMcpTool {
 
 #[async_trait]
 impl Tool for JsMcpTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         // Use sync bridge to call JavaScript function
         // This avoids thread safety issues by using blocking calls with oneshot channels
         use crate::call_js_sync_bridge;

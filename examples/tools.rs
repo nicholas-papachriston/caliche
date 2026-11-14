@@ -65,7 +65,11 @@ impl ToolMeta for ReverseStringTool {
 
 #[async_trait]
 impl Tool for ReverseStringTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let text = match args["text"].as_str() {
             Some(t) => t,
             None => return ToolResult::error("Missing 'text' parameter".to_string()),
@@ -111,7 +115,11 @@ impl ToolMeta for WordCountTool {
 
 #[async_trait]
 impl Tool for WordCountTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let text = match args["text"].as_str() {
             Some(t) => t,
             None => return ToolResult::error("Missing 'text' parameter".to_string()),

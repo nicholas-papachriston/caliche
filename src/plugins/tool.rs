@@ -233,7 +233,11 @@ impl ToolMeta for PluginTool {
 
 #[async_trait]
 impl Tool for PluginTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let op = arguments
             .get("op")
             .and_then(|v| v.as_str())

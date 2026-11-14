@@ -206,7 +206,11 @@ impl ToolMeta for PyTool {
 
 #[async_trait]
 impl Tool for PyTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         self.execute_async(arguments).await
     }
 }

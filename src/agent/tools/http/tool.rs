@@ -208,14 +208,19 @@ impl ToolMeta for HttpTool {
 
 #[async_trait]
 impl Tool for HttpTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
-        self.execute_with_context(arguments, None).await
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
+        self.execute_with_context(arguments, None, permit).await
     }
 
     async fn execute_with_context(
         &self,
         arguments: serde_json::Value,
         context: Option<&UserContext>,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
     ) -> ToolResult {
         let operation = params::extract_string_or(&arguments, "operation", "request");
 
@@ -831,10 +836,13 @@ mod tests {
     async fn custom_host_header_is_rejected() {
         let tool = HttpTool::new();
         let result = tool
-            .execute(json!({
-                "url": "https://example.invalid/health",
-                "headers": { "Host": "169.254.169.254" }
-            }))
+            .execute(
+                json!({
+                    "url": "https://example.invalid/health",
+                    "headers": { "Host": "169.254.169.254" }
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!result.success, "Host header must fail closed");
         let err = result.error.as_deref().unwrap_or_default();

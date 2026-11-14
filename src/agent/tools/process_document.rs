@@ -60,7 +60,11 @@ impl ToolMeta for ProcessDocumentTool {
 
 #[async_trait]
 impl Tool for ProcessDocumentTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let path_str = match params::extract_string(&arguments, "path", None) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(e),
@@ -501,7 +505,10 @@ mod temp_output_tests {
         let planted = Planted::at("pdf_text_", "", &victim);
 
         let result = ProcessDocumentTool
-            .execute(json!({ "path": pdf.to_string_lossy(), "operation": "extract_text" }))
+            .execute(
+                json!({ "path": pdf.to_string_lossy(), "operation": "extract_text" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         drop(planted);
 
@@ -522,7 +529,10 @@ mod temp_output_tests {
         let planted = Planted::at("ocr_output_", ".txt", &victim);
 
         let result = ProcessDocumentTool
-            .execute(json!({ "path": png.to_string_lossy(), "operation": "ocr" }))
+            .execute(
+                json!({ "path": png.to_string_lossy(), "operation": "ocr" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         drop(planted);
 

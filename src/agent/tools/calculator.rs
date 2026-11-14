@@ -55,7 +55,11 @@ impl ToolMeta for CalculatorTool {
 
 #[async_trait]
 impl Tool for CalculatorTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = params::extract_string_or(&arguments, "operation", "");
 
         // Validate operation parameter

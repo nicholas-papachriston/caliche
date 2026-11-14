@@ -142,7 +142,9 @@ async fn no_host_tool_writes_git_metadata() {
             // `.git.` is the same directory as `.git` only on Windows;
             // elsewhere it must still not exist afterwards.
             let before = std::fs::read_to_string(root.join(target)).ok();
-            let result = call.execute(args).await;
+            let result = call
+                .execute(args, &crate::agent::tools::ToolPermit::for_tests())
+                .await;
             let after = std::fs::read_to_string(root.join(target)).ok();
             let notes = std::fs::read_to_string(root.join("notes.txt")).unwrap_or_default();
             if result.success || after != before || notes != "notes\n" {
@@ -164,12 +166,15 @@ async fn host_tools_still_write_ordinary_files() {
     set_tool_host_fs_unlocked(true);
 
     let written = FsTool::new()
-        .execute(json!({ "op": "write", "path": "src/gitignore.rs", "content": "ok\n" }))
+        .execute(
+            json!({ "op": "write", "path": "src/gitignore.rs", "content": "ok\n" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let patched = ApplyPatchTool::new()
         .execute(json!({
             "patch": "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: docs/git.md\n@@\n-notes\n+moved\n*** End Patch"
-        }))
+        }), &crate::agent::tools::ToolPermit::for_tests())
         .await;
 
     set_tool_host_fs_unlocked(false);
@@ -197,7 +202,10 @@ async fn apply_patch_refuses_git_metadata_by_absolute_path_and_cwd() {
     let add = |path: &str| format!("*** Begin Patch\n*** Add File: {path}\n+x\n*** End Patch");
 
     let absolute = ApplyPatchTool::new()
-        .execute(json!({ "patch": add(&root.join(".git/config").display().to_string()) }))
+        .execute(
+            json!({ "patch": add(&root.join(".git/config").display().to_string()) }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     let joined = super::apply_patch::apply_hunks_to_cwd(&add(".git/config"), Some(&root)).await;
 

@@ -56,7 +56,11 @@ impl ToolMeta for RemoteMcpTool {
 
 #[async_trait]
 impl Tool for RemoteMcpTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         match self
             .client
             .call_tool(&self.remote_tool_name, arguments)

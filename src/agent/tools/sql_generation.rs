@@ -230,7 +230,11 @@ impl ToolMeta for SqlGenerationTool {
 
 #[async_trait]
 impl Tool for SqlGenerationTool {
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _permit: &crate::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let task = match params::extract_string(&arguments, "task", None) {
             Ok(task) => task,
             Err(e) => return ToolResult::error(e),

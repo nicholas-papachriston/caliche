@@ -204,7 +204,11 @@ impl ToolMeta for PyMcpTool {
 
 #[async_trait]
 impl Tool for PyMcpTool {
-    async fn execute(&self, arguments: Value) -> ToolResult {
+    async fn execute(
+        &self,
+        arguments: Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         self.execute_async(arguments).await
     }
 }

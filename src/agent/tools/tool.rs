@@ -1,4 +1,5 @@
 use crate::agent::tools::credentials;
+use crate::agent::tools::permit::ToolPermit;
 use crate::utils::beef_helpers::{deserialize_cow_str, serialize_cow_str};
 use crate::utils::user_context::UserContext;
 use async_trait::async_trait;
@@ -240,7 +241,7 @@ impl ToolResult {
 /// # Example
 ///
 /// ```rust,no_run
-/// use caliche::{Tool, ToolResult};
+/// use caliche::{Tool, ToolPermit, ToolResult};
 /// use caliche::agent::tools::ToolMeta;
 /// use async_trait::async_trait;
 ///
@@ -257,7 +258,7 @@ impl ToolResult {
 ///
 /// #[async_trait]
 /// impl Tool for GreetTool {
-///     async fn execute(&self, args: serde_json::Value) -> ToolResult {
+///     async fn execute(&self, args: serde_json::Value, _permit: &ToolPermit<'_>) -> ToolResult {
 ///         let name = args["name"].as_str().unwrap_or("world");
 ///         ToolResult::success(format!("Hello, {name}!"))
 ///     }
@@ -266,7 +267,10 @@ impl ToolResult {
 #[async_trait]
 pub trait Tool: ToolMeta {
     /// Execute the tool with the provided JSON arguments.
-    async fn execute(&self, arguments: serde_json::Value) -> ToolResult;
+    ///
+    /// `permit` is the gate's proof that it admitted this call. Pass it on
+    /// when this tool runs another tool for the same call.
+    async fn execute(&self, arguments: serde_json::Value, permit: &ToolPermit<'_>) -> ToolResult;
 
     /// Execute the tool with optional user context.
     ///
@@ -277,8 +281,9 @@ pub trait Tool: ToolMeta {
         &self,
         arguments: serde_json::Value,
         _context: Option<&UserContext>,
+        permit: &ToolPermit<'_>,
     ) -> ToolResult {
-        self.execute(arguments).await
+        self.execute(arguments, permit).await
     }
 
     /// Execute the tool inside a sandbox when one is provided; otherwise delegates to
@@ -290,8 +295,9 @@ pub trait Tool: ToolMeta {
         &self,
         arguments: serde_json::Value,
         _sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
+        permit: &ToolPermit<'_>,
     ) -> ToolResult {
-        self.execute(arguments).await
+        self.execute(arguments, permit).await
     }
 }
 

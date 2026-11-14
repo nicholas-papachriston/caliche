@@ -56,7 +56,9 @@ pub(crate) async fn execute_mcp_tool(
         return ToolsCallResult::from_text(reason, None, true);
     }
 
-    let tool_result = tool_registry.execute(name, arguments).await;
+    // The policy gate admitted the call above.
+    let permit = crate::agent::tools::ToolPermit::admitted();
+    let tool_result = tool_registry.execute(name, arguments, &permit).await;
 
     if tool_result.success {
         ToolsCallResult::from_text(tool_result.content, tool_result.typed_payload, false)
@@ -158,9 +160,7 @@ mod tests {
     /// the MCP client's check.
     #[tokio::test]
     async fn every_entry_path_gates_a_padded_name_as_the_tool_it_runs() {
-        use crate::agent::tools::execution::{
-            HookExecutionMiddleware, ToolExecutionContext, ToolExecutionMiddleware as _,
-        };
+        use crate::agent::tools::execution::{HookExecutionMiddleware, ToolExecutionContext};
         let tmp = tempfile::tempdir().expect("tmp");
         let root = tmp.path().canonicalize().expect("root");
         std::fs::create_dir_all(root.join(".codex")).expect("codex dir");

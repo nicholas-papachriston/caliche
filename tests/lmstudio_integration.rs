@@ -117,7 +117,11 @@ impl ToolMeta for WeatherTool {
 
 #[async_trait]
 impl Tool for WeatherTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let location = args["location"].as_str().unwrap_or("Unknown");
         let unit = args["unit"].as_str().unwrap_or("fahrenheit");
 
@@ -186,7 +190,11 @@ impl Tool for DatabaseTool {
         clippy::expect_used,
         reason = "test helper: a failure fails the calling test"
     )]
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = args["operation"].as_str().unwrap_or("get");
         let key = args["key"].as_str().unwrap_or("");
 
@@ -261,7 +269,11 @@ impl Tool for FileSystemTool {
         clippy::expect_used,
         reason = "test helper: a failure fails the calling test"
     )]
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let operation = args["operation"].as_str().unwrap_or("list");
         let mut files = self.files.lock().expect("Mutex lock should succeed");
 
@@ -330,7 +342,11 @@ impl ToolMeta for ApiTool {
 
 #[async_trait]
 impl Tool for ApiTool {
-    async fn execute(&self, args: serde_json::Value) -> ToolResult {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _permit: &caliche::agent::tools::ToolPermit<'_>,
+    ) -> ToolResult {
         let endpoint = args["endpoint"].as_str().unwrap_or("");
         let method = args["method"].as_str().unwrap_or("GET");
 
@@ -943,11 +959,14 @@ async fn test_lmstudio_rag_with_embeddings() {
 
     for (doc_id, content) in docs {
         match rag_tool
-            .execute(json!({
-                "operation": "index",
-                "doc_id": doc_id,
-                "document": content
-            }))
+            .execute(
+                json!({
+                    "operation": "index",
+                    "doc_id": doc_id,
+                    "document": content
+                }),
+                &caliche::agent::tools::ToolPermit::for_tests(),
+            )
             .await
         {
             result if result.success => {
@@ -966,11 +985,14 @@ async fn test_lmstudio_rag_with_embeddings() {
     // Query the RAG system
     println!("   Querying RAG system...");
     match rag_tool
-        .execute(json!({
-            "operation": "query",
-            "query": "What is ownership in Rust?",
-            "top_k": 2
-        }))
+        .execute(
+            json!({
+                "operation": "query",
+                "query": "What is ownership in Rust?",
+                "top_k": 2
+            }),
+            &caliche::agent::tools::ToolPermit::for_tests(),
+        )
         .await
     {
         result if result.success => {
@@ -1619,7 +1641,11 @@ async fn test_lmstudio_manual_embedding_with_agent_retrieval() {
 
     #[async_trait]
     impl Tool for VectorSearchTool {
-        async fn execute(&self, args: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _permit: &caliche::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             let query = args["query"].as_str().unwrap_or("");
             let top_k = args["top_k"].as_u64().unwrap_or(2) as usize;
 
@@ -2475,7 +2501,11 @@ async fn test_lmstudio_structured_json_output() {
 
     #[async_trait]
     impl Tool for JsonDataTool {
-        async fn execute(&self, args: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _permit: &caliche::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             let user_id = args["user_id"].as_str().unwrap_or("unknown");
             let data = json!({
                 "user_id": user_id,

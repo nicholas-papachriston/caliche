@@ -273,7 +273,9 @@ async fn test_handoff_tool() {
         "reason": "Need writing expertise"
     });
 
-    let result = tool.execute(args).await;
+    let result = tool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(result.success);
 
     // Parse the handoff from the result
@@ -297,7 +299,9 @@ async fn test_handoff_with_instructions() {
         "instructions": "Summarize the research findings in a blog post."
     });
 
-    let result = tool.execute(args).await;
+    let result = tool
+        .execute(args, &caliche::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(result.success);
 
     let handoff: caliche::Handoff =

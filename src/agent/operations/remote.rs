@@ -9,6 +9,7 @@ use super::{
     Operation, OperationExecution, OperationExecutionMode, OperationId, OperationManager,
     OperationStatus,
 };
+use crate::agent::tools::ToolPermit;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -85,7 +86,11 @@ impl OperationManager for RemoteOperationManager {
         self.store.commit(ops)
     }
 
-    async fn execute(&self, ids: &[OperationId]) -> Result<Vec<OperationExecution>> {
+    async fn execute(
+        &self,
+        ids: &[OperationId],
+        _permit: &ToolPermit<'_>,
+    ) -> Result<Vec<OperationExecution>> {
         self.store
             .run_batch(ids, |operation| {
                 let transport = Arc::clone(&self.transport);
@@ -278,7 +283,10 @@ mod tests {
             serde_json::json!({"command": "echo hi"}),
         );
         let ids = manager.commit(&[op]).await.expect("commit");
-        let executions = manager.execute(&ids).await.expect("execute");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("execute");
         assert_eq!(executions[0].status, OperationStatus::Completed);
         assert!(executions[0].output.contains("echo hi"));
     }
@@ -329,7 +337,10 @@ mod tests {
             serde_json::json!({"command": "produce"}),
         );
         let ids = manager.commit(&[op]).await.expect("commit");
-        let executions = manager.execute(&ids).await.expect("execute");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("execute");
         assert_eq!(executions[0].output, "out\n[stdout truncated at 4 MiB]");
     }
 
@@ -346,7 +357,10 @@ mod tests {
             serde_json::json!({"command": "echo hi"}),
         );
         let ids = manager.commit(&[op]).await.expect("commit");
-        let executions = manager.execute(&ids).await.expect("execute");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("execute");
         assert_eq!(executions[0].status, OperationStatus::Completed);
         assert_eq!(executions[0].output, "remote-ok");
         let received = transport.received.lock().expect("lock");
@@ -381,7 +395,10 @@ mod tests {
             serde_json::json!({"command": "two"}),
         );
         let ids = manager.commit(&[first, second]).await.expect("commit");
-        let executions = manager.execute(&ids).await.expect("finish-all");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("finish-all");
         assert_eq!(executions.len(), 2);
         assert_eq!(executions[0].status, OperationStatus::Failed);
         assert_eq!(executions[1].status, OperationStatus::Failed);
@@ -448,7 +465,10 @@ mod tests {
             serde_json::json!({"path": "a.txt", "content": 1}),
         );
         let ids = manager.commit(&[op]).await.expect("commit");
-        let executions = manager.execute(&ids).await.expect("mapped");
+        let executions = manager
+            .execute(&ids, &crate::agent::tools::ToolPermit::for_tests())
+            .await
+            .expect("mapped");
         assert_eq!(executions[0].status, OperationStatus::Failed);
         assert!(
             executions[0]

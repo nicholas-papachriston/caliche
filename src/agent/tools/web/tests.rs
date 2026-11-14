@@ -71,7 +71,9 @@ fn firecrawl_search_body() -> Value {
 #[tokio::test]
 async fn web_search_requires_query() {
     let tool = search_tool(WebProviderConfig::default(), MockWebTransport::new());
-    let result = tool.execute(json!({})).await;
+    let result = tool
+        .execute(json!({}), &crate::agent::tools::ToolPermit::for_tests())
+        .await;
     assert!(!result.success);
     assert!(
         result
@@ -87,7 +89,10 @@ async fn web_search_uses_firecrawl_keyless_when_no_keys() {
         MockWebTransport::new().with_post(firecrawl_search_url(), 200, firecrawl_search_body());
     let tool = search_tool(WebProviderConfig::default(), transport);
     let result = tool
-        .execute(json!({ "query": "firecrawl markdown", "max_results": 3 }))
+        .execute(
+            json!({ "query": "firecrawl markdown", "max_results": 3 }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -117,7 +122,12 @@ async fn web_search_prefers_tavily_then_falls_back_to_firecrawl() {
     let mut config = WebProviderConfig::default();
     config.tavily_api_key = Some("tvly-test".to_owned());
     let tool = search_tool(config.clone(), tavily_ok);
-    let result = tool.execute(json!({ "query": "example" })).await;
+    let result = tool
+        .execute(
+            json!({ "query": "example" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
     assert_eq!(payload["provider"], PROVIDER_TAVILY);
@@ -127,7 +137,12 @@ async fn web_search_prefers_tavily_then_falls_back_to_firecrawl() {
         .with_post(tavily_url(), 401, json!({ "detail": "unauthorized" }))
         .with_post(firecrawl_search_url(), 200, firecrawl_search_body());
     let tool = search_tool(config, fallback);
-    let result = tool.execute(json!({ "query": "example" })).await;
+    let result = tool
+        .execute(
+            json!({ "query": "example" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert_eq!(
         result.typed_payload.expect("payload")["provider"],
@@ -152,7 +167,10 @@ async fn web_fetch_uses_firecrawl_markdown() {
     config.firecrawl_api_key = Some("fc-test-key".to_owned());
     let tool = fetch_tool(config, transport);
     let result = tool
-        .execute(json!({ "url": "https://example.com/hello" }))
+        .execute(
+            json!({ "url": "https://example.com/hello" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -169,7 +187,10 @@ async fn web_fetch_falls_back_to_http_extract() {
     );
     let tool = fetch_tool(WebProviderConfig::default(), transport);
     let result = tool
-        .execute(json!({ "url": "https://example.com/hello" }))
+        .execute(
+            json!({ "url": "https://example.com/hello" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -184,7 +205,12 @@ async fn web_fetch_falls_back_to_http_extract() {
 #[tokio::test]
 async fn web_fetch_rejects_empty_url() {
     let tool = fetch_tool(WebProviderConfig::default(), MockWebTransport::new());
-    let result = tool.execute(json!({ "url": "  " })).await;
+    let result = tool
+        .execute(
+            json!({ "url": "  " }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(!result.success);
 }
 
@@ -192,7 +218,10 @@ async fn web_fetch_rejects_empty_url() {
 async fn web_fetch_rejects_loopback_url() {
     let tool = fetch_tool(WebProviderConfig::default(), MockWebTransport::new());
     let result = tool
-        .execute(json!({ "url": "http://127.0.0.1/secret" }))
+        .execute(
+            json!({ "url": "http://127.0.0.1/secret" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(!result.success);
     let error = result.error.unwrap_or_default();
@@ -237,7 +266,12 @@ async fn web_search_auto_order_with_tinyfish() {
         tinyfish_body.clone(),
     );
     let tool = search_tool(config.clone(), transport);
-    let result = tool.execute(json!({ "query": query })).await;
+    let result = tool
+        .execute(
+            json!({ "query": query }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
     assert_eq!(payload["provider"], PROVIDER_TINYFISH);
@@ -262,7 +296,12 @@ async fn web_search_auto_order_with_tinyfish() {
         )
         .with_get_json(tinyfish_search_url(query), 200, tinyfish_body.clone());
     let tool_tavily = search_tool(all_config.clone(), transport_tavily);
-    let result_tavily = tool_tavily.execute(json!({ "query": query })).await;
+    let result_tavily = tool_tavily
+        .execute(
+            json!({ "query": query }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result_tavily.success);
     assert_eq!(
         result_tavily.typed_payload.expect("payload")["provider"],
@@ -285,7 +324,12 @@ async fn web_search_auto_order_with_tinyfish() {
         )
         .with_get_json(tinyfish_search_url(query), 200, tinyfish_body.clone());
     let tool_exa = search_tool(all_config.clone(), transport_exa);
-    let result_exa = tool_exa.execute(json!({ "query": query })).await;
+    let result_exa = tool_exa
+        .execute(
+            json!({ "query": query }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result_exa.success);
     assert_eq!(
         result_exa.typed_payload.expect("payload")["provider"],
@@ -299,7 +343,12 @@ async fn web_search_auto_order_with_tinyfish() {
         .with_get_json(tinyfish_search_url(query), 200, tinyfish_body.clone())
         .with_post(firecrawl_search_url(), 200, firecrawl_search_body());
     let tool_tf = search_tool(all_config.clone(), transport_tinyfish);
-    let result_tf = tool_tf.execute(json!({ "query": query })).await;
+    let result_tf = tool_tf
+        .execute(
+            json!({ "query": query }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result_tf.success);
     assert_eq!(
         result_tf.typed_payload.expect("payload")["provider"],
@@ -317,7 +366,12 @@ async fn web_search_auto_order_with_tinyfish() {
         )
         .with_post(firecrawl_search_url(), 200, firecrawl_search_body());
     let tool_fc = search_tool(all_config, transport_fc);
-    let result_fc = tool_fc.execute(json!({ "query": query })).await;
+    let result_fc = tool_fc
+        .execute(
+            json!({ "query": query }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result_fc.success);
     assert_eq!(
         result_fc.typed_payload.expect("payload")["provider"],
@@ -355,7 +409,10 @@ async fn web_search_explicit_tinyfish_provider() {
     config.tinyfish_api_key = Some("tf-key".to_owned());
     let tool = search_tool(config, transport);
     let result = tool
-        .execute(json!({ "query": query, "provider": "tinyfish", "max_results": 1 }))
+        .execute(
+            json!({ "query": query, "provider": "tinyfish", "max_results": 1 }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -387,7 +444,12 @@ async fn web_fetch_auto_order_with_tinyfish() {
     let transport =
         MockWebTransport::new().with_post(tinyfish_fetch_url(), 200, tinyfish_fetch_body.clone());
     let tool = fetch_tool(config.clone(), transport);
-    let result = tool.execute(json!({ "url": target_url })).await;
+    let result = tool
+        .execute(
+            json!({ "url": target_url }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
     assert_eq!(payload["provider"], PROVIDER_TINYFISH);
@@ -413,7 +475,12 @@ async fn web_fetch_auto_order_with_tinyfish() {
             }),
         );
     let tool_fc = fetch_tool(firecrawl_config.clone(), fallback_firecrawl);
-    let result_fc = tool_fc.execute(json!({ "url": target_url })).await;
+    let result_fc = tool_fc
+        .execute(
+            json!({ "url": target_url }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result_fc.success, "{}", result_fc.error.unwrap_or_default());
     assert_eq!(
         result_fc.typed_payload.expect("payload")["provider"],
@@ -437,7 +504,12 @@ async fn web_fetch_auto_order_with_tinyfish() {
             "<html><body><h1>HTTP Fallback</h1><p>Cleaned</p></body></html>",
         );
     let tool_http = fetch_tool(firecrawl_config, fallback_http);
-    let result_http = tool_http.execute(json!({ "url": target_url })).await;
+    let result_http = tool_http
+        .execute(
+            json!({ "url": target_url }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(
         result_http.success,
         "{}",
@@ -468,7 +540,10 @@ async fn web_fetch_explicit_tinyfish_provider() {
     config.tinyfish_api_key = Some("tf-key".to_owned());
     let tool = fetch_tool(config, transport);
     let result = tool
-        .execute(json!({ "url": target_url, "provider": "tinyfish" }))
+        .execute(
+            json!({ "url": target_url, "provider": "tinyfish" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
@@ -636,7 +711,12 @@ async fn web_fetch_no_keys_uses_local_http_server() {
         Arc::new(WebProviderConfig::default()),
         Arc::clone(&transport) as Arc<dyn WebHttpTransport>,
     );
-    let result = tool.execute(json!({ "url": PUBLIC_PAGE_URL })).await;
+    let result = tool
+        .execute(
+            json!({ "url": PUBLIC_PAGE_URL }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
     assert_eq!(payload["provider"], PROVIDER_HTTP);
@@ -679,7 +759,12 @@ async fn web_fetch_prefers_tinyfish_when_key_is_present() {
         Arc::new(config),
         Arc::clone(&transport) as Arc<dyn WebHttpTransport>,
     );
-    let result = tool.execute(json!({ "url": PUBLIC_PAGE_URL })).await;
+    let result = tool
+        .execute(
+            json!({ "url": PUBLIC_PAGE_URL }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     let payload = result.typed_payload.expect("payload");
     assert_eq!(payload["provider"], PROVIDER_TINYFISH);
@@ -712,7 +797,12 @@ async fn web_fetch_uses_firecrawl_when_key_is_present() {
         Arc::new(config),
         Arc::clone(&transport) as Arc<dyn WebHttpTransport>,
     );
-    let result = tool.execute(json!({ "url": PUBLIC_PAGE_URL })).await;
+    let result = tool
+        .execute(
+            json!({ "url": PUBLIC_PAGE_URL }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
+        .await;
     assert!(result.success, "{}", result.error.unwrap_or_default());
     assert_eq!(
         result.typed_payload.expect("payload")["provider"],
@@ -739,7 +829,10 @@ async fn web_fetch_explicit_firecrawl_without_key_is_unavailable() {
     );
     let tool = fetch_tool(WebProviderConfig::default(), transport);
     let result = tool
-        .execute(json!({ "url": PUBLIC_PAGE_URL, "provider": "firecrawl" }))
+        .execute(
+            json!({ "url": PUBLIC_PAGE_URL, "provider": "firecrawl" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(!result.success);
     let error = result.error.unwrap_or_default();
@@ -754,7 +847,10 @@ async fn web_fetch_explicit_tinyfish_without_key_is_unavailable() {
     let transport = MockWebTransport::new();
     let tool = fetch_tool(WebProviderConfig::default(), transport);
     let result = tool
-        .execute(json!({ "url": PUBLIC_PAGE_URL, "provider": "tinyfish" }))
+        .execute(
+            json!({ "url": PUBLIC_PAGE_URL, "provider": "tinyfish" }),
+            &crate::agent::tools::ToolPermit::for_tests(),
+        )
         .await;
     assert!(!result.success);
     let error = result.error.unwrap_or_default();

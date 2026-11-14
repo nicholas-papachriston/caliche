@@ -1,4 +1,5 @@
 use crate::agent::memory::TokenCounter;
+use crate::agent::tools::permit::ToolPermit;
 use crate::agent::tools::tool::{Tool, ToolResult};
 use crate::observability::tool_metrics::{ToolMetrics, categorize_error};
 use crate::utils::user_context::UserContext;
@@ -299,12 +300,16 @@ impl ToolRegistry {
     /// Context and metrics are passed as parameters rather than stored on the
     /// registry so that a shared `Arc<ToolRegistry>` can be used across requests
     /// without cloning.
+    ///
+    /// `permit` is the gate's proof that it admitted this call; see
+    /// [`HookExecutionMiddleware::run`](crate::agent::tools::execution::HookExecutionMiddleware::run).
     pub async fn execute_with_context(
         &self,
         name: &str,
         arguments: serde_json::Value,
         user_context: Option<&UserContext>,
         metrics: Option<&Arc<ToolMetrics>>,
+        permit: &ToolPermit<'_>,
     ) -> ToolResult {
         let start = metrics.is_some().then(Instant::now);
         let canonical_name = Self::canonical_tool_name(name);
@@ -318,7 +323,9 @@ impl ToolRegistry {
                 "Tool '{canonical_name}' is registered but not active"
             ));
         }
-        let result = tool.execute_with_context(arguments, user_context).await;
+        let result = tool
+            .execute_with_context(arguments, user_context, permit)
+            .await;
 
         // Record metrics if available
         if let Some(metrics) = metrics {
@@ -338,12 +345,18 @@ impl ToolRegistry {
 
     /// Execute a tool using stored user context and metrics.
     /// Prefer using `execute_with_context` when `ToolRegistry` is shared to avoid cloning.
-    pub async fn execute(&self, name: &str, arguments: serde_json::Value) -> ToolResult {
+    pub async fn execute(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        permit: &ToolPermit<'_>,
+    ) -> ToolResult {
         self.execute_with_context(
             name,
             arguments,
             self.user_context.as_ref(),
             self.metrics.as_ref(),
+            permit,
         )
         .await
     }
@@ -361,6 +374,7 @@ impl ToolRegistry {
         sandbox: Option<&dyn caliche_sandbox::SandboxHandleOps>,
         user_context: Option<&UserContext>,
         metrics: Option<&Arc<ToolMetrics>>,
+        permit: &ToolPermit<'_>,
     ) -> ToolResult {
         let start = metrics.is_some().then(Instant::now);
         let canonical_name = Self::canonical_tool_name(name);
@@ -377,17 +391,19 @@ impl ToolRegistry {
         let result = {
             if let Some(sandbox_handle) = sandbox {
                 if !sandbox_handle.sandbox_active() {
-                    tool.execute_with_context(arguments, user_context).await
+                    tool.execute_with_context(arguments, user_context, permit)
+                        .await
                 } else if !sandbox_handle.is_tool_allowed(canonical_name) {
                     ToolResult::error(format!(
                         "Tool '{canonical_name}' is denied by sandbox tool policy"
                     ))
                 } else {
-                    tool.execute_sandboxed(arguments, Some(sandbox_handle))
+                    tool.execute_sandboxed(arguments, Some(sandbox_handle), permit)
                         .await
                 }
             } else {
-                tool.execute_with_context(arguments, user_context).await
+                tool.execute_with_context(arguments, user_context, permit)
+                    .await
             }
         };
 
@@ -807,7 +823,11 @@ mod tests {
 
     #[async_trait]
     impl Tool for DummyTool {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             ToolResult::success("ok")
         }
     }
@@ -848,7 +868,11 @@ mod tests {
 
     #[async_trait]
     impl Tool for RefTool {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             ToolResult::success("ok")
         }
     }
@@ -914,10 +938,22 @@ mod tests {
         assert!(names.contains(&"http"));
         assert!(!names.contains(&"workspace"));
 
-        let ok = registry.execute("shell", serde_json::json!({})).await;
+        let ok = registry
+            .execute(
+                "shell",
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         assert!(ok.success);
 
-        let denied = registry.execute("memory", serde_json::json!({})).await;
+        let denied = registry
+            .execute(
+                "memory",
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         assert!(!denied.success);
         assert!(
             denied
@@ -984,7 +1020,13 @@ mod tests {
         registry.set_active_tools(Some(["bash"]));
         registry.register_deferred(Arc::new(DummyTool { name: "http" }));
 
-        let denied = registry.execute("http", serde_json::json!({})).await;
+        let denied = registry
+            .execute(
+                "http",
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         assert!(!denied.success);
         assert!(
             denied
@@ -994,7 +1036,13 @@ mod tests {
         );
 
         registry.activate(["http"]);
-        let ok = registry.execute("http", serde_json::json!({})).await;
+        let ok = registry
+            .execute(
+                "http",
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
         assert!(ok.success);
     }
 
@@ -1023,7 +1071,11 @@ mod tests {
 
     #[async_trait]
     impl Tool for RequiredParamTool {
-        async fn execute(&self, _arguments: serde_json::Value) -> ToolResult {
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _permit: &crate::agent::tools::ToolPermit<'_>,
+        ) -> ToolResult {
             ToolResult::success("ok")
         }
     }
@@ -1096,7 +1148,11 @@ mod tests {
     async fn execute_unknown_tool_returns_not_found() {
         let registry = ToolRegistry::new();
         let result = registry
-            .execute("no_such_tool", serde_json::json!({}))
+            .execute(
+                "no_such_tool",
+                serde_json::json!({}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
             .await;
         assert!(!result.success);
         assert!(

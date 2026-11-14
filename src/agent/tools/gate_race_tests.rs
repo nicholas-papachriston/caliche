@@ -3,9 +3,7 @@
 //! or write that outside file.
 
 use super::common::{set_tool_host_fs_unlocked, set_tool_workspace_root};
-use super::execution::middleware::{
-    HookExecutionMiddleware, ToolExecutionContext, ToolExecutionMiddleware as _,
-};
+use super::execution::middleware::{HookExecutionMiddleware, ToolExecutionContext};
 use super::fs_tool::FsTool;
 use super::{ApplyPatchTool, Tool};
 use crate::agent::hooks::HookRegistry;
@@ -116,7 +114,9 @@ async fn a_link_swapped_in_after_the_gate_takes_no_tool_outside() {
                 .unwrap_or_else(|err| panic!("{label} {target}: the gate allows it: {err}"));
 
             swap(&root, outside.path(), target);
-            let result = tool.execute(args.clone()).await;
+            let result = tool
+                .execute(args.clone(), &crate::agent::tools::ToolPermit::for_tests())
+                .await;
 
             assert!(
                 !result.content.contains("OUTSIDE-SECRET"),
@@ -188,7 +188,9 @@ async fn a_link_swapped_in_after_the_gate_deletes_nothing_outside() {
                 .unwrap_or_else(|err| panic!("{label} {target}: the gate allows it: {err}"));
 
             swap(&root, outside.path(), target);
-            let result = tool.execute(args.clone()).await;
+            let result = tool
+                .execute(args.clone(), &crate::agent::tools::ToolPermit::for_tests())
+                .await;
 
             assert_eq!(
                 std::fs::read_to_string(outside_file(outside.path(), target))
