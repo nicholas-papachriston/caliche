@@ -371,11 +371,12 @@ mod tests {
                 "//tmp",
                 "/tmp/../tmp",
                 "/tmp/x/..",
+                "/private/tmp/caliche-absent-dir/../.",
                 "/tmp/x",
                 "/var/tmp",
             ]
             .map(|path| is_shared_temp(Path::new(path))),
-            [true, true, true, true, true, true, false, false]
+            [true, true, true, true, true, true, true, false, false]
         );
     }
 
