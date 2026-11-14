@@ -41,6 +41,27 @@ fn blocks_mapped_ipv6_and_cgnat() {
     assert!(cgnat.to_string().contains("blocked"));
 }
 
+/// An IPv4 target carried inside an IPv6 address (IPv4-compatible, NAT64,
+/// 6to4) is checked as that IPv4 address.
+#[test]
+fn blocks_an_ipv4_target_inside_an_ipv6_address() {
+    let policy = HttpPolicy::new(None);
+    let urls = [
+        "http://[::7f00:1]/",
+        "http://[64:ff9b::7f00:1]/",
+        "http://[64:ff9b::a9fe:a9fe]/",
+        "http://[2002:7f00:1::1]/",
+        "http://[2002:a00:1::1]/",
+        "http://[64:ff9b::808:808]/",
+        "http://[2002:808:808::1]/",
+    ];
+
+    assert_eq!(
+        urls.map(|url| policy.validate_resolved_url(url).is_ok()),
+        [false, false, false, false, false, true, true]
+    );
+}
+
 #[test]
 fn rejects_non_http_scheme() {
     let policy = HttpPolicy::new(None);

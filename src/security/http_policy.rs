@@ -372,8 +372,8 @@ fn is_customization_blocked_ip(ip: IpAddr) -> bool {
             {
                 return true;
             }
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_customization_blocked_ip(IpAddr::V4(mapped));
+            if let Some(embedded) = crate::policy::embedded_ipv4(v6) {
+                return is_customization_blocked_ip(IpAddr::V4(embedded));
             }
             false
         }
@@ -418,8 +418,8 @@ fn is_blocked_ipv6(v6: Ipv6Addr) -> bool {
     {
         return true;
     }
-    if let Some(mapped) = v6.to_ipv4_mapped() {
-        return is_blocked_ipv4(mapped);
+    if let Some(embedded) = crate::policy::embedded_ipv4(v6) {
+        return is_blocked_ipv4(embedded);
     }
     false
 }

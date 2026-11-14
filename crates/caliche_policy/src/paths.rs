@@ -91,8 +91,32 @@ fn classify_v4(v4: Ipv4Addr) -> Option<SsrfClass> {
     None
 }
 
-fn classify_v6(v6: Ipv6Addr) -> Option<SsrfClass> {
+/// The IPv4 address an IPv6 address carries, which a router or a
+/// translator would deliver to: IPv4-mapped `::ffff:a.b.c.d`,
+/// IPv4-compatible `::a.b.c.d` (not `::` or `::1`), NAT64
+/// `64:ff9b::a.b.c.d`, and 6to4 `2002:aabb:ccdd::/48`.
+#[must_use]
+pub fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let octets = v6.octets();
+    let segments = v6.segments();
+    let tail = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+    if segments[..6] == [0; 6] && !v6.is_loopback() && !v6.is_unspecified() {
+        return Some(tail);
+    }
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return Some(tail);
+    }
+    if segments[0] == 0x2002 {
+        return Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]));
+    }
+    None
+}
+
+fn classify_v6(v6: Ipv6Addr) -> Option<SsrfClass> {
+    if let Some(v4) = embedded_ipv4(v6) {
         return classify_v4(v4);
     }
     if v6.is_loopback() || v6.is_unspecified() {
@@ -111,4 +135,35 @@ fn classify_v6(v6: Ipv6Addr) -> Option<SsrfClass> {
 fn is_cgnat(v4: Ipv4Addr) -> bool {
     let octets = v4.octets();
     octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ipv4_target_inside_an_ipv6_address_is_classified() {
+        let hosts = [
+            "::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:a00:1::",
+            "[::ffff:192.168.0.1]",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+            "::1",
+        ];
+
+        assert_eq!(
+            hosts.map(classify_ssrf_host),
+            [
+                Some(SsrfClass::Loopback),
+                Some(SsrfClass::Metadata),
+                Some(SsrfClass::Private),
+                Some(SsrfClass::Private),
+                None,
+                None,
+                Some(SsrfClass::Loopback),
+            ]
+        );
+    }
 }
