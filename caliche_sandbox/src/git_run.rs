@@ -44,7 +44,11 @@ pub const GIT_IDENTITY_VARS: [&str; 4] = [
 
 /// Config every git write op gets on its command line: no automatic gc or
 /// maintenance (which would write outside the granted paths), no signing,
-/// and no submodule reads (a commit's status check would enter one).
+/// and submodules ignored by default. A `submodule.<name>.ignore` setting
+/// (in `.gitmodules` or the repository config) overrides that default, and
+/// then a commit with nothing staged reads the submodule for its status;
+/// the sandbox refuses a read outside the workspace, so that commit fails.
+/// `git_commit` checks for staged changes first, so it never runs one.
 pub const GIT_WRITE_OVERRIDES: [(&str, &str); 5] = [
     ("gc.auto", "0"),
     ("maintenance.auto", "false"),

@@ -503,6 +503,61 @@ mod tests {
         seen
     }
 
+    /// git_commit with nothing staged does not run a commit, which would
+    /// read a submodule a committed `.gitmodules` sets to `ignore = none`
+    /// (here one whose gitfile names a repository outside the workspace).
+    #[tokio::test]
+    async fn git_commit_with_nothing_staged_does_not_enter_a_submodule() {
+        use super::GitCommitTool;
+        let (_ws_dir, ws) = canonical_dir();
+        let victim_dir = tempfile::tempdir_in("/tmp").expect("victim");
+        let victim = victim_dir.path().canonicalize().expect("canonical");
+        let head = repo_with_commit(&victim, "VICTIM");
+        repo_with_commit(&ws, "INSIDE");
+        git_in(
+            &ws,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},sub"),
+            ],
+        );
+        std::fs::write(
+            ws.join(".gitmodules"),
+            "[submodule \"sub\"]\n\tpath = sub\n\turl = ./x\n\tignore = none\n",
+        )
+        .expect("gitmodules");
+        git_in(&ws, &["add", ".gitmodules"]);
+        git_in(&ws, &["commit", "-q", "-m", "sub"]);
+        std::fs::create_dir(ws.join("sub")).expect("sub");
+        std::fs::write(
+            ws.join("sub/.git"),
+            format!("gitdir: {}\n", victim.join(".git").display()),
+        )
+        .expect("gitfile");
+        set_tool_workspace_root(Some(ws.clone()));
+
+        let result = GitCommitTool
+            .execute(
+                json!({"message": "nothing"}),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
+        set_tool_workspace_root(None);
+
+        assert_eq!(
+            (result.success, result.error),
+            (
+                false,
+                Some(
+                    "No staged changes to commit. Use 'git add' to stage files first.".to_string()
+                )
+            )
+        );
+        assert_eq!(git_in(&ws, &["log", "-1", "--format=%s"]), "sub");
+    }
+
     /// git_commit and git_branch create and delete write the repository
     /// through git inside the sandbox. Delete keeps an unmerged branch, and
     /// a commit on a detached HEAD is refused.

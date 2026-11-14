@@ -80,7 +80,15 @@ impl Tool for GitCommitTool {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
-        match repo.read(&["ls-files", "--cached", "-z"]).await {
+        // git commit with nothing staged reads every submodule for the
+        // status it prints, and a .gitmodules `ignore` setting overrides
+        // the write ops' diff.ignoreSubmodules=all. The flag on this diff
+        // overrides it, so check here and commit only staged changes,
+        // which git commits without entering a submodule. A change to a
+        // submodule's commit alone is not counted.
+        let mut staged = vec!["diff", "--cached", "--name-only", "-z"];
+        staged.extend(crate::policy::GIT_DIFF_SAFETY_FLAGS);
+        match repo.read(&staged).await {
             Ok(listed) if listed.is_empty() => {
                 return ToolResult::error(
                     "No staged changes to commit. Use 'git add' to stage files first.".to_string(),
