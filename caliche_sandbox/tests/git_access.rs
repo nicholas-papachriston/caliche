@@ -156,10 +156,12 @@ fn a_linked_dot_git_or_directory_is_refused() {
 /// Git runs on a checked repository only inside the native sandbox, and
 /// the kernel refuses any read a link swapped in after the check would
 /// lead to.
+///
+/// The Windows job does not confine files, so Windows is not here: git
+/// refuses there ([`git_does_not_run_without_a_native_sandbox`]).
 #[cfg(any(
     all(feature = "sandbox-macos", target_os = "macos"),
-    all(feature = "sandbox-linux", target_os = "linux"),
-    all(feature = "sandbox-windows", windows)
+    all(feature = "sandbox-linux", target_os = "linux")
 ))]
 mod sandboxed {
     use super::*;
@@ -299,13 +301,252 @@ mod sandboxed {
             ))
         );
     }
+
+    /// Landlock cannot scope writes in a git dir by file name, so a git
+    /// write op refuses on Linux and writes nothing.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_git_write_op_refuses_on_linux() {
+        let (_ws_dir, ws) = canonical_dir();
+        let head = commit_repo(&ws, "INSIDE");
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        let result = checked
+            .run_write(&ws, &["branch", "--", "other"], &[])
+            .await
+            .map(|run| run.exit_code)
+            .map_err(|err| err.to_string());
+
+        assert_eq!(
+            result,
+            Err(caliche_sandbox::git_run::GIT_WRITES_UNSCOPED.to_string())
+        );
+        assert!(!ws.join(".git/refs/heads/other").exists());
+        assert_eq!(
+            sandboxed(&checked, &ws, &["rev-parse", "main"]).await,
+            Ok((0, head))
+        );
+    }
 }
 
-/// Without a native backend that confines files, git does not run.
+/// Git write ops under Seatbelt: a commit and a branch change write only
+/// the granted paths, and every other write in the git dir is refused by
+/// the kernel during the commit.
+#[cfg(all(feature = "sandbox-macos", target_os = "macos"))]
+mod sandboxed_writes {
+    use super::*;
+    use caliche_sandbox::{NamedPolicy, SandboxBackendType, policy_to_config};
+
+    const IDENTITY: [(&str, &str); 4] = [
+        ("GIT_AUTHOR_NAME", "A"),
+        ("GIT_AUTHOR_EMAIL", "a@example.com"),
+        ("GIT_COMMITTER_NAME", "A"),
+        ("GIT_COMMITTER_EMAIL", "a@example.com"),
+    ];
+
+    /// A repository at `dir` with one commit and `staged.txt` staged.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn staged_repo(dir: &Path) {
+        let git = |args: &[&str]| {
+            let output = caliche_policy::git_command()
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("first.txt"), "first").expect("file");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("staged.txt"), "staged").expect("file");
+        git(&["add", "staged.txt"]);
+    }
+
+    /// `(exit code, stdout)` of a host `git args` in `dir`.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn host(dir: &Path, args: &[&str]) -> String {
+        let output = caliche_policy::git_command()
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    }
+
+    async fn write(checked: &CheckedRepository, ws: &Path, args: &[&str]) -> Result<i64, String> {
+        checked
+            .run_write(ws, args, &IDENTITY)
+            .await
+            .map(|run| run.exit_code)
+            .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_commit_and_branch_changes_run_inside_the_sandbox() {
+        let (_ws_dir, ws) = canonical_dir();
+        staged_repo(&ws);
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        let results = [
+            write(
+                &checked,
+                &ws,
+                &["commit", "--cleanup=verbatim", "--message=second"],
+            )
+            .await,
+            write(&checked, &ws, &["branch", "--", "side"]).await,
+            write(&checked, &ws, &["branch", "-d", "--", "side"]).await,
+        ];
+
+        assert_eq!(results, [Ok(0), Ok(0), Ok(0)]);
+        assert_eq!(
+            host(&ws, &["log", "--format=%s|%an|%ae"]),
+            "second|A|a@example.com\nfirst|t|t@t"
+        );
+        assert_eq!(host(&ws, &["branch", "--format=%(refname:short)"]), "main");
+    }
+
+    /// A git write op may add only the commit identity.
+    #[tokio::test]
+    async fn a_git_write_op_refuses_other_variables() {
+        let (_ws_dir, ws) = canonical_dir();
+        staged_repo(&ws);
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        let result = checked
+            .run_write(&ws, &["branch", "--", "side"], &[("GIT_DIR", "/tmp")])
+            .await
+            .map(|run| run.exit_code)
+            .map_err(|err| err.to_string());
+
+        assert_eq!(
+            result,
+            Err("a git write op may set only the commit identity, not GIT_DIR".to_string())
+        );
+    }
+
+    /// The profile a git write op runs under, with `sh -c script` run in it
+    /// beside git: the kernel refuses each write outside the grant.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    async fn in_write_profile(
+        checked: &CheckedRepository,
+        ws: &Path,
+        script: &str,
+    ) -> (i64, String) {
+        let backend_type = SandboxBackendType::MacOSSeatbelt {
+            policy: NamedPolicy::ReadOnly,
+        };
+        let mut config = policy_to_config(NamedPolicy::ReadOnly, ws, None, backend_type);
+        config.git_writes = Some(caliche_sandbox::GitWriteGrant {
+            git_dir: checked.git_dir.clone(),
+            common_dir: checked.common_dir.clone(),
+        });
+        let backend = caliche_sandbox::create_backend(&config)
+            .await
+            .expect("backend");
+        let instance = backend.create(&config, ws).await.expect("instance");
+        let cwd = ws.display().to_string();
+        let run = instance
+            .exec(
+                &["/bin/sh", "-c", script],
+                Some(&cwd),
+                None,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("exec");
+        (run.exit_code, run.stderr.trim().to_string())
+    }
+
+    /// While a commit runs (its `HEAD.lock` held), a config edit, a planted
+    /// `hooks/post-commit` and a rename of `HEAD.lock` onto `HEAD` are each
+    /// refused by the kernel; the commit itself goes through.
+    #[tokio::test]
+    async fn writes_outside_the_grant_are_refused_during_a_commit() {
+        let (_ws_dir, ws) = canonical_dir();
+        staged_repo(&ws);
+        let checked = check_repository(&ws, &ws).expect("checked");
+        let config_before = std::fs::read(ws.join(".git/config")).expect("config");
+        let head_before = std::fs::read(ws.join(".git/HEAD")).expect("HEAD");
+
+        let attempts = [
+            in_write_profile(&checked, &ws, "printf '[x]\\n' >> .git/config").await,
+            in_write_profile(
+                &checked,
+                &ws,
+                "printf '#!/bin/sh\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit",
+            )
+            .await,
+            in_write_profile(
+                &checked,
+                &ws,
+                "printf 'ref: refs/heads/x\\n' > .git/HEAD.lock && mv .git/HEAD.lock .git/HEAD; \
+                 code=$?; rm -f .git/HEAD.lock; exit $code",
+            )
+            .await,
+        ];
+        let committed = write(
+            &checked,
+            &ws,
+            &["commit", "--cleanup=verbatim", "--message=second"],
+        )
+        .await;
+
+        assert_eq!(
+            attempts
+                .clone()
+                .map(|(code, stderr)| (code, stderr.contains("Operation not permitted"))),
+            [(1, true), (1, true), (1, true)],
+            "{attempts:?}"
+        );
+        assert_eq!(committed, Ok(0));
+        assert_eq!(
+            std::fs::read(ws.join(".git/config")).ok(),
+            Some(config_before)
+        );
+        assert_eq!(std::fs::read(ws.join(".git/HEAD")).ok(), Some(head_before));
+        assert!(!ws.join(".git/hooks/post-commit").exists());
+        assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "second");
+    }
+
+    /// `refs` swapped for a link to an outside copy after the check: the
+    /// commit's ref update resolves outside the grant and the kernel
+    /// refuses it, so the outside copy is unchanged.
+    #[tokio::test]
+    async fn a_refs_dir_swapped_for_a_link_after_the_check_is_not_written() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        staged_repo(&ws);
+        let checked = check_repository(&ws, &ws).expect("checked");
+        let main_before = std::fs::read(ws.join(".git/refs/heads/main")).expect("main");
+        std::fs::rename(ws.join(".git/refs"), outside.join("refs")).expect("move refs");
+        std::os::unix::fs::symlink(outside.join("refs"), ws.join(".git/refs")).expect("link");
+
+        let committed = write(
+            &checked,
+            &ws,
+            &["commit", "--cleanup=verbatim", "--message=second"],
+        )
+        .await;
+
+        assert_eq!(committed, Ok(128));
+        assert_eq!(
+            std::fs::read(outside.join("refs/heads/main")).ok(),
+            Some(main_before)
+        );
+    }
+}
+
+/// Without a native backend that confines files, git does not run. That
+/// includes Windows, whose job backend does not confine files.
 #[cfg(not(any(
     all(feature = "sandbox-macos", target_os = "macos"),
-    all(feature = "sandbox-linux", target_os = "linux"),
-    all(feature = "sandbox-windows", windows)
+    all(feature = "sandbox-linux", target_os = "linux")
 )))]
 #[tokio::test]
 async fn git_does_not_run_without_a_native_sandbox() {
@@ -313,17 +554,23 @@ async fn git_does_not_run_without_a_native_sandbox() {
     write_loose_git_dir(&ws.join(".git")).expect("own");
     let checked = check_repository(&ws, &ws).expect("checked");
 
-    let error = checked
+    let read = checked
         .run_read_only(&ws, &["status"])
         .await
         .expect_err("refused");
+    let write = checked
+        .run_write(&ws, &["branch", "--", "other"], &[])
+        .await
+        .expect_err("refused");
 
-    assert!(
-        error
-            .to_string()
-            .starts_with(caliche_sandbox::git_run::NO_GIT_SANDBOX),
-        "{error}"
-    );
+    for error in [read, write] {
+        assert!(
+            error
+                .to_string()
+                .starts_with(caliche_sandbox::git_run::NO_GIT_SANDBOX),
+            "{error}"
+        );
+    }
 }
 
 /// The pin replaces an inherited `GIT_DIR` and removes an inherited

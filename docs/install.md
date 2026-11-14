@@ -34,7 +34,7 @@ Installation copies a binary onto your `PATH` and nothing else. It does not star
 
 `./caliche web wasm` runs `wasm-opt -Oz` with the WebAssembly features that Rust 1.92 enables by default, including `--enable-bulk-memory` (needed for `table.fill`, which is misc prefix opcode 17). The installation stops if the optimizer is missing, if binaryen is version 116 or older, or if `wasm-opt` fails. In that case the unoptimized module is left on disk and is not embedded.
 
-The first installation compiles native C dependencies, including libgit2, SQLite, and `ring`, so expect a long compile. The default CLI does not link the local inference libraries; they are added by the `local-inference` feature. The UI installation also compiles the Dioxus WebAssembly bundle before the CLI.
+The first installation compiles native C dependencies, including SQLite and `ring`, so expect a long compile. The default CLI does not link the local inference libraries; they are added by the `local-inference` feature. The UI installation also compiles the Dioxus WebAssembly bundle before the CLI.
 
 ## Install on macOS or Linux
 

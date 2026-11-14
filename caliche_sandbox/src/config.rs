@@ -56,7 +56,38 @@ pub struct SandboxConfig {
     /// Policy name for logging (e.g. "workspace-write").
     #[serde(default)]
     pub policy_name: Option<String>,
+    /// The git metadata a git write op may change. Only
+    /// [`git_run`](crate::git_run) sets it, never a config file, and only the
+    /// macOS Seatbelt backend honors it: no other backend can scope writes
+    /// in a git dir by file name.
+    #[serde(skip)]
+    pub git_writes: Option<GitWriteGrant>,
 }
+
+/// The parts of one checked repository's git metadata a git write op
+/// (commit, branch create and delete) may write: `objects/`, `refs/` and
+/// `logs/`, and the files [`GIT_WRITE_FILES`] and [`GIT_COMMON_WRITE_FILES`]
+/// name. `HEAD`, `config`, `hooks/`, `info/` and everything else stay
+/// read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWriteGrant {
+    /// The checked, canonical git dir (`HEAD`, the index and their locks).
+    pub git_dir: PathBuf,
+    /// The checked, canonical common dir (objects, refs, packed refs).
+    pub common_dir: PathBuf,
+}
+
+/// Directories a git write op may write beneath, in the common dir and, for
+/// `logs/`, also in the git dir.
+pub const GIT_WRITE_DIRS: [&str; 3] = ["objects", "refs", "logs"];
+
+/// Files in the git dir a git write op may write. Git takes `HEAD.lock` to
+/// log an update of the branch `HEAD` names; `HEAD` itself stays read-only,
+/// so the lock cannot be renamed over it.
+pub const GIT_WRITE_FILES: [&str; 4] = ["HEAD.lock", "index", "index.lock", "COMMIT_EDITMSG"];
+
+/// Files in the common dir a git write op may write.
+pub const GIT_COMMON_WRITE_FILES: [&str; 2] = ["packed-refs", "packed-refs.lock"];
 
 const fn default_tmp_write() -> bool {
     true
@@ -290,6 +321,7 @@ pub fn policy_to_config(
         writable_roots,
         tmp_write,
         policy_name,
+        git_writes: None,
     }
 }
 

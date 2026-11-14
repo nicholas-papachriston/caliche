@@ -8,7 +8,12 @@ use async_trait::async_trait;
 use serde_json::json;
 
 const NAME: &str = "git_commit";
-const DESCRIPTION: &str = "Create a git commit with staged changes. Requires files to be staged first (use git add). This tool commits staged changes with the provided message.";
+const DESCRIPTION: &str = "Create a git commit with staged changes on the current branch. Requires files to be staged first (use git add). This tool commits staged changes with the provided message. Runs only on macOS, where the sandbox can limit git's writes to the repository's objects, refs, logs and index; on Linux and Windows it refuses.";
+
+/// Returned when `HEAD` is detached: the commit would rewrite `HEAD`, which
+/// stays read-only in the sandbox.
+pub const DETACHED_HEAD: &str =
+    "HEAD is detached; git_commit commits only on a branch, because HEAD stays read-only";
 
 #[derive(Debug)]
 pub struct GitCommitTool;
@@ -71,89 +76,52 @@ impl Tool for GitCommitTool {
             Err(e) => return ToolResult::error(e),
         };
 
-        let repo = match super::open_tool_repository(&path_str) {
+        let repo = match super::tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
+        match repo.read(&["ls-files", "--cached", "-z"]).await {
+            Ok(listed) if listed.is_empty() => {
+                return ToolResult::error(
+                    "No staged changes to commit. Use 'git add' to stage files first.".to_string(),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => return ToolResult::error(format!("Failed to get index: {e}")),
+        }
+        // HEAD stays read-only in the sandbox, so only a branch can move.
+        if repo.read(&["symbolic-ref", "-q", "HEAD"]).await.is_err() {
+            return ToolResult::error(DETACHED_HEAD.to_string());
+        }
 
-        // Get signature
-        let signature = if let (Some(name), Some(email)) = (
+        let identity = match (
             arguments["author_name"].as_str(),
             arguments["author_email"].as_str(),
         ) {
-            match git2::Signature::now(name, email) {
-                Ok(sig) => sig,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to create signature: {e}"));
-                }
-            }
-        } else {
-            match repo.signature() {
-                Ok(sig) => sig,
-                Err(e) => {
-                    return ToolResult::error(format!("Failed to get git signature: {e}"));
-                }
-            }
+            (Some(name), Some(email)) => vec![
+                ("GIT_AUTHOR_NAME", name),
+                ("GIT_AUTHOR_EMAIL", email),
+                ("GIT_COMMITTER_NAME", name),
+                ("GIT_COMMITTER_EMAIL", email),
+            ],
+            _ => Vec::new(),
         };
-
-        // Get index and find staged changes
-        let mut index = match repo.index() {
-            Ok(idx) => idx,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to get index: {e}"));
-            }
-        };
-
-        if index.is_empty() {
-            return ToolResult::error(
-                "No staged changes to commit. Use 'git add' to stage files first.".to_string(),
-            );
-        }
-
-        // Get tree from index
-        let tree_id = match index.write_tree() {
-            Ok(id) => id,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to write tree: {e}"));
-            }
-        };
-        let tree = match repo.find_tree(tree_id) {
-            Ok(t) => t,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to find tree: {e}"));
-            }
-        };
-
-        // Get HEAD commit (if exists)
-        let parent_commit = repo
-            .head()
-            .ok()
-            .and_then(|head| head.target().and_then(|oid| repo.find_commit(oid).ok()));
-
-        // Create commit
-        let commit_id = match if let Some(parent) = parent_commit {
-            repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                &message,
-                &tree,
-                &[&parent],
+        let message_arg = format!("--message={message}");
+        if let Err(e) = repo
+            .write(
+                &["commit", "--cleanup=verbatim", "--no-verify", &message_arg],
+                &identity,
             )
-        } else {
-            // Initial commit
-            repo.commit(Some("HEAD"), &signature, &signature, &message, &tree, &[])
-        } {
-            Ok(id) => id,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to create commit: {e}"));
-            }
+            .await
+        {
+            return ToolResult::error(format!("Failed to create commit: {e}"));
+        }
+        let commit_id = match repo.read(&["rev-parse", "--short=7", "HEAD"]).await {
+            Ok(id) => id.trim().to_string(),
+            Err(e) => return ToolResult::error(format!("Failed to read the new commit: {e}")),
         };
 
-        ToolResult::success(format!(
-            "Commit created successfully: {}",
-            commit_id.to_string().chars().take(7).collect::<String>()
-        ))
+        ToolResult::success(format!("Commit created successfully: {commit_id}"))
     }
 }
 

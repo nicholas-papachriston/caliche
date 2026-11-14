@@ -33,9 +33,9 @@ pub use code_mode::{
     CodeModeExecuteContext, CodeModeSandboxConfig, run_execute, run_execute_with_api, run_search,
 };
 pub use config::{
-    MountConfig, NamedPolicy, NetworkPolicy, ResourceLimits, SandboxBackendType, SandboxConfig,
-    SandboxMode, ToolPolicy, native_backend_for_platform, policy_to_config, tmp_writable_roots,
-    validate_sandbox_config,
+    GitWriteGrant, MountConfig, NamedPolicy, NetworkPolicy, ResourceLimits, SandboxBackendType,
+    SandboxConfig, SandboxMode, ToolPolicy, native_backend_for_platform, policy_to_config,
+    tmp_writable_roots, validate_sandbox_config,
 };
 pub use deferred::{DeferredInstance, SANDBOX_UNAVAILABLE};
 pub use handle::SandboxHandle;

@@ -245,8 +245,8 @@ fn check_git_dir_contents(root: &Path, git_dir: &Path) -> io::Result<Vec<DirEntr
                         return Err(denied(refusal::alternates(&path)));
                     }
                 }
-                // Hooks never run (core.hooksPath is off, and libgit2 runs
-                // none), so a hook manager's links there are not read.
+                // Hooks never run (the pinned git sets core.hooksPath to an
+                // empty dir), so a hook manager's links there are not read.
                 EntryKind::Dir if path == git_dir.join(HOOKS_DIR) => {}
                 EntryKind::Dir => {
                     let listed = list_dir_beneath(root, &path)?;

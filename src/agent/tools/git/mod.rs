@@ -41,15 +41,55 @@ impl ToolRepository {
         Ok(run.stdout)
     }
 
+    /// The output of the git write op `git args`, with the commit identity
+    /// `env`, run inside the OS sandbox with writes allowed only to the
+    /// repository's objects, refs, logs, index and lock files
+    /// ([`CheckedRepository::run_write`](caliche_sandbox::git_access::CheckedRepository::run_write)).
+    /// Only macOS can scope those writes; on Linux and Windows the op
+    /// refuses.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sandbox refusal, or git's stderr (its stdout when stderr
+    /// is empty) when it exits non-zero.
+    pub(crate) async fn write(
+        &self,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<String, String> {
+        let run = self
+            .checked
+            .run_write(&self.workspace, args, env)
+            .await
+            .map_err(|err| err.to_string())?;
+        if run.exit_code != 0 {
+            let stderr = run.stderr.trim();
+            let message = if stderr.is_empty() {
+                run.stdout.trim()
+            } else {
+                stderr
+            };
+            return Err(message.to_string());
+        }
+        Ok(run.stdout)
+    }
+
     /// The checked, canonical work tree.
     pub(crate) fn work_tree(&self) -> &std::path::Path {
         &self.checked.work_tree
     }
 }
 
-/// Check the repository a git tool's `path` names, as
-/// [`open_tool_repository`] does, for git to run on inside the sandbox.
-/// A repository outside the workspace (host access unlocked) is its own
+/// Check the repository a git tool's `path` names, for git to run on
+/// inside the sandbox.
+///
+/// The path resolves against the tool workspace, not the process directory,
+/// and is refused outside the workspace unless host access is unlocked. A
+/// link inside the workspace may not lead out of it. The `.git` is checked
+/// by [`caliche_sandbox::git_access::check_repository`] before git reads it,
+/// and git runs on the checked git dir and work tree, so a committed gitfile
+/// or `commondir` cannot point a tool at another repository on the host. A
+/// repository outside the workspace (host access unlocked) is its own
 /// sandbox root.
 ///
 /// # Errors
@@ -99,75 +139,6 @@ pub(crate) fn workspace_tool_repository(
     Ok(ToolRepository { checked, workspace })
 }
 
-/// Open the repository a git tool's `path` names.
-///
-/// The path resolves against the tool workspace, not the process directory,
-/// and is refused outside the workspace unless host access is unlocked. A
-/// link inside the workspace may not lead out of it. Inside the workspace
-/// the `.git` is checked by [`caliche_sandbox::git_access::check_repository`]
-/// before git reads it, and the repository is opened at the checked git dir
-/// and work tree, so a committed gitfile or `commondir` cannot point a tool
-/// at another repository on the host.
-///
-/// # Errors
-///
-/// Returns a message for the tool result when the path is refused, the
-/// repository cannot be opened, or its `.git` is refused.
-#[cfg(feature = "tools-git")]
-#[cfg_attr(
-    tool_file_lint,
-    expect(
-        clippy::disallowed_methods,
-        reason = "libgit2 opens the checked git dir only for the write ops, git_commit and git_branch create and delete"
-    )
-)]
-pub(crate) fn open_tool_repository(path_str: &str) -> Result<git2::Repository, String> {
-    use crate::agent::tools::common::path::{
-        canonical_tool_path, canonical_workspace, resolve_path_for_tool,
-    };
-    let refused =
-        |e: &dyn std::fmt::Display| format!("Failed to open git repository at '{path_str}': {e}");
-    let resolved = resolve_path_for_tool(path_str).map_err(|e| refused(&e))?;
-    let canonical = canonical_tool_path(&resolved, path_str).map_err(|e| refused(&e))?;
-    let workspace = canonical_workspace().map_err(|e| refused(&e))?;
-    if !canonical.starts_with(&workspace) {
-        return git2::Repository::open_ext(
-            &canonical,
-            git2::RepositoryOpenFlags::NO_SEARCH,
-            std::iter::empty::<&std::ffi::OsStr>(),
-        )
-        .map_err(|e| refused(&e));
-    }
-    open_checked_repository(&workspace, &canonical).map_err(|e| refused(&e))
-}
-
-/// Open the repository whose `.git` is in `dir`, a canonical directory at or
-/// below the canonical `workspace`, after
-/// [`caliche_sandbox::git_access::check_repository`] accepts its layout.
-/// libgit2 opens the checked git dir with the checked work tree and does
-/// not search a parent directory.
-///
-/// # Errors
-///
-/// Returns the refusal, or the error libgit2 gave opening the checked dir.
-#[cfg(feature = "tools-git")]
-#[cfg_attr(
-    tool_file_lint,
-    expect(
-        clippy::disallowed_methods,
-        reason = "libgit2 opens the checked git dir only for the write ops, git_commit and git_branch create and delete"
-    )
-)]
-pub(crate) fn open_checked_repository(
-    workspace: &std::path::Path,
-    dir: &std::path::Path,
-) -> anyhow::Result<git2::Repository> {
-    let checked = caliche_sandbox::git_access::check_repository(workspace, dir)?;
-    let repo = git2::Repository::open_bare(&checked.git_dir)?;
-    repo.set_workdir(&checked.work_tree, false)?;
-    Ok(repo)
-}
-
 #[cfg(test)]
 #[cfg(feature = "tools-git")]
 mod tests {
@@ -177,21 +148,29 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
-    /// A repository at `dir` with one commit whose message is `message`.
-    fn repo_with_commit(dir: &Path, message: &str) -> git2::Repository {
-        let repo = git2::Repository::init(dir).expect("init");
+    /// Host `git args` in `dir`, for setting up a test repository.
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = crate::policy::git_command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    }
+
+    /// A repository at `dir` with one commit whose message is `message`;
+    /// returns the commit id.
+    fn repo_with_commit(dir: &Path, message: &str) -> String {
+        git_in(dir, &["init", "-q", "-b", "main"]);
         std::fs::write(dir.join("file.txt"), message).expect("file");
-        let mut index = repo.index().expect("index");
-        index.add_path(Path::new("file.txt")).expect("add");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("tree");
-        {
-            let tree = repo.find_tree(tree_id).expect("find tree");
-            let who = git2::Signature::now("t", "t@example.com").expect("sig");
-            repo.commit(Some("HEAD"), &who, &who, message, &tree, &[])
-                .expect("commit");
-        }
-        repo
+        git_in(dir, &["add", "file.txt"]);
+        git_in(dir, &["commit", "-q", "-m", message]);
+        git_in(dir, &["rev-parse", "HEAD"])
     }
 
     fn canonical_dir() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -208,7 +187,7 @@ mod tests {
     async fn a_git_tool_reads_only_the_workspace_repository() {
         let (_ws_dir, ws) = canonical_dir();
         let (_out_dir, outside) = canonical_dir();
-        let own = repo_with_commit(&ws, "INSIDE-COMMIT");
+        repo_with_commit(&ws, "INSIDE-COMMIT");
         repo_with_commit(&outside, "OUTSIDE-COMMIT");
         std::fs::create_dir(ws.join("g")).expect("g");
         std::fs::write(
@@ -216,19 +195,17 @@ mod tests {
             format!("gitdir: {}\n", outside.join(".git").display()),
         )
         .expect("gitfile");
-        let head = own.head().expect("head").peel_to_commit().expect("commit");
-        own.worktree(
-            "linked",
-            &ws.join("linked"),
-            Some(
-                git2::WorktreeAddOptions::new().reference(Some(
-                    &own.branch("linked", &head, false)
-                        .expect("branch")
-                        .into_reference(),
-                )),
-            ),
-        )
-        .expect("linked worktree");
+        git_in(
+            &ws,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked",
+                &ws.join("linked").to_string_lossy(),
+            ],
+        );
         set_tool_workspace_root(Some(ws.clone()));
 
         let tools: [(&str, Box<dyn Tool>, serde_json::Value); 6] = [
@@ -368,11 +345,10 @@ mod tests {
     async fn a_git_dir_with_alternates_does_not_read_an_outside_repository() {
         let (_ws_dir, ws) = canonical_dir();
         let (_out_dir, outside) = canonical_dir();
-        let foreign = repo_with_commit(&outside, "OUTSIDE-COMMIT");
-        let outside_head = foreign.head().expect("head").target().expect("oid");
+        let outside_head = repo_with_commit(&outside, "OUTSIDE-COMMIT");
         let g = ws.join("g");
         std::fs::create_dir(&g).expect("g");
-        git2::Repository::init(&g).expect("init");
+        git_in(&g, &["init", "-q", "-b", "main"]);
         std::fs::create_dir_all(g.join(".git/objects/info")).expect("info");
         std::fs::write(
             g.join(".git/objects/info/alternates"),
@@ -411,5 +387,132 @@ mod tests {
                 ("git log", false, false),
             ]
         );
+    }
+
+    /// A repository with one commit, `staged.txt` staged and a branch
+    /// `unmerged` one commit ahead, as the tool workspace.
+    fn write_repo(ws: &Path) {
+        repo_with_commit(ws, "first");
+        git_in(ws, &["switch", "-q", "-c", "unmerged"]);
+        std::fs::write(ws.join("ahead.txt"), "ahead").expect("ahead");
+        git_in(ws, &["add", "ahead.txt"]);
+        git_in(ws, &["commit", "-q", "-m", "ahead"]);
+        git_in(ws, &["switch", "-q", "main"]);
+        std::fs::write(ws.join("staged.txt"), "staged").expect("staged");
+        git_in(ws, &["add", "staged.txt"]);
+    }
+
+    /// `(success, content or error)` of each git write tool call, in order.
+    async fn run_writes(calls: Vec<(Box<dyn Tool>, serde_json::Value)>) -> Vec<(bool, String)> {
+        let permit = crate::agent::tools::ToolPermit::for_tests();
+        let mut seen = Vec::new();
+        for (tool, args) in calls {
+            let result = tool.execute(args, &permit).await;
+            seen.push((
+                result.success,
+                result.error.unwrap_or_else(|| result.content.to_string()),
+            ));
+        }
+        seen
+    }
+
+    /// git_commit and git_branch create and delete write the repository
+    /// through git inside the sandbox. Delete keeps an unmerged branch, and
+    /// a commit on a detached HEAD is refused.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_git_write_tools_change_the_workspace_repository() {
+        use super::GitCommitTool;
+        let (_ws_dir, ws) = canonical_dir();
+        write_repo(&ws);
+        set_tool_workspace_root(Some(ws.clone()));
+
+        let seen = run_writes(vec![
+            (
+                Box::new(GitCommitTool),
+                json!({"message": "second", "author_name": "A", "author_email": "a@example.com"}),
+            ),
+            (
+                Box::new(GitBranchTool),
+                json!({"action": "create", "branch_name": "side"}),
+            ),
+            (
+                Box::new(GitBranchTool),
+                json!({"action": "delete", "branch_name": "side"}),
+            ),
+            (
+                Box::new(GitBranchTool),
+                json!({"action": "delete", "branch_name": "unmerged"}),
+            ),
+        ])
+        .await;
+        // git's hints after the first line differ between versions.
+        let seen: Vec<(bool, String)> = seen
+            .into_iter()
+            .map(|(ok, text)| (ok, text.lines().next().unwrap_or_default().to_string()))
+            .collect();
+        let head = git_in(&ws, &["rev-parse", "--short=7", "HEAD"]);
+        git_in(&ws, &["switch", "-q", "--detach"]);
+        std::fs::write(ws.join("detached.txt"), "d").expect("detached");
+        git_in(&ws, &["add", "detached.txt"]);
+        let detached = run_writes(vec![(Box::new(GitCommitTool), json!({"message": "x"}))]).await;
+        set_tool_workspace_root(None);
+
+        assert_eq!(
+            seen,
+            vec![
+                (true, format!("Commit created successfully: {head}")),
+                (true, "Branch 'side' created successfully".to_string()),
+                (true, "Branch 'side' deleted successfully".to_string()),
+                (
+                    false,
+                    "Failed to delete branch: error: the branch 'unmerged' is not fully merged"
+                        .to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            git_in(&ws, &["log", "-1", "--format=%s|%an|%ae", "main"]),
+            "second|A|a@example.com"
+        );
+        assert_eq!(
+            git_in(&ws, &["branch", "--format=%(refname:short)"]),
+            "(HEAD detached at {head})\nmain\nunmerged".replace("{head}", &head)
+        );
+        assert_eq!(
+            detached,
+            vec![(false, super::commit::DETACHED_HEAD.to_string())]
+        );
+    }
+
+    /// On Linux the git write tools refuse: Landlock cannot keep the rest
+    /// of the git dir read-only while git writes refs and the index.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_git_write_tools_refuse_on_linux() {
+        use super::GitCommitTool;
+        let (_ws_dir, ws) = canonical_dir();
+        write_repo(&ws);
+        set_tool_workspace_root(Some(ws.clone()));
+
+        let seen = run_writes(vec![
+            (Box::new(GitCommitTool), json!({"message": "second"})),
+            (
+                Box::new(GitBranchTool),
+                json!({"action": "create", "branch_name": "side"}),
+            ),
+        ])
+        .await;
+        set_tool_workspace_root(None);
+
+        let unscoped = caliche_sandbox::git_run::GIT_WRITES_UNSCOPED;
+        assert_eq!(
+            seen,
+            vec![
+                (false, format!("Failed to create commit: {unscoped}")),
+                (false, format!("Failed to create branch: {unscoped}")),
+            ]
+        );
+        assert_eq!(git_in(&ws, &["log", "--format=%s", "main"]), "first");
     }
 }

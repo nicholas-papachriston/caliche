@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 const NAME: &str = "git_branch";
-const DESCRIPTION: &str = "List, create, or delete git branches. Useful for branch management and switching between branches.";
+const DESCRIPTION: &str = "List, create, or delete git branches. Delete keeps a branch whose commits are not merged. Create and delete run only on macOS, where the sandbox can limit git's writes to the repository's refs and logs; on Linux and Windows they refuse.";
 #[derive(Debug)]
 pub struct GitBranchTool;
 
@@ -68,7 +68,7 @@ impl Tool for GitBranchTool {
         if action == "list" {
             return list_branches(&path_str).await;
         }
-        let repo = match super::open_tool_repository(&path_str) {
+        let repo = match super::tool_repository(&path_str) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
@@ -79,37 +79,9 @@ impl Tool for GitBranchTool {
                     Ok(n) => n,
                     Err(e) => return ToolResult::error(e),
                 };
-
-                let head = match repo.head() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to get HEAD: {e}"));
-                    }
-                };
-
-                let target_oid = match head.target() {
-                    Some(oid) => oid,
-                    None => {
-                        return ToolResult::error(
-                            "HEAD has no target (detached HEAD state)".to_string(),
-                        );
-                    }
-                };
-
-                let commit = match repo.find_commit(target_oid) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to find commit: {e}"));
-                    }
-                };
-
-                match repo.branch(&branch_name, &commit, false) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to create branch: {e}"));
-                    }
+                if let Err(e) = repo.write(&["branch", "--", &branch_name], &[]).await {
+                    return ToolResult::error(format!("Failed to create branch: {e}"));
                 }
-
                 ToolResult::success(format!("Branch '{branch_name}' created successfully"))
             }
             "delete" => {
@@ -117,21 +89,10 @@ impl Tool for GitBranchTool {
                     Ok(n) => n,
                     Err(e) => return ToolResult::error(e),
                 };
-
-                let mut branch = match repo.find_branch(&branch_name, git2::BranchType::Local) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to find branch: {e}"));
-                    }
-                };
-
-                match branch.delete() {
-                    Ok(()) => {}
-                    Err(e) => {
-                        return ToolResult::error(format!("Failed to delete branch: {e}"));
-                    }
+                // -d, not -D: a branch whose commits are not merged is kept.
+                if let Err(e) = repo.write(&["branch", "-d", "--", &branch_name], &[]).await {
+                    return ToolResult::error(format!("Failed to delete branch: {e}"));
                 }
-
                 ToolResult::success(format!("Branch '{branch_name}' deleted successfully"))
             }
             _ => ToolResult::error(format!("Unknown action: {action}")),

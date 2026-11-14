@@ -317,7 +317,38 @@ fn seatbelt_profile(
         }
     }
     rules.push(deny_workspace_git_writes(workspace, guarded)?);
+    if let Some(grant) = &config.git_writes {
+        rules.push(allow_git_writes(grant)?);
+    }
     Ok(rules.join("\n"))
+}
+
+/// Allow a git write op's writes in one checked repository: beneath
+/// `objects/`, `refs/` and `logs/`, and to the named files. These follow
+/// [`deny_workspace_git_writes`], so they win over it for these paths only.
+/// The checked paths are used as they are, not canonicalized again: a
+/// directory swapped for a link afterwards resolves outside them, and
+/// Seatbelt refuses the write.
+fn allow_git_writes(grant: &crate::config::GitWriteGrant) -> Result<String> {
+    use crate::config::{GIT_COMMON_WRITE_FILES, GIT_WRITE_DIRS, GIT_WRITE_FILES};
+    let entry = |kind: &str, path: &Path| -> Result<String> {
+        Ok(format!(
+            "({kind} \"{}\")",
+            sbpl_string(&path.display().to_string())?
+        ))
+    };
+    let mut paths = Vec::new();
+    for dir in GIT_WRITE_DIRS {
+        paths.push(entry("subpath", &grant.common_dir.join(dir))?);
+    }
+    paths.push(entry("subpath", &grant.git_dir.join("logs"))?);
+    for file in GIT_WRITE_FILES {
+        paths.push(entry("literal", &grant.git_dir.join(file))?);
+    }
+    for file in GIT_COMMON_WRITE_FILES {
+        paths.push(entry("literal", &grant.common_dir.join(file))?);
+    }
+    Ok(format!("(allow file-write* {})", paths.join(" ")))
 }
 
 impl MacOSSeatbeltInstance {

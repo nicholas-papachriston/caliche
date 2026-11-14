@@ -461,20 +461,23 @@ mod git_context_tests {
     #[expect(clippy::expect_used, reason = "test helper panics with context")]
     fn outside_repo(branch: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("outside repo");
-        let repo = git2::Repository::init(dir.path()).expect("init");
-        repo.remote("origin", "https://token@example.invalid/outside.git")
-            .expect("remote");
-        let sig = git2::Signature::now("t", "t@example.invalid").expect("sig");
-        let tree = repo
-            .find_tree(repo.index().expect("index").write_tree().expect("tree"))
-            .expect("find tree");
-        let commit = repo
-            .commit(None, &sig, &sig, "init", &tree, &[])
-            .expect("commit");
-        repo.branch(branch, &repo.find_commit(commit).expect("c"), true)
-            .expect("branch");
-        repo.set_head(&format!("refs/heads/{branch}"))
-            .expect("head");
+        let git = |args: &[&str]| {
+            let output = crate::policy::git_command()
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&["init", "-q", "-b", branch]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://token@example.invalid/outside.git",
+        ]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         dir
     }
 

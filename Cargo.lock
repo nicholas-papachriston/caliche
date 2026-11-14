@@ -1998,7 +1998,6 @@ dependencies = [
  "dripstone",
  "fastrand 2.4.1",
  "futures-util",
- "git2",
  "grep-matcher",
  "grep-regex",
  "hex",

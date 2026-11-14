@@ -859,33 +859,6 @@ mod tests {
         assert!(git_context.is_some());
     }
 
-    /// libgit2 itself runs no external filter or diff driver: hashing the
-    /// work tree through the attribute filters, staging into an in-memory
-    /// index, and rendering a patch leave no marker.
-    #[cfg(all(unix, feature = "tools-git"))]
-    #[test]
-    fn libgit2_runs_no_external_filter_or_diff_driver() {
-        let (_repo, root, markers) = planted_repo();
-        let repo = git2::Repository::open(&root).expect("open");
-
-        let status = repo.status_file(Path::new("a.txt")).expect("status");
-        let diff = repo.diff_index_to_workdir(None, None).expect("diff");
-        let mut patch = String::new();
-        diff.print(git2::DiffFormat::Patch, |_, _, line| {
-            patch.push_str(&String::from_utf8_lossy(line.content()));
-            true
-        })
-        .expect("print");
-        repo.index()
-            .expect("index")
-            .add_path(Path::new("a.txt"))
-            .expect("in-memory add");
-
-        assert_eq!(markers_left(markers.path()), Vec::<String>::new());
-        assert_eq!(status, git2::Status::WT_MODIFIED);
-        assert!(patch.contains("bbbb"), "{patch}");
-    }
-
     use super::*;
     use crate::agent::service::AgentService;
     use crate::agent::tools::ToolRegistry;
