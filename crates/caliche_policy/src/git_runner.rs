@@ -54,6 +54,17 @@ pub const GIT_DIFF_SAFETY_FLAGS: [&str; 3] =
 /// repository.
 pub const GIT_STATUS_SAFETY_FLAGS: [&str; 1] = ["--ignore-submodules=all"];
 
+/// `git status` arguments for a NUL-separated porcelain v1 listing with no
+/// rename detection, after [`GIT_STATUS_SAFETY_FLAGS`]; `untracked` is the
+/// `--untracked-files=` option, such as `--untracked-files=no`.
+#[must_use]
+pub fn porcelain_status_args(untracked: &'static str) -> Vec<&'static str> {
+    let mut args = vec!["status"];
+    args.extend(GIT_STATUS_SAFETY_FLAGS);
+    args.extend(["--porcelain=v1", "-z", "--no-renames", untracked]);
+    args
+}
+
 /// A `git` command with no system or global config, no hostile inherited
 /// variable, and [`GIT_PROGRAM_OVERRIDES`] on its command line. The caller
 /// adds the subcommand and pins the repository.
@@ -162,6 +173,21 @@ fn is_program_key(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn porcelain_status_args_start_with_the_safety_flags() {
+        assert_eq!(
+            porcelain_status_args("--untracked-files=no"),
+            [
+                "status",
+                "--ignore-submodules=all",
+                "--porcelain=v1",
+                "-z",
+                "--no-renames",
+                "--untracked-files=no",
+            ]
+        );
+    }
 
     #[test]
     fn program_keys_are_refused_by_section_and_last_part() {

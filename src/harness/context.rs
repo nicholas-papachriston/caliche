@@ -254,14 +254,9 @@ impl ContextManager {
                 .trim()
                 .to_string();
             let porcelain = repo
-                .read(&[
-                    "status",
-                    crate::policy::GIT_STATUS_SAFETY_FLAGS[0],
-                    "--porcelain=v1",
-                    "-z",
-                    "--no-renames",
+                .read(&crate::policy::porcelain_status_args(
                     "--untracked-files=no",
-                ])
+                ))
                 .await
                 .ok()?;
             let mut staged_count = 0;

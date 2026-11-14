@@ -124,14 +124,9 @@ impl Tool for GitStatusTool {
             Err(e) => return ToolResult::error(e),
         };
         let porcelain = match repo
-            .read(&[
-                "status",
-                crate::policy::GIT_STATUS_SAFETY_FLAGS[0],
-                "--porcelain=v1",
-                "-z",
-                "--no-renames",
+            .read(&crate::policy::porcelain_status_args(
                 "--untracked-files=normal",
-            ])
+            ))
             .await
         {
             Ok(porcelain) => porcelain,

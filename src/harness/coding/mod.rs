@@ -509,14 +509,9 @@ async fn git_dirty_files(root: &Path) -> Result<Vec<PathBuf>> {
         return Ok(Vec::new());
     };
     let porcelain = repo
-        .read(&[
-            "status",
-            crate::policy::GIT_STATUS_SAFETY_FLAGS[0],
-            "--porcelain=v1",
-            "-z",
-            "--no-renames",
+        .read(&crate::policy::porcelain_status_args(
             "--untracked-files=normal",
-        ])
+        ))
         .await
         .map_err(|err| anyhow::anyhow!("failed to read git status: {err}"))?;
     Ok(porcelain
