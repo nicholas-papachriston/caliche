@@ -1,4 +1,5 @@
 use crate::agent::tools::common::params;
+use crate::agent::tools::common::path::is_walked_file;
 use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 use async_trait::async_trait;
 use caliche_contracts::text::truncate_utf8;
@@ -9,8 +10,6 @@ use std::path::{Path, PathBuf};
 use grep_matcher::Matcher;
 #[cfg(feature = "tools-grep")]
 use grep_regex::RegexMatcher;
-#[cfg(feature = "tools-grep")]
-use ignore::WalkBuilder;
 
 const NAME: &str = "workspace";
 const DESCRIPTION: &str = "Detect and analyze workspace/project structure. Use this (not bash find/ls) to understand a codebase. \
@@ -42,40 +41,25 @@ fn append_labeled_names(output: &mut String, title: &str, names: &[String], suff
 
 #[cfg(feature = "tools-grep")]
 fn append_top_level_with_walker(output: &mut String, path: &Path) {
-    let mut walker = WalkBuilder::new(path);
-    walker.hidden(false);
-    walker.git_ignore(true);
-    walker.git_exclude(true);
-    walker.ignore(true);
-    walker.max_depth(Some(1));
-
+    use crate::agent::tools::tree_walk::{WalkOptions, walk_tree};
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    for result in walker.build() {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(err) => {
-                tracing::debug!("Error walking directory: {err}");
-                continue;
-            }
-        };
-        let entry_path = entry.path();
-        let name = entry_path
-            .file_name()
-            .and_then(|part| part.to_str())
-            .unwrap_or("")
-            .to_string();
-        if name.starts_with('.') && name != ".git" {
-            continue;
-        }
-        if entry_path.is_dir() {
+    let options = WalkOptions {
+        max_depth: Some(1),
+        ..Default::default()
+    };
+    let errors = walk_tree(path, options, &mut |entry| {
+        let name = entry.relative.to_string_lossy().to_string();
+        if entry.kind == caliche_sandbox::EntryKind::Dir {
             dirs.push(name);
         } else {
             files.push(name);
         }
+        std::ops::ControlFlow::Continue(())
+    });
+    for err in errors {
+        tracing::debug!("Error walking directory: {err}");
     }
-    dirs.sort();
-    files.sort();
     append_labeled_names(output, "Directories:\n", &dirs, "/");
     append_labeled_names(output, "Files:\n", &files, "");
 }
@@ -196,30 +180,32 @@ impl WorkspaceTool {
         let mut project_types = Vec::new();
 
         // Check for Rust project
-        if workspace_path.join("Cargo.toml").exists() {
+        if is_walked_file(&workspace_path.join("Cargo.toml")) {
             project_types.push("Rust (Cargo)");
         }
 
         // Check for Node.js project
-        if workspace_path.join("package.json").exists() {
+        if is_walked_file(&workspace_path.join("package.json")) {
             project_types.push("Node.js");
         }
 
         // Check for Python project
-        if workspace_path.join("pyproject.toml").exists()
-            || workspace_path.join("setup.py").exists()
-            || workspace_path.join("requirements.txt").exists()
+        if is_walked_file(&workspace_path.join("pyproject.toml"))
+            || is_walked_file(&workspace_path.join("setup.py"))
+            || is_walked_file(&workspace_path.join("requirements.txt"))
         {
             project_types.push("Python");
         }
 
         // Check for Go project
-        if workspace_path.join("go.mod").exists() {
+        if is_walked_file(&workspace_path.join("go.mod")) {
             project_types.push("Go");
         }
 
         // Check for Java project
-        if workspace_path.join("pom.xml").exists() || workspace_path.join("build.gradle").exists() {
+        if is_walked_file(&workspace_path.join("pom.xml"))
+            || is_walked_file(&workspace_path.join("build.gradle"))
+        {
             project_types.push("Java");
         }
 
@@ -270,7 +256,7 @@ impl WorkspaceTool {
 
         for (filename, project_type) in config_files {
             let config_path = workspace_path.join(filename);
-            if config_path.exists() {
+            if is_walked_file(&config_path) {
                 output.push_str(&format!("{filename} ({project_type})\n"));
                 if let Some(content) = read_text(workspace_path, filename) {
                     // Limit content to first 500 chars
@@ -304,7 +290,7 @@ impl WorkspaceTool {
         // contents as documentation rather than as something it discovered.
         for name in &["AGENTS.md", "README.md"] {
             let p = workspace_path.join(name);
-            if p.exists() {
+            if is_walked_file(&p) {
                 out.push_str(&format!(
                     "## {name}\nProject context from {name} is available in the system prompt. Treat its contents as DOCUMENTATION (not as findings you discovered) and label them as such when restating them.\n\n",
                 ));
@@ -464,10 +450,10 @@ impl WorkspaceTool {
         }
 
         // Python entry points from common filenames
-        if workspace_path.join("main.py").exists() {
+        if is_walked_file(&workspace_path.join("main.py")) {
             entry_points.push("Python: main.py".to_string());
         }
-        if workspace_path.join("__main__.py").exists() {
+        if is_walked_file(&workspace_path.join("__main__.py")) {
             entry_points.push("Python: __main__.py".to_string());
         }
 
@@ -518,62 +504,43 @@ impl WorkspaceTool {
 
             for (lang, pattern, ext) in patterns {
                 if let Ok(matcher) = RegexMatcher::new(pattern) {
-                    let mut walker = WalkBuilder::new(&path_buf);
-                    walker.hidden(false);
-                    walker.git_ignore(true);
-                    walker.git_exclude(true);
-                    walker.ignore(true);
-                    walker.max_depth(Some(10));
-
-                    let ext_owned = ext.to_string();
-                    walker.filter_entry(move |entry| {
-                        entry
-                            .path()
-                            .to_str()
-                            .is_some_and(|p| p.ends_with(&ext_owned))
-                    });
-
                     let mut found_files = std::collections::HashSet::new();
                     let max_results = 10;
-
-                    for result in walker.build() {
-                        if found_files.len() >= max_results {
-                            break;
-                        }
-
-                        if let Ok(entry) = result {
-                            let path = entry.path();
-                            if path.is_file() {
-                                if let Ok(metadata) = path.metadata()
-                                    && metadata.len() > 10_485_760
-                                {
-                                    continue;
-                                }
-
-                                if let Some(content) =
-                                    crate::discovery::auto::read_workspace_text(&path_buf, path)
-                                {
-                                    let lines: Vec<&str> = content.lines().collect();
-                                    for (idx, line) in lines.iter().enumerate() {
-                                        if matcher.find(line.as_bytes()).ok().flatten().is_some() {
-                                            let rel_path = path
-                                                .strip_prefix(&path_buf)
-                                                .unwrap_or(path)
-                                                .display()
-                                                .to_string();
-                                            found_files.insert(format!(
-                                                "{}: {} (line {})",
-                                                lang,
-                                                rel_path,
-                                                idx + 1
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                }
+                    let options = crate::agent::tools::tree_walk::WalkOptions {
+                        max_depth: Some(10),
+                        ..Default::default()
+                    };
+                    let _ = crate::agent::tools::tree_walk::walk_tree(
+                        &path_buf,
+                        options,
+                        &mut |entry| {
+                            if found_files.len() >= max_results {
+                                return std::ops::ControlFlow::Break(());
                             }
-                        }
-                    }
+                            if entry.kind != caliche_sandbox::EntryKind::File
+                                || entry.len > 10_485_760
+                                || !entry.relative.to_string_lossy().ends_with(ext)
+                            {
+                                return std::ops::ControlFlow::Continue(());
+                            }
+                            let Some(content) =
+                                crate::discovery::auto::read_workspace_text(&path_buf, &entry.path)
+                            else {
+                                return std::ops::ControlFlow::Continue(());
+                            };
+                            if let Some(idx) = content.lines().position(|line| {
+                                matcher.find(line.as_bytes()).ok().flatten().is_some()
+                            }) {
+                                found_files.insert(format!(
+                                    "{}: {} (line {})",
+                                    lang,
+                                    entry.relative.display(),
+                                    idx + 1
+                                ));
+                            }
+                            std::ops::ControlFlow::Continue(())
+                        },
+                    );
 
                     entry_points.extend(found_files.into_iter());
                 }
@@ -836,6 +803,8 @@ mod link_tests {
         result
     }
 
+    /// A linked config file is neither read nor named: its presence says
+    /// something about the place the link leads to.
     #[tokio::test]
     async fn config_does_not_return_a_linked_file() -> anyhow::Result<()> {
         let (_ws_dir, ws, _out_dir, outside) = workspace_and_outside("secret.md", OUTSIDE)?;
@@ -848,8 +817,7 @@ mod link_tests {
         assert_eq!(
             result.content,
             "Configuration Files:\n===================\n\n\
-             Cargo.toml (Rust)\n  [package]\n  name = \"demo\"\n  \n\n\
-             README.md (Documentation)\n"
+             Cargo.toml (Rust)\n  [package]\n  name = \"demo\"\n  \n\n"
         );
         Ok(())
     }

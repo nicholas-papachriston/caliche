@@ -5,7 +5,6 @@ use crate::agent::tools::{Tool, ToolMeta, ToolResult};
 #[cfg(feature = "tools-grep")]
 use async_trait::async_trait;
 #[cfg(feature = "tools-grep")]
-use ignore::WalkBuilder;
 #[cfg(feature = "tools-grep")]
 use serde_json::json;
 
@@ -202,35 +201,26 @@ fn glob_walk(
     let mut truncated = false;
     let mut errors = Vec::new();
 
-    let mut walker = WalkBuilder::new(root);
-    walker.hidden(!include_hidden);
-    walker.git_ignore(true);
-    walker.git_exclude(true);
-    walker.ignore(true);
-
-    for entry in walker.build() {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                errors.push(e.to_string());
-                continue;
-            }
-        };
-        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
-            continue;
+    let options = crate::agent::tools::tree_walk::WalkOptions {
+        include_hidden,
+        ..Default::default()
+    };
+    let walk_errors = crate::agent::tools::tree_walk::walk_tree(root, options, &mut |entry| {
+        if entry.kind != caliche_sandbox::EntryKind::File {
+            return std::ops::ControlFlow::Continue(());
         }
         scanned = scanned.saturating_add(1);
-        let entry_path = entry.path();
-        let rel = entry_path.strip_prefix(root).unwrap_or(entry_path);
-        let rel_display = rel.to_string_lossy();
+        let rel_display = entry.relative.to_string_lossy().replace('\\', "/");
         if compiled_pattern.matches(&rel_display) {
             if matches.len() >= max_matches {
                 truncated = true;
-                break;
+                return std::ops::ControlFlow::Break(());
             }
-            matches.push(rel_display.to_string());
+            matches.push(rel_display);
         }
-    }
+        std::ops::ControlFlow::Continue(())
+    });
+    errors.extend(walk_errors);
 
     GlobWalk {
         matches,

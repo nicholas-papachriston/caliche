@@ -80,6 +80,8 @@ pub mod sql_generation;
 pub mod sql_tenant_filter;
 pub mod tool;
 pub mod toolkit;
+#[cfg(feature = "tools-grep")]
+pub(crate) mod tree_walk;
 pub mod validators;
 pub mod verify_integration;
 pub mod web;

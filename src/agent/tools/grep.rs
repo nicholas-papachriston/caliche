@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 use grep_matcher::Matcher;
 #[cfg(feature = "tools-grep")]
 use grep_regex::RegexMatcher;
-#[cfg(feature = "tools-grep")]
-use ignore::WalkBuilder;
 
 const NAME: &str = "grep";
 const DESCRIPTION: &str =
@@ -732,14 +730,6 @@ fn path_matches_file_pattern(path: &Path, pattern: &str) -> bool {
 }
 
 #[cfg(feature = "tools-grep")]
-fn is_skipped_vcs_dir(entry: &ignore::DirEntry) -> bool {
-    entry
-        .file_type()
-        .is_some_and(|file_type| file_type.is_dir())
-        && matches!(entry.file_name().to_str(), Some(".git" | ".hg" | ".svn"))
-}
-
-#[cfg(feature = "tools-grep")]
 struct SearchDirectoryOptions<'a> {
     matcher: &'a RegexMatcher,
     recursive: bool,
@@ -812,67 +802,50 @@ impl GrepTool {
         let mut matches = Vec::new();
         let mut errors = Vec::new();
 
-        let mut walker = WalkBuilder::new(dir_path);
-        walker.max_filesize(Some(options.max_file_size));
-        walker.hidden(!options.include_hidden);
-        walker.git_ignore(true);
-        walker.git_exclude(true);
-        walker.ignore(true);
-
-        // Skip VCS metadata trees even when include_hidden is true. File
-        // extension filtering happens in the walk loop: ignore's `max_filesize`
-        // short-circuits `filter_entry` for files.
-        walker.filter_entry(|entry| !is_skipped_vcs_dir(entry));
-
-        if !options.recursive {
-            walker.max_depth(Some(1));
-        }
-
-        for result in walker.build() {
-            if *counters.total_matches >= options.max_matches {
-                break;
-            }
-
-            let entry = match result {
-                Ok(e) => e,
-                Err(e) => {
-                    errors.push(format!("Walk error: {e}"));
-                    continue;
+        let walk_options = crate::agent::tools::tree_walk::WalkOptions {
+            max_depth: (!options.recursive).then_some(1),
+            include_hidden: options.include_hidden,
+            honor_ignores: true,
+        };
+        let walk_errors =
+            crate::agent::tools::tree_walk::walk_tree(dir_path, walk_options, &mut |entry| {
+                if *counters.total_matches >= options.max_matches {
+                    return std::ops::ControlFlow::Break(());
                 }
-            };
-
-            let entry_path = entry.path();
-            // The walk does not follow links, so a link reports its own
-            // type here and is skipped with directories and other non-files.
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-            if options
-                .file_pattern
-                .is_some_and(|pat| !path_matches_file_pattern(entry_path, pat))
-            {
-                continue;
-            }
-
-            match Self::search_file(
-                Some(dir_path),
-                entry_path,
-                options.matcher,
-                options.context_lines,
-                options.max_file_size,
-                counters.total_matches,
-                options.max_matches,
-                counters.lines_scanned,
-            ) {
-                Ok(file_matches) => {
-                    *counters.files_scanned += 1;
-                    matches.extend(file_matches);
+                // The walk follows no link and never enters `.git`, `.hg` or
+                // `.svn`; only regular files within the size limit are read.
+                if entry.kind != caliche_sandbox::EntryKind::File
+                    || entry.len > options.max_file_size
+                {
+                    return std::ops::ControlFlow::Continue(());
                 }
-                Err(e) => {
-                    errors.push(format!("Error searching '{}': {}", entry_path.display(), e));
+                if options
+                    .file_pattern
+                    .is_some_and(|pat| !path_matches_file_pattern(&entry.path, pat))
+                {
+                    return std::ops::ControlFlow::Continue(());
                 }
-            }
-        }
+                match Self::search_file(
+                    Some(dir_path),
+                    &entry.path,
+                    options.matcher,
+                    options.context_lines,
+                    options.max_file_size,
+                    counters.total_matches,
+                    options.max_matches,
+                    counters.lines_scanned,
+                ) {
+                    Ok(file_matches) => {
+                        *counters.files_scanned += 1;
+                        matches.extend(file_matches);
+                    }
+                    Err(e) => {
+                        errors.push(format!("Error searching '{}': {}", entry.path.display(), e));
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+        errors.extend(walk_errors.into_iter().map(|e| format!("Walk error: {e}")));
 
         if errors.is_empty() {
             Ok(matches)

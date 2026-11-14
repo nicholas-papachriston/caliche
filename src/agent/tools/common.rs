@@ -375,6 +375,26 @@ pub mod path {
             .map_err(std::io::Error::other)?
     }
 
+    /// Whether `path`, a canonical path, is a regular file reached without a
+    /// link. A missing file, a directory, a link and any special file are not.
+    #[must_use]
+    pub fn is_walked_file(path: &Path) -> bool {
+        entry_kind(path) == Some(caliche_sandbox::EntryKind::File)
+    }
+
+    /// What `path`, a canonical path, is, read from a no-link listing of its
+    /// parent. `None` when it is missing or the parent cannot be listed.
+    #[must_use]
+    pub fn entry_kind(path: &Path) -> Option<caliche_sandbox::EntryKind> {
+        let parent = path.parent()?;
+        let name = path.file_name()?;
+        list_resolved_dir(parent)
+            .ok()?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.kind)
+    }
+
     /// [`list_resolved_dir`] on a blocking thread.
     ///
     /// # Errors

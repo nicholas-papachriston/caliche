@@ -1,6 +1,5 @@
 //! File scanner for RepoMap.
 
-use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
 /// Extensions for source files to include in the codebase map.
@@ -15,32 +14,30 @@ pub const SOURCE_EXTENSIONS: &[&str] = &[
 pub fn scan(root: &Path) -> Vec<PathBuf> {
     let ext_set: std::collections::HashSet<&str> = SOURCE_EXTENSIONS.iter().copied().collect();
 
-    let mut walker = WalkBuilder::new(root);
-    walker
-        .standard_filters(true)
-        .add_custom_ignore_filename(".caliche_ignore");
-
+    let Ok(canonical) = root.canonicalize() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for result in walker.build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-        if ext_set.contains(ext.as_str()) {
-            out.push(path.to_path_buf());
-        }
-    }
+    // The walk follows no link, so a swapped directory cannot take it out
+    // of the workspace. Paths keep the caller's spelling of `root`.
+    let _ = crate::agent::tools::tree_walk::walk_tree(
+        &canonical,
+        crate::agent::tools::tree_walk::WalkOptions::default(),
+        &mut |entry| {
+            if entry.kind == caliche_sandbox::EntryKind::File {
+                let ext = entry
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_lowercase)
+                    .unwrap_or_default();
+                if ext_set.contains(ext.as_str()) {
+                    out.push(root.join(&entry.relative));
+                }
+            }
+            std::ops::ControlFlow::Continue(())
+        },
+    );
 
     out
 }
