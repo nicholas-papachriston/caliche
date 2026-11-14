@@ -68,94 +68,88 @@ pub fn walk_tree(
     options: WalkOptions,
     visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
 ) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut ignores = Vec::new();
-    if options.honor_ignores
-        && let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), &mut errors)
-    {
-        ignores.push(exclude);
-    }
-    let _ = walk_dir(root, root, 1, options, &mut ignores, visit, &mut errors);
-    errors
-}
-
-fn walk_dir(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
-    options: WalkOptions,
-    ignores: &mut Vec<Gitignore>,
-    visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
-    errors: &mut Vec<String>,
-) -> ControlFlow<()> {
-    let mut entries = match list_resolved_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            errors.push(format!("{}: {err}", dir.display()));
-            return ControlFlow::Continue(());
-        }
+    let mut walk = Walk {
+        root,
+        options,
+        ignores: Vec::new(),
+        visit,
+        errors: Vec::new(),
     };
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    let pushed = options.honor_ignores && push_dir_ignores(dir, &entries, ignores, errors);
-    let flow = visit_entries(root, dir, depth, options, &entries, ignores, visit, errors);
-    if pushed {
-        ignores.pop();
+    if options.honor_ignores
+        && let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), &mut walk.errors)
+    {
+        walk.ignores.push(exclude);
     }
-    flow
+    let _ = walk.dir(root, 1);
+    walk.errors
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the walk state is threaded through one recursion"
-)]
-fn visit_entries(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
+/// The state one [`walk_tree`] threads through its recursion.
+struct Walk<'a> {
+    root: &'a Path,
     options: WalkOptions,
-    entries: &[caliche_sandbox::DirEntryBeneath],
-    ignores: &mut Vec<Gitignore>,
-    visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
-    errors: &mut Vec<String>,
-) -> ControlFlow<()> {
-    for entry in entries {
-        let Some(name) = entry.name.to_str() else {
-            continue;
+    /// The ignore matchers of the directories above the current one.
+    ignores: Vec<Gitignore>,
+    visit: &'a mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
+    errors: Vec<String>,
+}
+
+impl Walk<'_> {
+    fn dir(&mut self, dir: &Path, depth: usize) -> ControlFlow<()> {
+        let mut entries = match list_resolved_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.errors.push(format!("{}: {err}", dir.display()));
+                return ControlFlow::Continue(());
+            }
         };
-        let is_dir = match entry.kind {
-            EntryKind::Dir => true,
-            EntryKind::File => false,
-            EntryKind::Other => continue,
-        };
-        if (is_dir && VCS_DIRS.contains(&name))
-            || (!options.include_hidden && name.starts_with('.'))
-        {
-            continue;
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let pushed = self.options.honor_ignores
+            && push_dir_ignores(dir, &entries, &mut self.ignores, &mut self.errors);
+        let flow = self.entries(dir, depth, &entries);
+        if pushed {
+            self.ignores.pop();
         }
-        let path = dir.join(&entry.name);
-        if options.honor_ignores && is_ignored(ignores, &path, is_dir) {
-            continue;
-        }
-        let walked = WalkedEntry {
-            relative: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
-            path,
-            kind: entry.kind,
-            len: entry.len,
-        };
-        visit(&walked)?;
-        if is_dir && options.max_depth.is_none_or(|max| depth < max) {
-            walk_dir(
-                root,
-                &walked.path,
-                depth + 1,
-                options,
-                ignores,
-                visit,
-                errors,
-            )?;
-        }
+        flow
     }
-    ControlFlow::Continue(())
+
+    fn entries(
+        &mut self,
+        dir: &Path,
+        depth: usize,
+        entries: &[caliche_sandbox::DirEntryBeneath],
+    ) -> ControlFlow<()> {
+        for entry in entries {
+            let Some(name) = entry.name.to_str() else {
+                continue;
+            };
+            let is_dir = match entry.kind {
+                EntryKind::Dir => true,
+                EntryKind::File => false,
+                EntryKind::Other => continue,
+            };
+            if (is_dir && VCS_DIRS.contains(&name))
+                || (!self.options.include_hidden && name.starts_with('.'))
+            {
+                continue;
+            }
+            let path = dir.join(&entry.name);
+            if self.options.honor_ignores && is_ignored(&self.ignores, &path, is_dir) {
+                continue;
+            }
+            let walked = WalkedEntry {
+                relative: path.strip_prefix(self.root).unwrap_or(&path).to_path_buf(),
+                path,
+                kind: entry.kind,
+                len: entry.len,
+            };
+            (self.visit)(&walked)?;
+            if is_dir && self.options.max_depth.is_none_or(|max| depth < max) {
+                self.dir(&walked.path, depth + 1)?;
+            }
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 /// Read the ignore files `dir` lists into one matcher.
