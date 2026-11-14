@@ -3,7 +3,14 @@
 //! Every way to run a tool takes a [`ToolPermit`]: [`Tool::execute`],
 //! [`ToolRegistry::execute`] and their variants. Only a gate builds a permit,
 //! after the policy admits the call, so code outside the crate cannot run a
-//! tool the gate did not admit.
+//! tool without some call having been admitted.
+//!
+//! The permit is not bound to the tool name, the arguments or a call id. A
+//! host-Rust [`Tool`](crate::agent::tools::Tool) that holds one while it
+//! runs can pass it to [`ToolRegistry::execute`] for another tool; that
+//! tool's own checks (the workspace root, for one) still apply. Model calls
+//! cannot do this: every model path admits each call, and hooks, scripted
+//! tools (JavaScript, Python, WASM) and plugins never hold a permit.
 //!
 //! [`Tool::execute`]: crate::agent::tools::Tool::execute
 //! [`ToolRegistry::execute`]: crate::agent::tools::ToolRegistry::execute
@@ -12,8 +19,10 @@ use std::marker::PhantomData;
 
 /// Proof that a gate admitted one tool call.
 ///
-/// A tool receives it and passes it on to a tool it runs for the same call.
-/// It cannot be cloned or kept past the call.
+/// A tool receives it and may pass it on to a tool it runs during the
+/// same call. It cannot be cloned, and its lifetime ends with the call, so
+/// it cannot be stored for a later one; it does not name which tool or
+/// arguments were admitted.
 ///
 /// Code outside this crate cannot build one:
 ///
