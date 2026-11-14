@@ -5,6 +5,13 @@ use anyhow::Result;
 use std::io::Write;
 
 /// Handle shell completion generation.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "completion scripts and man pages written where the user's own command names"
+    )
+)]
 pub fn handle_completions_command(shell: CompletionShell, output: Option<String>) -> Result<()> {
     use clap::CommandFactory;
     use clap_complete::{Shell, generate};
@@ -32,6 +39,13 @@ pub fn handle_completions_command(shell: CompletionShell, output: Option<String>
 }
 
 /// Handle man page generation and install.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "completion scripts and man pages written where the user's own command names"
+    )
+)]
 pub fn handle_man_command(action: ManAction) -> Result<()> {
     use clap::CommandFactory;
     use clap_mangen::Man;
@@ -79,6 +93,13 @@ pub fn handle_man_command(action: ManAction) -> Result<()> {
 fn write_all_man_pages(cmd: &clap::Command, output_dir: &std::path::Path) -> Result<usize> {
     use clap_mangen::Man;
 
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "completion scripts and man pages written where the user's own command names"
+        )
+    )]
     fn walk(
         cmd: &clap::Command,
         prefix: &str,

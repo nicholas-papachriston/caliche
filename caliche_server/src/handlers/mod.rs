@@ -1,3 +1,5 @@
+// Checked by the tool file-access clippy step (clippy/tool-file-access).
+#![cfg_attr(tool_file_lint, deny(clippy::disallowed_methods))]
 pub mod agent_stream;
 pub mod chat;
 mod chat_contracts;

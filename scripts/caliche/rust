@@ -534,6 +534,19 @@ EOF
     # probe and the test build are linted too.
     step "Running Clippy on JavaScript bindings crate (all targets, panic-probe)"
     cargo clippy -p caliche_js --all-targets --features panic-probe -- -D warnings
+    # Tool and handler code reaches files only through the no-link helpers.
+    # clippy/tool-file-access lists the raw file-system calls; the tool and
+    # handler modules deny them under --cfg tool_file_lint, which overrides
+    # the command-line allow for every other module. Lib targets only, so
+    # test modules are not checked.
+    tool_file_lint=(--cfg tool_file_lint -A clippy::disallowed_methods -D unfulfilled_lint_expectations)
+    step "Running the tool file-access Clippy step"
+    CLIPPY_CONF_DIR="$ROOT/clippy/tool-file-access" \
+      cargo clippy -p caliche --lib --features "$ROOT_GATE_FEATURES" -- "${tool_file_lint[@]}"
+    CLIPPY_CONF_DIR="$ROOT/clippy/tool-file-access" \
+      cargo clippy -p caliche_server --lib --features "app,${SERVER_ROUTE_FEATURES}" -- "${tool_file_lint[@]}"
+    CLIPPY_CONF_DIR="$ROOT/clippy/tool-file-access" \
+      cargo clippy -p caliche_cli --lib -- "${tool_file_lint[@]}"
     step "Running Clippy on sandbox crate ($SANDBOX_FEATURES)"
     cargo clippy -p caliche_sandbox --all-targets --features "$SANDBOX_FEATURES" -- -D warnings
     # Dripstone has no standalone GitHub Actions; gate it here explicitly.

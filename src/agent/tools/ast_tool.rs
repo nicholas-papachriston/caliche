@@ -138,7 +138,9 @@ impl Tool for AstTool {
 
 impl AstTool {
     fn ensure_file_path(path_buf: &std::path::Path, original: &str) -> Result<()> {
-        if path_buf.is_dir() {
+        if crate::agent::tools::common::path::entry_kind(path_buf)
+            == Some(caliche_sandbox::EntryKind::Dir)
+        {
             bail!(
                 "Path '{original}' is a directory. The ast tool parse/symbol/query operations require a single source file path. Use fs op=list or fs op=grep to discover files first."
             );

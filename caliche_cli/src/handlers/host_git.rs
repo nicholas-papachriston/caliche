@@ -41,6 +41,13 @@ impl HostGit {
     /// A `dir` git finds a git dir for but no work tree (a bare repository,
     /// or inside a git dir) is refused, and so is a work tree whose git dir
     /// is not its own `.git` (a `core.worktree` in a repository elsewhere).
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the user's own /commit, /pr and /review: reads a .git link itself, never its target, and canonicalizes to compare a repository with the working directory"
+        )
+    )]
     pub(crate) async fn open(dir: &Path) -> Result<Self> {
         let git = Self {
             dir: dir.to_path_buf(),
@@ -134,6 +141,13 @@ impl HostGit {
 
 /// Refuse a submodule whose `.git` is anything but a gitfile into
 /// `modules`. A submodule that is not checked out has no `.git` and passes.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the user's own /commit, /pr and /review: reads a .git link itself, never its target, and canonicalizes to compare a repository with the working directory"
+    )
+)]
 fn check_submodule(top: &Path, modules: &Path, path: &str) -> Result<()> {
     let work_tree = top.join(path);
     let dot_git = work_tree.join(GIT_DIR_NAME);

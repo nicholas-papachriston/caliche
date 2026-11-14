@@ -103,13 +103,10 @@ pub mod path {
 
         // Canonicalize already fails when the path is missing, so skip a second
         // metadata hop unless the caller asked for a file/directory check.
-        let normalized_path = path
-            .canonicalize()
-            .with_context(|| format!("Failed to resolve path '{path_str}'"))?;
-        refuse_link_out_of_workspace(&path, &normalized_path)?;
+        let normalized_path = canonical_tool_path(&path, path_str)?;
 
         if let Some(should_be_file) = must_be_file {
-            let metadata = std::fs::metadata(&normalized_path)
+            let metadata = tool_metadata(&normalized_path)
                 .with_context(|| format!("Failed to access path '{path_str}'"))?;
             if should_be_file && !metadata.is_file() {
                 bail!("Path '{path_str}' is not a file (it may be a directory)");
@@ -264,7 +261,8 @@ pub mod path {
                 format!("'{}' is outside the workspace", dir.display()),
             )
         })?;
-        list_resolved_dir(&workspace.canonicalize()?.join(below))
+        let canonical = canonical_workspace().map_err(std::io::Error::other)?;
+        list_resolved_dir(&canonical.join(below))
     }
 
     /// Read `path`, a path from [`validate_and_resolve_path`], as bytes
@@ -327,6 +325,13 @@ pub mod path {
     ///
     /// Returns an error when `path` is outside the workspace and host access
     /// is locked, or as [`resolved_metadata`] below the workspace.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "with host access unlocked the user allowed paths outside the workspace"
+        )
+    )]
     pub fn tool_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
         match below_workspace(path) {
             Ok((root, target)) => metadata_beneath(&root, &target),
@@ -337,6 +342,13 @@ pub mod path {
 
     /// The metadata of the regular file or directory `target`, reached from
     /// the canonical `root` without following a link.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "attributes of a directory just reached below root without a link; symlink_metadata follows no final link"
+        )
+    )]
     fn metadata_beneath(root: &Path, target: &Path) -> std::io::Result<std::fs::Metadata> {
         match open_walked_file(root, target) {
             Ok(file) => file.metadata(),
@@ -368,6 +380,13 @@ pub mod path {
     /// # Errors
     ///
     /// Returns the error canonicalizing `path`.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "canonicalizes a path for a caller that checks it against its own root before reading"
+        )
+    )]
     pub async fn canonical_path_async(path: &Path) -> std::io::Result<PathBuf> {
         let path = path.to_path_buf();
         tokio::task::spawn_blocking(move || path.canonicalize())
@@ -428,9 +447,7 @@ pub mod path {
             return Ok(());
         }
         let workspace = get_current_dir()?;
-        let workspace_canonical = workspace
-            .canonicalize()
-            .with_context(|| format!("Failed to resolve workspace '{}'", workspace.display()))?;
+        let workspace_canonical = canonical_workspace()?;
         let names_inside =
             names_place_in(lexical, &workspace) || names_place_in(lexical, &workspace_canonical);
         if names_inside && !canonical.starts_with(&workspace_canonical) {
@@ -464,11 +481,54 @@ pub mod path {
         })
     }
 
+    /// `lexical`, a path from [`resolve_path_for_tool`] (named `path_str` in
+    /// messages), canonicalized, and refused by
+    /// [`refuse_link_out_of_workspace`] when a link inside the workspace
+    /// leads out of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns "Failed to resolve path" when `lexical` cannot be
+    /// canonicalized, or the refusal.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the one place a tool path is canonicalized; the result is checked against the workspace before any use"
+        )
+    )]
+    pub fn canonical_tool_path(lexical: &Path, path_str: &str) -> Result<PathBuf> {
+        let canonical = lexical
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve path '{path_str}'"))?;
+        refuse_link_out_of_workspace(lexical, &canonical)?;
+        Ok(canonical)
+    }
+
+    /// The tool workspace root ([`get_current_dir`]), canonical.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error canonicalizing the workspace root.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the workspace root is set by the host, not the model"
+        )
+    )]
+    pub fn canonical_workspace() -> Result<PathBuf> {
+        let workspace = get_current_dir()?;
+        workspace
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve workspace '{}'", workspace.display()))
+    }
+
     /// `path`, a path from [`resolve_path_for_tool`], as the canonical
     /// workspace root and the same place below that root.
     fn below_workspace(path: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
         let workspace = get_current_dir().map_err(std::io::Error::other)?;
-        let canonical = workspace.canonicalize()?;
+        let canonical = canonical_workspace().map_err(std::io::Error::other)?;
         let below = path
             .strip_prefix(&workspace)
             .or_else(|_| path.strip_prefix(&canonical))
@@ -507,6 +567,13 @@ pub mod path {
     /// is locked, a component below the workspace is a link, the file is not
     /// a regular file (or, for a write, has more than one hard link), or it
     /// cannot be opened.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "with host access unlocked the user allowed paths outside the workspace"
+        )
+    )]
     pub fn open_tool_file(path: &Path, how: ToolOpen) -> std::io::Result<std::fs::File> {
         match below_workspace(path) {
             Ok((root, target)) => open_beneath(&root, &target, how),
@@ -561,6 +628,13 @@ pub mod path {
     /// Returns an error when `path` is outside the workspace and host access
     /// is locked, a directory on the way is a link, `path` is a directory and
     /// `recursive` is not set, or the removal fails.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "with host access unlocked the user allowed paths outside the workspace"
+        )
+    )]
     pub fn remove_tool_path(path: &Path, recursive: bool) -> std::io::Result<()> {
         match below_workspace(path) {
             Ok((root, target)) => remove_beneath(&root, &target, recursive),
@@ -709,6 +783,13 @@ pub mod path {
 
     /// `path` with its longest existing prefix canonicalized, so symlinks
     /// there are followed; the missing tail is appended unchanged.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "resolves an existing prefix to check a write target for git metadata; nothing is opened"
+        )
+    )]
     fn resolve_existing_prefix(path: &Path) -> PathBuf {
         let mut tail = Vec::new();
         let mut current = path;
@@ -728,7 +809,7 @@ pub mod path {
 
     /// Validates file size against a maximum
     pub fn validate_file_size(path: &Path, max_size: u64) -> Result<u64> {
-        let metadata = std::fs::metadata(path).context("Failed to get file metadata")?;
+        let metadata = tool_metadata(path).context("Failed to get file metadata")?;
 
         let file_size = metadata.len();
         if file_size > max_size {

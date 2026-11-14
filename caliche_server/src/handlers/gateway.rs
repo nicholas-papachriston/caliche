@@ -835,6 +835,13 @@ fn cluster_db_path() -> Result<std::path::PathBuf, (StatusCode, String)> {
     Ok(home.join(".caliche").join("gateway-cluster.db"))
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "creates the parent of the server's own cluster database"
+    )
+)]
 async fn cluster_db_pool() -> Result<SqlitePool, (StatusCode, String)> {
     static POOL: OnceLock<SqlitePool> = OnceLock::new();
     if let Some(existing) = POOL.get() {

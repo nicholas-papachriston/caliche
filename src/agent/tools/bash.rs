@@ -296,6 +296,13 @@ fn bound_bash_output_for_model(output: &str) -> (String, Option<serde_json::Valu
 /// The name holds the time, the process id, and a process-wide counter, and
 /// the file is created with `create_new`. Two spills in the same millisecond
 /// get different files, and a spill never overwrites another.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "a new spill file in this process own temp dir, created exclusively"
+    )
+)]
 fn spill_bash_output(output: &str) -> Result<String> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -324,6 +331,13 @@ fn spill_bash_output(output: &str) -> Result<String> {
 /// This process's spill directory: a new `caliche_bash-*` directory in the
 /// user's temp dir, created exclusively and owner-only (0700 on unix), so
 /// another local user can neither read the spills nor plant the directory.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "this process creates its own 0700 temp dir with a random name"
+    )
+)]
 fn spill_dir() -> Result<&'static std::path::Path> {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     if let Some(dir) = DIR.get() {

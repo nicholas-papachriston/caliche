@@ -42,7 +42,7 @@ fn write_file_sync(
     // The open below creates missing directories, following no link.
     if !create_dirs
         && let Some(parent) = file_path.parent()
-        && !parent.exists()
+        && path::tool_metadata(parent).is_err()
     {
         return Err(format!(
             "Parent directory does not exist: {}. Set create_dirs=true to create it automatically.",
@@ -172,7 +172,7 @@ impl Tool for WriteFileTool {
         };
 
         // Create parent directories if needed / write on the blocking pool.
-        let is_new = !file_path.exists();
+        let is_new = path::tool_metadata(&file_path).is_err();
 
         if !is_new
             && let Ok(metadata) = path::tool_metadata(&file_path)

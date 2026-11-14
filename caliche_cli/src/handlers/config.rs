@@ -16,6 +16,13 @@ use std::path::Path;
 
 use super::vault::handle_vault_command;
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the user's own config file and the export path the user's command names"
+    )
+)]
 fn write_secret_export_file(path: &Path, contents: &str) -> Result<()> {
     #[cfg(unix)]
     let mut file = {
@@ -380,6 +387,13 @@ async fn handle_config_show(format: String, verbose: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the user's own config file and the export path the user's command names"
+    )
+)]
 fn handle_config_schema(output: Option<std::path::PathBuf>) -> Result<()> {
     let schema = schemars::schema_for!(crate::config::Config);
     let json = serde_json::to_string_pretty(&schema)

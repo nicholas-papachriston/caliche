@@ -96,6 +96,13 @@ impl CommandHandler for InitHandler {
 
 /// The canonical working directory and `path` below it, for a file init
 /// reads or writes there, or `None` for a path the user named outside it.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn below_cwd(cwd: &Path, path: &Path) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
     let Ok(below) = path.strip_prefix(cwd) else {
         return Ok(None);
@@ -109,6 +116,13 @@ fn below_cwd(cwd: &Path, path: &Path) -> std::io::Result<Option<(PathBuf, PathBu
 /// opened without following a link, so a project's `AGENTS.md` that links
 /// elsewhere is not read into the prompt; a path the user named outside the
 /// working directory is read as named.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn read_init_file(cwd: &Path, path: &Path) -> Option<String> {
     match below_cwd(cwd, path).ok()? {
         Some((root, target)) => caliche::discovery::auto::read_workspace_text(&root, &target),
@@ -120,6 +134,13 @@ fn read_init_file(cwd: &Path, path: &Path) -> Option<String> {
 /// is written without following a link, so a project's `AGENTS.md` that
 /// links elsewhere does not overwrite the file it points to; a path the user
 /// named outside the working directory is written as named.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 async fn write_init_file(cwd: &Path, path: &Path, content: &str) -> Result<()> {
     let Some((root, target)) = below_cwd(cwd, path)? else {
         tokio::fs::write(path, content).await?;
@@ -147,6 +168,13 @@ fn resolve_output_path(cwd: &Path, output: &Option<String>) -> PathBuf {
 }
 
 /// Run the init command with static template generation.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 pub async fn run_init_command(args: &InitArgs) -> Result<()> {
     use std::io::IsTerminal;
 
@@ -248,6 +276,13 @@ struct UserAnswers {
 /// Run an interactive questionnaire before AI analysis.
 ///
 /// Returns `None` if the user cancelled.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn run_questionnaire(
     cwd: &Path,
     output_path: &std::path::Path,
@@ -561,6 +596,13 @@ fn extract_markdown_content(raw: &str) -> String {
 }
 
 /// Detect project type (distinguishes typescript vs javascript).
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn detect_project_type(path: &Path) -> String {
     if path.join("Cargo.toml").exists() {
         "rust".to_string()
@@ -772,6 +814,13 @@ impl ProjectConfig {
 
 /// Load project configuration from AGENTS.md or similar project files.
 /// Searches from CWD up to (and including) the git root.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 pub async fn load_project_config() -> Option<ProjectConfig> {
     let discovery =
         caliche::discovery::auto::discover_all(&caliche::discovery::auto::DiscoveryOptions {
@@ -874,6 +923,13 @@ async fn find_project_file(cwd: &Path) -> Option<ProjectConfig> {
 }
 
 /// Analyze codebase structure
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn analyze_codebase_structure(cwd: &Path) -> String {
     let mut structure = String::new();
 
@@ -939,6 +995,13 @@ fn analyze_codebase_structure(cwd: &Path) -> String {
 }
 
 /// Analyze code conventions
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn analyze_conventions(cwd: &Path, project_type: &str) -> String {
     let mut conventions = String::new();
 
@@ -985,6 +1048,13 @@ fn analyze_conventions(cwd: &Path, project_type: &str) -> String {
 }
 
 /// Detect build commands from project files
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "caliche init, run by the user on the project dir they named: marker checks and the files they asked init to write"
+    )
+)]
 fn detect_build_commands(cwd: &Path, project_type: &str) -> String {
     let mut commands = String::new();
 

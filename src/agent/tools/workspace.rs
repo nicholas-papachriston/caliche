@@ -132,12 +132,9 @@ impl ToolMeta for WorkspaceTool {
 /// is outside the tool workspace (host access locked) or a link inside the
 /// workspace leads out of it.
 fn resolve_workspace_path(path_str: &str) -> Result<PathBuf, String> {
-    use crate::agent::tools::common::path::{refuse_link_out_of_workspace, resolve_path_for_tool};
+    use crate::agent::tools::common::path::{canonical_tool_path, resolve_path_for_tool};
     let resolved = resolve_path_for_tool(path_str).map_err(|e| e.to_string())?;
-    let canonical = resolved
-        .canonicalize()
-        .map_err(|_| format!("Path does not exist: {path_str}"))?;
-    refuse_link_out_of_workspace(&resolved, &canonical).map_err(|e| e.to_string())?;
+    let canonical = canonical_tool_path(&resolved, path_str).map_err(|e| e.to_string())?;
     Ok(canonical)
 }
 

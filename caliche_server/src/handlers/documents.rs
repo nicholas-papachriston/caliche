@@ -516,7 +516,27 @@ async fn load_documents_from_source(
     }
 }
 
+/// Remove a temp file [`write_temp_upload`] wrote.
 #[cfg(feature = "document-loaders")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own upload temp file, with a random name in the temp dir"
+    )
+)]
+fn remove_temp_upload(temp_file: &std::path::Path) {
+    let _ = std::fs::remove_file(temp_file);
+}
+
+#[cfg(feature = "document-loaders")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own upload temp file, with a random name in the temp dir"
+    )
+)]
 fn write_temp_upload(
     content: &str,
     extension: &str,
@@ -565,7 +585,7 @@ async fn load_csv_documents(
         loader = loader.with_metadata_columns(&cols.iter().map(String::as_str).collect::<Vec<_>>());
     }
     let docs = loader.load().await.map_err(|e| map_load_err("CSV", e))?;
-    let _ = std::fs::remove_file(temp_file);
+    remove_temp_upload(&temp_file);
     Ok(docs)
 }
 
@@ -581,7 +601,7 @@ async fn load_json_documents(
         loader = loader.with_content_key(&key);
     }
     let docs = loader.load().await.map_err(|e| map_load_err("JSON", e))?;
-    let _ = std::fs::remove_file(temp_file);
+    remove_temp_upload(&temp_file);
     Ok(docs)
 }
 
@@ -596,7 +616,7 @@ async fn load_markdown_documents(
         .load()
         .await
         .map_err(|e| map_load_err("Markdown", e))?;
-    let _ = std::fs::remove_file(temp_file);
+    remove_temp_upload(&temp_file);
     Ok(docs)
 }
 
@@ -608,7 +628,7 @@ async fn load_html_documents(
     let temp_file = write_temp_upload(&content, "html")?;
     let loader = HtmlLoader::new(temp_file_path_str(&temp_file)?);
     let docs = loader.load().await.map_err(|e| map_load_err("HTML", e))?;
-    let _ = std::fs::remove_file(temp_file);
+    remove_temp_upload(&temp_file);
     Ok(docs)
 }
 

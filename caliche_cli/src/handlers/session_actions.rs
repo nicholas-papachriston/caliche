@@ -204,6 +204,13 @@ pub(super) async fn show_session(session_store: &SessionStore, session_id: Strin
     crate::shutdown::exit(0);
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "a session export to the path the user's own command names"
+    )
+)]
 pub(super) async fn export_session(
     session_store: &SessionStore,
     session_id: String,

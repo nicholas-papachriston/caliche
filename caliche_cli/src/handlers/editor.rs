@@ -62,6 +62,13 @@ impl CommandHandler for EditorHandler {
 }
 
 /// Run the editor command implementation.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the editor temp file this command created"
+    )
+)]
 pub async fn run_editor_command() -> Result<Option<String>> {
     // Get editor from environment
     let editor = std::env::var("EDITOR")

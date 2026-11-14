@@ -91,6 +91,13 @@ pub(crate) fn get_workspace_root() -> PathBuf {
 }
 
 /// The canonical workspace and the canonical `path` inside it.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server path resolver: canonical paths are compared to the workspace, and reads open beneath it without a link"
+    )
+)]
 fn resolve_in_workspace(workspace: &Path, path: &Path) -> Result<(PathBuf, PathBuf)> {
     // Canonicalize both paths for comparison
     let canonical_workspace = workspace
@@ -162,6 +169,13 @@ pub async fn list_files_handler(
 /// The path is validated, then listed through a walk below the canonical
 /// workspace that follows no link, so a directory swapped for a symlink
 /// after validation is refused with 403 instead of listed.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "canonicalizes the server workspace root, set by its config, to compare the parent path"
+    )
+)]
 fn list_workspace_dir(workspace: PathBuf, requested: Option<String>) -> axum::response::Response {
     let target_path = requested
         .map(PathBuf::from)
@@ -340,7 +354,7 @@ pub(crate) fn read_workspace_bytes(
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     // A by-path check only picks the 400 message for a directory; the open
     // below is what refuses anything but a regular file.
-    if !target.is_file() {
+    if caliche_sandbox::list_dir_beneath(&root, &target).is_ok() {
         return Err((StatusCode::BAD_REQUEST, NOT_A_FILE.to_string()));
     }
     after_validate(&target);

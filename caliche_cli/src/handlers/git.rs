@@ -313,6 +313,13 @@ async fn detect_git_editor(git: &HostGit) -> Result<String> {
 }
 
 /// Open the git editor with a commit message and return the edited message.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the commit message temp file this command created"
+    )
+)]
 async fn open_git_editor(git: &HostGit, initial_message: &str) -> Result<Option<String>> {
     let editor = detect_git_editor(git).await?;
 

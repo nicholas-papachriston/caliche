@@ -19,6 +19,8 @@
 //!
 //! All handlers implement [`CommandHandler`]. The [`CommandRegistry`] provides
 //! O(1) lookup by name and supports dynamic registration of custom commands.
+// Checked by the tool file-access clippy step (clippy/tool-file-access).
+#![cfg_attr(tool_file_lint, deny(clippy::disallowed_methods))]
 
 pub mod advanced;
 mod agent;

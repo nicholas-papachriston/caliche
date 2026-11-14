@@ -159,6 +159,13 @@ fn endpoint_command(server_binary: &str, config: &EndpointConfig) -> tokio::proc
 impl EndpointManager {
     /// Create a new manager.  Call [`load_persisted`] right after to restore
     /// any previously-created endpoints.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the sibling of the running server binary"
+        )
+    )]
     pub fn new() -> Arc<Self> {
         let path = dirs::data_dir()
             .map(|d| d.join("caliche").join("endpoints.json"))
@@ -185,6 +192,13 @@ impl EndpointManager {
     /// Load persisted endpoint configs from disk and auto-start any that have
     /// `auto_start = true`.  Also spawns the background health-check monitor.
     /// Returns the number of configs loaded.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the server's own endpoint persistence file"
+        )
+    )]
     pub async fn load_persisted(self: &Arc<Self>) -> usize {
         if !self.persistence_path.exists() {
             // Still start the health monitor even with no persisted state.
@@ -261,6 +275,13 @@ impl EndpointManager {
     }
 
     /// Persist current configs to disk (atomically via temp-file rename).
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "the server's own endpoint persistence file"
+        )
+    )]
     async fn persist(&self) {
         let inner = self.inner.read().await;
         let configs: Vec<&EndpointConfig> = inner.configs.values().collect();
@@ -349,6 +370,13 @@ impl EndpointManager {
     ///
     /// The guard check and the "starting" status update happen inside the same
     /// write-lock acquisition, preventing concurrent start races.
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "an endpoint workspace the admin API named; only its existence is checked"
+        )
+    )]
     pub async fn start(&self, id: &str) -> Result<EndpointInfo> {
         // Atomically: verify not already running and mark as "starting".
         let config = {
@@ -747,6 +775,13 @@ pub async fn list_endpoints(State(state): State<AppState>) -> ApiResult<Endpoint
     Ok(Json(EndpointListResponse { endpoints }))
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "an endpoint workspace the admin API named; only its existence is checked"
+    )
+)]
 pub async fn create_endpoint(
     State(state): State<AppState>,
     Json(mut req): Json<CreateEndpointRequest>,

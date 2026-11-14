@@ -82,6 +82,13 @@ const PYTHON3_FILE: &str = "python3";
 /// On macOS, `/usr/bin/python3` is an xcrun shim. It is replaced by the
 /// interpreter it would run, because the shim itself cannot work in the sandbox.
 #[cfg(feature = "sandbox")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "python3 comes from the host PATH; a candidate inside the workspace is skipped"
+    )
+)]
 fn resolve_python3(path_var: &OsStr, workspace: &Path) -> Result<PathBuf> {
     let workspace = workspace
         .canonicalize()
@@ -119,6 +126,13 @@ const PYTHON3_SHIM: &str = "/usr/bin/python3";
 /// The interpreter the shim would run, found by the trusted `/usr/bin/xcrun`
 /// outside the sandbox. Any other path is returned unchanged.
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the interpreter path xcrun printed, outside the workspace"
+    )
+)]
 fn unshim_python3(resolved: PathBuf) -> Result<PathBuf> {
     if resolved != Path::new(PYTHON3_SHIM) {
         return Ok(resolved);

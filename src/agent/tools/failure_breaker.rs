@@ -904,6 +904,13 @@ fn resolve_against_cwd(cwd: Option<&str>, path: &str) -> String {
     }
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the stamp compares metadata over time; resolved_metadata reads it without a link, refusing outside paths"
+    )
+)]
 fn stamp_one(path: &str) -> PathStamp {
     let canonical = std::path::Path::new(path).canonicalize().ok();
     let meta = canonical

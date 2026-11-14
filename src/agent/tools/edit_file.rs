@@ -607,7 +607,7 @@ async fn execute_edit_file(arguments: serde_json::Value) -> ToolResult {
         Err(e) => return ToolResult::error(e),
     };
 
-    if !file_path.exists() {
+    if path::tool_metadata(&file_path).is_err() {
         return ToolResult::error(format!(
             "File '{path_str}' does not exist. Use fs with op=write to create new files."
         ));

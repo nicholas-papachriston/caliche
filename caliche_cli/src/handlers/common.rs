@@ -89,6 +89,13 @@ fn format_generic_args(obj: &serde_json::Map<String, serde_json::Value>) -> Opti
 }
 
 /// Detect project type from directory (lowercase, for config generation).
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "marker files in the user's own project dir for a command the user ran; only existence is checked"
+    )
+)]
 pub fn detect_project_type(path: &Path) -> &'static str {
     if path.join("Cargo.toml").exists() {
         "rust"
@@ -108,6 +115,13 @@ pub fn detect_project_type(path: &Path) -> &'static str {
 }
 
 /// Detect project type for display (title case).
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "marker files in the user's own project dir for a command the user ran; only existence is checked"
+    )
+)]
 pub fn detect_project_type_for_display() -> &'static str {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,

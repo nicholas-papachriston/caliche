@@ -107,6 +107,13 @@ impl CommandHandler for DoctorHandler {
     }
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "doctor reports whether the user's own config paths exist; nothing is read"
+    )
+)]
 fn write_path_status<W: Write>(w: &mut W, label: &str, path: &std::path::Path) -> Result<()> {
     write!(w, "{label}: ")?;
     if path.exists() {

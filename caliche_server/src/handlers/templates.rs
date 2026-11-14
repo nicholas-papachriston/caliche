@@ -83,16 +83,28 @@ pub struct InstantiateTemplateResponse {
     model: String,
 }
 
+/// A registry with the server's own `templates` dir, when it exists.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own templates dir in its working directory, not a request path"
+    )
+)]
+fn template_registry() -> TemplateRegistry {
+    let mut registry = TemplateRegistry::new();
+    let dir = PathBuf::from("templates");
+    if dir.exists() {
+        registry.add_template_dir(&dir);
+    }
+    registry
+}
+
 /// List all templates
 pub async fn list_templates_handler(
     State(_state): State<AppState>,
 ) -> Result<Json<TemplateListResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     let count = registry
         .load_templates()
@@ -113,12 +125,7 @@ pub async fn get_template_handler(
     State(_state): State<AppState>,
     Path(template_id): Path<String>,
 ) -> Result<Json<TemplateDetailResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -161,12 +168,7 @@ pub async fn instantiate_template_handler(
     State(_state): State<AppState>,
     Json(request): Json<InstantiateTemplateRequest>,
 ) -> Result<Json<InstantiateTemplateResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -259,12 +261,7 @@ pub struct CategoriesResponse {
 pub async fn get_categories_handler(
     State(_state): State<AppState>,
 ) -> Result<Json<CategoriesResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -290,12 +287,7 @@ pub async fn search_templates_handler(
     State(_state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<TemplateListResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -335,12 +327,7 @@ pub async fn fork_template_handler(
     State(_state): State<AppState>,
     Json(request): Json<ForkTemplateRequest>,
 ) -> Result<Json<TemplateDetailResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -359,12 +346,7 @@ pub async fn export_template_handler(
     State(_state): State<AppState>,
     Path(template_id): Path<String>,
 ) -> Result<String, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()
@@ -440,12 +422,7 @@ pub async fn instantiate_with_variables_handler(
     State(_state): State<AppState>,
     Json(request): Json<InstantiateWithVariablesRequest>,
 ) -> Result<Json<InstantiateTemplateResponse>, (StatusCode, String)> {
-    let mut registry = TemplateRegistry::new();
-    let dir = PathBuf::from("templates");
-
-    if dir.exists() {
-        registry.add_template_dir(&dir);
-    }
+    let registry = template_registry();
 
     registry
         .load_templates()

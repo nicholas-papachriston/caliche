@@ -60,6 +60,13 @@ fn to_client_config(server: &McpServerConfigPayload) -> anyhow::Result<McpClient
     })
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own MCP config file"
+    )
+)]
 pub async fn load_mcp_configs(path: &std::path::Path) -> Vec<McpServerConfigPayload> {
     let Ok(content) = tokio::fs::read_to_string(path).await else {
         return Vec::new();
@@ -119,6 +126,13 @@ pub async fn load_mcp_configs(path: &std::path::Path) -> Vec<McpServerConfigPayl
     out
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own MCP config file"
+    )
+)]
 async fn persist_mcp_configs(
     path: &std::path::Path,
     servers: &[McpServerConfigPayload],
@@ -222,6 +236,13 @@ pub fn should_keep_existing_mcp(
     incoming_empty && !allow_empty && existing_nonempty
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the server's own MCP config file"
+    )
+)]
 async fn mcp_file_has_servers(path: &std::path::Path) -> bool {
     let Ok(content) = tokio::fs::read_to_string(path).await else {
         return false;

@@ -7,6 +7,13 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Find files matching a glob pattern.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "names for completing a path the user is typing, and related files the user asked to add"
+    )
+)]
 pub async fn find_files_by_glob(pattern: &str) -> Result<Vec<PathBuf>> {
     let cwd = std::env::current_dir()?;
     let mut results = Vec::new();
@@ -44,6 +51,13 @@ pub async fn find_recent_files(
     let mut files = Vec::new();
 
     let project_root = cwd.clone();
+    #[cfg_attr(
+        tool_file_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "names for completing a path the user is typing, and related files the user asked to add"
+        )
+    )]
     fn visit_dir(
         path: &std::path::Path,
         files: &mut Vec<(PathBuf, SystemTime)>,
@@ -103,6 +117,13 @@ pub async fn find_recent_files(
 }
 
 /// Find files related to a given file (tests, sibling modules, etc.).
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "names for completing a path the user is typing, and related files the user asked to add"
+    )
+)]
 pub async fn find_related_files(file_path: &str) -> Result<Vec<(PathBuf, String)>> {
     let path = PathBuf::from(file_path);
     let mut related = Vec::new();
@@ -161,6 +182,13 @@ fn related_test_names(stem: &str, ext: &str) -> Vec<String> {
     }
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "names for completing a path the user is typing, and related files the user asked to add"
+    )
+)]
 fn push_sibling_modules(
     related: &mut Vec<(PathBuf, String)>,
     parent: &Path,

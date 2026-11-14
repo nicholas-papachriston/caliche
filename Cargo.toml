@@ -33,6 +33,8 @@ unsafe_code = "warn"
 unused_must_use = "warn"
 # Large facade crates re-export many `pub` items for bindings; keep off by default.
 unreachable_pub = "allow"
+# Set by the tool file-access clippy step (clippy/tool-file-access).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tool_file_lint)"] }
 
 [workspace.lints.clippy]
 # Groups (low priority so named lints below can override).

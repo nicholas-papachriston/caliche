@@ -112,6 +112,13 @@ fn apply_named(root: &std::path::Path, names: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the skills lock in the user's own skill root"
+    )
+)]
 fn list(global: bool) -> Result<()> {
     let root = skill_root(global)?;
     let lock_path = root.join("skills-lock.json");

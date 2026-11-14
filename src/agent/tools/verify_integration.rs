@@ -66,17 +66,17 @@ impl Tool for VerifyIntegrationTool {
             Ok(resolved) => resolved,
             Err(e) => return ToolResult::error(e.to_string()),
         };
-        let root = match resolved.canonicalize() {
-            Ok(root) if root.is_dir() => root,
-            _ => {
+        let root = match tool_path::canonical_tool_path(&resolved, &project_root) {
+            Ok(root) if tool_path::entry_kind(&root) == Some(caliche_sandbox::EntryKind::Dir) => {
+                root
+            }
+            Ok(_) => {
                 return ToolResult::error(format!(
                     "Project root does not exist or is not a directory: {project_root}"
                 ));
             }
+            Err(e) => return ToolResult::error(e.to_string()),
         };
-        if let Err(e) = tool_path::refuse_link_out_of_workspace(&resolved, &root) {
-            return ToolResult::error(e.to_string());
-        }
 
         let paths: Vec<String> = arguments
             .get("paths")
@@ -108,7 +108,10 @@ async fn run_checks(root: &std::path::Path, paths: &[String]) -> String {
                     root.join(p)
                 }
             })
-            .filter_map(|p| p.canonicalize().ok())
+            .filter_map(|p| {
+                let label = p.display().to_string();
+                tool_path::canonical_tool_path(&p, &label).ok()
+            })
             .collect()
     };
 
@@ -423,6 +426,29 @@ mod link_tests {
             .collect();
         assert_eq!(checked.len(), 1, "{report}");
         assert!(checked[0].ends_with(" ok.rs"), "{report}");
+    }
+
+    /// A named path that is a link out of the workspace, or leads through
+    /// one, is not checked: its target outside is never read.
+    #[tokio::test]
+    async fn named_paths_behind_a_link_are_not_checked() {
+        use crate::agent::tools::Tool;
+        use crate::agent::tools::common::set_tool_workspace_root;
+        let (_outside, _ws, root) = workspace();
+        set_tool_workspace_root(Some(root.clone()));
+
+        let result = super::VerifyIntegrationTool
+            .execute(
+                serde_json::json!({ "paths": ["leak.rs", "linked/secret.rs"] }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
+        set_tool_workspace_root(None);
+
+        assert_eq!(
+            result.content,
+            "No paths to verify. Provide 'paths' or ensure project has recent modified files."
+        );
     }
 
     /// The project root resolves in the tool workspace, not the process

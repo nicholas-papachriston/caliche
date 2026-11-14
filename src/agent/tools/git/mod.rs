@@ -59,16 +59,13 @@ impl ToolRepository {
 #[cfg(feature = "tools-git")]
 pub(crate) fn tool_repository(path_str: &str) -> Result<ToolRepository, String> {
     use crate::agent::tools::common::path::{
-        get_current_dir, refuse_link_out_of_workspace, resolve_path_for_tool,
+        canonical_tool_path, canonical_workspace, resolve_path_for_tool,
     };
     let refused =
         |e: &dyn std::fmt::Display| format!("Failed to open git repository at '{path_str}': {e}");
     let resolved = resolve_path_for_tool(path_str).map_err(|e| refused(&e))?;
-    let canonical = resolved.canonicalize().map_err(|e| refused(&e))?;
-    refuse_link_out_of_workspace(&resolved, &canonical).map_err(|e| refused(&e))?;
-    let workspace = get_current_dir()
-        .and_then(|dir| Ok(dir.canonicalize()?))
-        .map_err(|e| refused(&e))?;
+    let canonical = canonical_tool_path(&resolved, path_str).map_err(|e| refused(&e))?;
+    let workspace = canonical_workspace().map_err(|e| refused(&e))?;
     let workspace = if canonical.starts_with(&workspace) {
         workspace
     } else {
@@ -87,6 +84,13 @@ pub(crate) fn tool_repository(path_str: &str) -> Result<ToolRepository, String> 
 /// Returns the error canonicalizing `workspace`, or the refusal of
 /// [`check_repository`](caliche_sandbox::git_access::check_repository).
 #[cfg(feature = "tools-git")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the harness workspace root, set by the host, not the model"
+    )
+)]
 pub(crate) fn workspace_tool_repository(
     workspace: &std::path::Path,
 ) -> anyhow::Result<ToolRepository> {
@@ -110,18 +114,22 @@ pub(crate) fn workspace_tool_repository(
 /// Returns a message for the tool result when the path is refused, the
 /// repository cannot be opened, or its `.git` is refused.
 #[cfg(feature = "tools-git")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "libgit2 opens the checked git dir only for the write ops, git_commit and git_branch create and delete"
+    )
+)]
 pub(crate) fn open_tool_repository(path_str: &str) -> Result<git2::Repository, String> {
     use crate::agent::tools::common::path::{
-        get_current_dir, refuse_link_out_of_workspace, resolve_path_for_tool,
+        canonical_tool_path, canonical_workspace, resolve_path_for_tool,
     };
     let refused =
         |e: &dyn std::fmt::Display| format!("Failed to open git repository at '{path_str}': {e}");
     let resolved = resolve_path_for_tool(path_str).map_err(|e| refused(&e))?;
-    let canonical = resolved.canonicalize().map_err(|e| refused(&e))?;
-    refuse_link_out_of_workspace(&resolved, &canonical).map_err(|e| refused(&e))?;
-    let workspace = get_current_dir()
-        .and_then(|dir| Ok(dir.canonicalize()?))
-        .map_err(|e| refused(&e))?;
+    let canonical = canonical_tool_path(&resolved, path_str).map_err(|e| refused(&e))?;
+    let workspace = canonical_workspace().map_err(|e| refused(&e))?;
     if !canonical.starts_with(&workspace) {
         return git2::Repository::open_ext(
             &canonical,
@@ -143,6 +151,13 @@ pub(crate) fn open_tool_repository(path_str: &str) -> Result<git2::Repository, S
 ///
 /// Returns the refusal, or the error libgit2 gave opening the checked dir.
 #[cfg(feature = "tools-git")]
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "libgit2 opens the checked git dir only for the write ops, git_commit and git_branch create and delete"
+    )
+)]
 pub(crate) fn open_checked_repository(
     workspace: &std::path::Path,
     dir: &std::path::Path,
