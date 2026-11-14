@@ -86,6 +86,10 @@ fn git_stdout(dir: &str, args: &[&str]) -> Option<String> {
     if dir.is_empty() {
         return None;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "build scripts cannot use the policy crate; this reads the commit of this checkout"
+    )]
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)

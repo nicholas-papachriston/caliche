@@ -238,7 +238,7 @@ pub(super) fn parse_start_token(stat: &str) -> Option<String> {
 fn system_ps() -> Result<std::process::Command, String> {
     SystemBinary::Ps
         .path()
-        .map(std::process::Command::new)
+        .map(caliche::policy::program_command)
         .ok_or_else(|| "ps is not in a system directory".to_string())
 }
 
@@ -447,7 +447,7 @@ fn pid_listens_on(pid: u32, port: u16) -> Result<bool, String> {
     let Some(lsof) = SystemBinary::Lsof.path() else {
         return Err(NO_LSOF.to_string());
     };
-    let output = match std::process::Command::new(lsof)
+    let output = match caliche::policy::program_command(lsof)
         .args([
             "-nP",
             "-a",

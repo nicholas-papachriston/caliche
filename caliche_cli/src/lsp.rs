@@ -51,7 +51,10 @@ pub async fn install_language_server(language: &str) -> Result<()> {
             println!("Installing {} language server...", language);
             println!("Running: {} {}", cmd, args.join(" "));
 
-            let status = Command::new(cmd).args(&args).status().await?;
+            let status = Command::from(caliche::policy::program_command(cmd))
+                .args(&args)
+                .status()
+                .await?;
 
             if status.success() {
                 println!("Installation complete!");

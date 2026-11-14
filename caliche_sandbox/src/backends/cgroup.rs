@@ -278,7 +278,7 @@ mod tests {
             dir: root.path().to_path_buf(),
             procs: File::create(root.path().join("cgroup.procs")).unwrap(),
         };
-        let mut child = Command::new("sh")
+        let mut child = caliche_policy::program_command("sh")
             .args(["-c", "sleep 600 & echo $!; wait"])
             .stdout(Stdio::piped())
             .process_group(0)

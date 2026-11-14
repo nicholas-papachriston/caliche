@@ -2,7 +2,7 @@
 /// allowed, as a user's own git would, or `None`.
 #[expect(clippy::expect_used, reason = "test helper")]
 fn discovered_git_dir(dir: &std::path::Path) -> Option<String> {
-    let mut command = std::process::Command::new("git");
+    let mut command = caliche_policy::program_command("git");
     let output = clear_git_config(&mut command)
         .args(["-c", &format!("{SAFE_BARE_REPOSITORY_KEY}=all")])
         .args(["rev-parse", "--absolute-git-dir"])

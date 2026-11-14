@@ -211,7 +211,7 @@ async fn start_cloudflare_quick_tunnel(cwd: &str, local_port: u16) -> Result<For
 
     // Spawn the detached tunnel process via std::process so we can drop the
     // handle without triggering tokio's signal reaper for a long-lived child.
-    let mut cmd = std::process::Command::new("cloudflared");
+    let mut cmd = caliche::policy::program_command("cloudflared");
     cmd.arg("tunnel")
         .arg("--no-autoupdate")
         .arg("--url")
@@ -326,7 +326,7 @@ async fn ensure_cloudflared_available() -> Result<()> {
 }
 
 async fn is_cloudflared_available() -> bool {
-    Command::new("cloudflared")
+    Command::from(caliche::policy::program_command("cloudflared"))
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -339,7 +339,7 @@ async fn is_cloudflared_available() -> bool {
 
 async fn attempt_install_cloudflared() -> bool {
     if cfg!(target_os = "macos") {
-        let primary = Command::new("brew")
+        let primary = Command::from(caliche::policy::program_command("brew"))
             .args(["install", "cloudflare/cloudflare/cloudflared"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -351,7 +351,7 @@ async fn attempt_install_cloudflared() -> bool {
         if primary {
             return true;
         }
-        return Command::new("brew")
+        return Command::from(caliche::policy::program_command("brew"))
             .args(["install", "cloudflared"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -362,7 +362,7 @@ async fn attempt_install_cloudflared() -> bool {
             .unwrap_or(false);
     }
     if cfg!(target_os = "linux") {
-        return Command::new("sudo")
+        return Command::from(caliche::policy::program_command("sudo"))
             .args(["-n", "apt-get", "install", "-y", "cloudflared"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -373,7 +373,7 @@ async fn attempt_install_cloudflared() -> bool {
             .unwrap_or(false);
     }
     if cfg!(target_os = "windows") {
-        return Command::new("winget")
+        return Command::from(caliche::policy::program_command("winget"))
             .args(["install", "Cloudflare.cloudflared"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

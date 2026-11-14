@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn a_fifo_is_refused_without_blocking() {
         let (_dir, root) = workspace();
-        let made = std::process::Command::new("mkfifo")
+        let made = caliche::policy::program_command("mkfifo")
             .arg(root.join("pipe"))
             .status()
             .expect("mkfifo");

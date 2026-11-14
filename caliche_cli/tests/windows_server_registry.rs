@@ -28,7 +28,7 @@ impl Server {
         let port = free_port();
         let log = config.join("server.log");
         let log_file = fs::File::create(&log).expect("server log");
-        let child = Command::new(bin())
+        let child = caliche::policy::program_command(bin())
             .args([
                 "--server",
                 "--bind",
@@ -173,7 +173,7 @@ fn free_port() -> u16 {
 }
 
 fn registry_command(config: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new(bin())
+    caliche::policy::program_command(bin())
         .args(args)
         .env(CONFIG_DIR_ENV, config)
         .output()

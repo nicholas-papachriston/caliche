@@ -4,11 +4,11 @@
 //! so no provider key is set and the user's own config stays out of the result.
 
 use caliche_contracts::child_env::SYSTEMROOT;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn help(args: &[&str]) -> Output {
     let home = tempfile::tempdir().expect("temp home");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_caliche"));
+    let mut command = caliche::policy::program_command(env!("CARGO_BIN_EXE_caliche"));
     command
         .args(args)
         .arg("--help")

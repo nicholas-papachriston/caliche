@@ -132,7 +132,7 @@ pub struct EndpointManager {
 /// that environment. The store never holds a name the shell exported, so a shell
 /// value still reaches the child unchanged.
 fn endpoint_command(server_binary: &str, config: &EndpointConfig) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(server_binary);
+    let mut cmd = tokio::process::Command::from(caliche::policy::program_command(server_binary));
     cmd.current_dir(&config.workspace)
         .arg("--port")
         .arg(config.port.to_string())
@@ -447,7 +447,7 @@ impl EndpointManager {
             #[cfg(unix)]
             {
                 if let Some(kill) = SystemBinary::Kill.path() {
-                    let _ = tokio::process::Command::new(kill)
+                    let _ = tokio::process::Command::from(caliche::policy::program_command(kill))
                         .args(["-TERM", &pid.to_string()])
                         .status()
                         .await;
@@ -551,7 +551,7 @@ impl EndpointManager {
             {
                 let mut args = vec!["-TERM".to_string()];
                 args.extend(pids);
-                let _ = tokio::process::Command::new(kill)
+                let _ = tokio::process::Command::from(caliche::policy::program_command(kill))
                     .args(&args)
                     .status()
                     .await;

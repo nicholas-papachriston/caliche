@@ -429,7 +429,7 @@ fn run_exec(
     timeout: Duration,
 ) -> Result<ExecResult> {
     let shell = command.first().map(String::as_str).unwrap_or("cmd");
-    let mut cmd = Command::new(shell);
+    let mut cmd = caliche_policy::program_command(shell);
     cmd.args(command.get(1..).unwrap_or(&[]));
     cmd.current_dir(cwd);
     cmd.env_clear();
@@ -590,7 +590,7 @@ mod tests {
         let (watch_tx, watch_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut cmd = Command::new("cmd");
+            let mut cmd = caliche_policy::program_command("cmd");
             cmd.args(["/C", "exit 0"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -641,7 +641,7 @@ mod tests {
         );
         let job = JobObject::new(&config).expect("job");
 
-        let mut cmd = Command::new("cmd");
+        let mut cmd = caliche_policy::program_command("cmd");
         cmd.args(["/C", r".\spawn.cmd"])
             .env("NoDefaultCurrentDirectoryInExePath", "1")
             .current_dir(dir.path())
@@ -710,7 +710,7 @@ mod tests {
             },
         );
         let job = JobObject::empty().expect("exec job");
-        let mut cmd = Command::new("cmd");
+        let mut cmd = caliche_policy::program_command("cmd");
         cmd.args(["/C", r".\spawn.cmd"])
             .env("NoDefaultCurrentDirectoryInExePath", "1")
             .current_dir(dir.path())

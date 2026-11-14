@@ -1414,7 +1414,7 @@ mod store {
         let Some(kill) = SystemBinary::Kill.path() else {
             return true;
         };
-        tokio::process::Command::new(kill)
+        tokio::process::Command::from(crate::policy::program_command(kill))
             .args(["-0", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1443,7 +1443,7 @@ mod store {
         let Some(kill) = SystemBinary::Kill.path() else {
             return true;
         };
-        tokio::process::Command::new(kill)
+        tokio::process::Command::from(crate::policy::program_command(kill))
             .args(["-0", "--", &format!("-{pgid}")])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1469,7 +1469,7 @@ mod store {
         };
         #[cfg(not(unix))]
         let hostname = "hostname";
-        let output = tokio::process::Command::new(hostname)
+        let output = tokio::process::Command::from(crate::policy::program_command(hostname))
             .stderr(Stdio::null())
             .output()
             .await;
@@ -1825,10 +1825,10 @@ mod store {
 
             let dir = tempfile::tempdir().unwrap();
             let (_ledger, pool) = open(&dir).await;
-            let mut exited = std::process::Command::new("true").spawn().unwrap();
+            let mut exited = crate::policy::program_command("true").spawn().unwrap();
             let dead_pid = i64::from(exited.id());
             exited.wait().unwrap();
-            let mut child = std::process::Command::new("sleep")
+            let mut child = crate::policy::program_command("sleep")
                 .arg("30")
                 .process_group(0)
                 .spawn()
@@ -1875,7 +1875,7 @@ mod store {
             let live_id = live.id().unwrap().to_owned();
             ledger.flush().await.unwrap();
 
-            let mut exited = std::process::Command::new("true").spawn().unwrap();
+            let mut exited = crate::policy::program_command("true").spawn().unwrap();
             let dead_pid = i64::from(exited.id());
             exited.wait().unwrap();
             let me = Owner::current().await;
@@ -2357,7 +2357,7 @@ mod store {
         async fn sigkill_mid_write_leaves_a_clean_ledger() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(TASKS_DB_FILE);
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            let mut child = crate::policy::program_command(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "data::persistence::task_ledger::store::tests::kill_child_writes_until_killed",

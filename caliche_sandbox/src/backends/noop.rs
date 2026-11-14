@@ -70,7 +70,7 @@ impl SandboxInstance for NoopInstance {
         timeout: Duration,
     ) -> Result<ExecResult> {
         let cwd = working_dir.map_or_else(|| self.workspace.clone(), std::path::PathBuf::from);
-        let mut cmd = std::process::Command::new(command.first().copied().unwrap_or(""));
+        let mut cmd = caliche_policy::program_command(command.first().copied().unwrap_or(""));
         cmd.args(command.get(1..).unwrap_or(&[]))
             .current_dir(&cwd)
             .env_clear()

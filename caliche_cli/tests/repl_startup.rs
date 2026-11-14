@@ -18,7 +18,7 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -146,7 +146,7 @@ fn run_script_with_ctrl_c(
 ) -> (Option<i32>, String) {
     let (master, slave) = open_pty();
     let terminal = slave.try_clone().expect("slave");
-    let mut command = Command::new(caliche_bin());
+    let mut command = caliche::policy::program_command(caliche_bin());
     command
         .current_dir(workspace)
         .env_clear()
@@ -840,7 +840,7 @@ fn run_code(
     model: &str,
     top_level: &[&str],
 ) -> std::process::Output {
-    Command::new(caliche_bin())
+    caliche::policy::program_command(caliche_bin())
         .current_dir(workspace)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())

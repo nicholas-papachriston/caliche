@@ -485,7 +485,7 @@ impl AgentHarness {
         };
         let tokens_str = total_tokens.map(|t| t.to_string()).unwrap_or_default();
         let prompt_preview = sanitize_notify_preview(prompt_preview);
-        let _ = tokio::process::Command::new("sh")
+        let _ = tokio::process::Command::from(crate::policy::program_command("sh"))
             .arg("-c")
             .arg(cmd)
             .env("CALICHE_TURN_STATUS", status)

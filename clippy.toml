@@ -16,6 +16,8 @@ disallowed-methods = [
   { path = "std::env::remove_var", reason = "process-global env mutation races across tests/tasks; prefer scoped config injection" },
   { path = "std::thread::sleep", reason = "blocks the OS thread; prefer tokio::time::sleep in async code" },
   { path = "futures::executor::block_on", reason = "nested runtimes / blocking in async contexts; prefer .await or spawn_blocking" },
+  { path = "std::process::Command::new", reason = "build commands with caliche_policy::program_command, which hardens git" },
+  { path = "tokio::process::Command::new", reason = "build commands with caliche_policy::program_command, which hardens git" },
 ]
 
 # Prefer `parking_lot` / `tokio::sync` via review; do not blanket-ban `std::sync::*`

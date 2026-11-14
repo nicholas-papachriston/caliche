@@ -220,7 +220,7 @@ pub fn terminate_process_group(process_group_id: u32) {
         return;
     };
     let target = format!("-{process_group_id}");
-    let _ = std::process::Command::new(kill)
+    let _ = crate::policy::program_command(kill)
         .args(["-TERM", &target])
         .status();
 }
@@ -233,7 +233,7 @@ fn live_pids_for_process_group(process_group_id: u32) -> Vec<u32> {
     let Some(ps) = SystemBinary::Ps.path() else {
         return Vec::new();
     };
-    let output = std::process::Command::new(ps)
+    let output = crate::policy::program_command(ps)
         .args(["-o", "pid=", "-g", &process_group_id.to_string()])
         .output();
     let Ok(output) = output else {

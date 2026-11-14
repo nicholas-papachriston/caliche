@@ -130,12 +130,13 @@ mod tests {
             let repo = tempfile::tempdir().expect("tempdir");
             std::fs::write(repo.path().join("caliche.toml"), "").expect("project config");
             let test = "approval_resolver::tests::allow_rules_go_to_the_user_config";
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args(["--exact", test, "--nocapture"])
-                .current_dir(repo.path())
-                .env(MARKER, "1")
-                .output()
-                .expect("re-run test");
+            let output =
+                caliche::policy::program_command(std::env::current_exe().expect("test binary"))
+                    .args(["--exact", test, "--nocapture"])
+                    .current_dir(repo.path())
+                    .env(MARKER, "1")
+                    .output()
+                    .expect("re-run test");
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success() && stdout.contains("1 passed"),

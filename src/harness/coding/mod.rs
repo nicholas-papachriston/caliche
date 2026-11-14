@@ -636,7 +636,7 @@ async fn run_verification(
 
 async fn run_shell_command(root: &Path, command: &str) -> VerificationRun {
     let start = Instant::now();
-    let output = Command::new("sh")
+    let output = Command::from(crate::policy::program_command("sh"))
         .arg("-lc")
         .arg(command)
         .current_dir(root)
@@ -712,7 +712,7 @@ mod tests {
         let repo = tempfile::tempdir().expect("repo");
         let root = repo.path().canonicalize().expect("canonical");
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::policy::program_command("git")
                 .args(args)
                 .current_dir(&root)
                 .output()
@@ -799,7 +799,7 @@ mod tests {
         let base = tmp.path().canonicalize().expect("canonical");
         let marker = base.join("PWNED");
         let git = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::policy::program_command("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
                 .args(["-c", "protocol.file.allow=always"])
                 .args(args)
@@ -818,7 +818,7 @@ mod tests {
         git(&root, &["submodule", "add", "-q", "../lib", "sub"]);
         git(&root, &["commit", "-q", "-m", "add"]);
         let evil = root.join("sub/.evil");
-        let copied = std::process::Command::new("cp")
+        let copied = crate::policy::program_command("cp")
             .arg("-R")
             .arg(root.join(".git/modules/sub"))
             .arg(&evil)

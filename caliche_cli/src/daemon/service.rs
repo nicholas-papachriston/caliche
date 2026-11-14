@@ -4,7 +4,6 @@ use super::units::{DaemonUnitSpec, render_launchd_plist, render_systemd_user_uni
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Default launchd label / systemd unit basename.
 pub const DEFAULT_DAEMON_LABEL: &str = "com.caliche.server";
@@ -206,7 +205,11 @@ fn uninstall_systemd(spec: &DaemonUnitSpec) -> Result<()> {
 }
 
 fn launchd_status(label: &str) -> (bool, String) {
-    match Command::new("launchctl").arg("list").arg(label).output() {
+    match caliche::policy::program_command("launchctl")
+        .arg("list")
+        .arg(label)
+        .output()
+    {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             // `launchctl list <label>` prints "PID Status Label" when loaded.
@@ -233,7 +236,7 @@ fn launchd_status(label: &str) -> (bool, String) {
 }
 
 fn systemd_status(unit_name: &str) -> (bool, String) {
-    match Command::new("systemctl")
+    match caliche::policy::program_command("systemctl")
         .args(["--user", "is-active", unit_name])
         .output()
     {
@@ -254,7 +257,7 @@ fn systemd_status(unit_name: &str) -> (bool, String) {
 }
 
 fn run_checked(program: &str, args: &[&str]) -> Result<()> {
-    let output = Command::new(program)
+    let output = caliche::policy::program_command(program)
         .args(args)
         .output()
         .with_context(|| format!("run {program}"))?;

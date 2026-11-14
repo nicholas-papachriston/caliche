@@ -193,7 +193,7 @@ async fn exec_never_runs_a_sandbox_exec_planted_on_its_path() {
 /// readable or the interpreter cannot load its own framework.
 #[tokio::test]
 async fn exec_runs_the_selected_developer_python3() {
-    let found = std::process::Command::new("/usr/bin/xcrun")
+    let found = caliche_policy::program_command("/usr/bin/xcrun")
         .args(["--find", "python3"])
         .env_clear()
         .output()
@@ -470,7 +470,7 @@ async fn create_refuses_a_worktree_git_dir_under_a_writable_root() {
 /// Runs host `git` for a test fixture, without the user's config.
 #[expect(clippy::expect_used, reason = "test fixture")]
 fn git(dir: &std::path::Path, args: &[&str]) {
-    let mut command = std::process::Command::new("git");
+    let mut command = caliche_policy::program_command("git");
     let status = clear_git_config(&mut command)
         .args([
             "-c",

@@ -74,9 +74,29 @@ impl CheckedRepository {
     }
 
     /// A `git` command pinned with [`Self::pin`] that runs in the work tree.
-    #[must_use]
-    pub fn git_command(&self) -> std::process::Command {
-        let mut command = std::process::Command::new("git");
+    /// It is built by [`caliche_policy::git_command`], so no system or global
+    /// config, no hostile inherited variable and no program git would run on
+    /// its own reaches it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::PermissionDenied`] with
+    /// [`refusal::program_keys`] when the repository's own config names a
+    /// program (a filter, textconv or merge driver, a hook dir, a pager, an
+    /// include), or the error running `git config`.
+    pub fn git_command(&self) -> io::Result<std::process::Command> {
+        let mut list = self.pinned();
+        list.args(["config", "--list", "--name-only", "--show-scope", "-z"]);
+        let listed = list.output()?;
+        let refused = caliche_policy::refused_program_keys_in_listing(&listed.stdout);
+        if !refused.is_empty() {
+            return Err(denied(refusal::program_keys(&self.git_dir, &refused)));
+        }
+        Ok(self.pinned())
+    }
+
+    fn pinned(&self) -> std::process::Command {
+        let mut command = caliche_policy::git_command();
         self.pin(&mut command);
         command.current_dir(external_tool_path(&self.work_tree));
         command
@@ -115,6 +135,16 @@ pub mod refusal {
             "{} names {}, outside the workspace",
             named_by.display(),
             git_dir.display()
+        )
+    }
+
+    /// The repository's config names programs git could run.
+    #[must_use]
+    pub fn program_keys(git_dir: &Path, keys: &[String]) -> String {
+        format!(
+            "{} config names programs git would run: {}",
+            git_dir.display(),
+            keys.join(", ")
         )
     }
 

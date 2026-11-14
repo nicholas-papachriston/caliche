@@ -1139,7 +1139,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn terminate_requires_the_creation_token() {
-        let mut child = std::process::Command::new("cmd")
+        let mut child = caliche::policy::program_command("cmd")
             .args(["/c", "ping", "-n", "30", "127.0.0.1"])
             .spawn()
             .expect("spawn");

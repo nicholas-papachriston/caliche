@@ -275,7 +275,7 @@ impl McpClient {
 
         crate::mcp::validate_stdio_command_for_library(command)?;
 
-        let mut child = Command::new(command)
+        let mut child = Command::from(crate::policy::program_command(command))
             .args(args)
             .env_clear()
             .envs(caliche_contracts::child_env::host_child_env_with(

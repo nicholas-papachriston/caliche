@@ -298,18 +298,18 @@ async fn run_shell_exec_capture(
             #[cfg(windows)]
             {
                 let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-                let mut c = TokioCommand::new(comspec);
+                let mut c = TokioCommand::from(crate::policy::program_command(comspec));
                 c.arg("/C").arg(program);
                 c
             }
             #[cfg(not(windows))]
             {
-                let mut c = TokioCommand::new("sh");
+                let mut c = TokioCommand::from(crate::policy::program_command("sh"));
                 c.args(["-c", program]);
                 c
             }
         } else {
-            let mut c = TokioCommand::new(program);
+            let mut c = TokioCommand::from(crate::policy::program_command(program));
             c.args(args);
             c
         };

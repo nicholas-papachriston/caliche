@@ -123,7 +123,7 @@ fn unshim_python3(resolved: PathBuf) -> Result<PathBuf> {
     if resolved != Path::new(PYTHON3_SHIM) {
         return Ok(resolved);
     }
-    let output = std::process::Command::new("/usr/bin/xcrun")
+    let output = crate::policy::program_command("/usr/bin/xcrun")
         .args(["--find", "python3"])
         .env_clear()
         .stdin(std::process::Stdio::null())
@@ -358,7 +358,7 @@ mod tests {
     fn resolves_the_xcrun_shim_to_the_interpreter_it_runs() {
         let workspace = tempfile::tempdir().expect("workspace");
         let resolved = resolve_python3(OsStr::new("/usr/bin"), workspace.path());
-        let found = std::process::Command::new("/usr/bin/xcrun")
+        let found = crate::policy::program_command("/usr/bin/xcrun")
             .args(["--find", "python3"])
             .env_clear()
             .output()

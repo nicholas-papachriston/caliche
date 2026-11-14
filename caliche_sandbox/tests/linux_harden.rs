@@ -713,7 +713,7 @@ else:
 fn reexec_tty_regression() {
     // The child inherits CLS_REQUIRE_LANDLOCK_TESTS. Unset and `0` still skip.
     let exe = std::env::current_exe().expect("test binary");
-    let output = std::process::Command::new(exe)
+    let output = caliche_policy::program_command(exe)
         .args([
             "controlling_tty_cannot_receive_injected_input",
             "--exact",

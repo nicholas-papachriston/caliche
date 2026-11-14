@@ -63,7 +63,7 @@ fn host_env() -> HashMap<String, String> {
 
 #[expect(clippy::expect_used, reason = "test fixture setup panics with context")]
 fn junction(link: &Path, target: &Path) {
-    let status = Command::new("cmd")
+    let status = caliche_policy::program_command("cmd")
         .arg("/C")
         .arg("mklink")
         .arg("/J")
@@ -102,7 +102,7 @@ fn try_symlink(link: &Path, target: &Path, dir: bool) -> bool {
 
 #[expect(clippy::expect_used, reason = "test helper panics with context")]
 fn process_alive(pid: u32) -> bool {
-    let output = Command::new("tasklist")
+    let output = caliche_policy::program_command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .expect("run tasklist");

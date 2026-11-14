@@ -500,6 +500,10 @@ fn child_from_spec(
         return Err(AcpClientError::EmptyArgv);
     }
     let cwd = absolute_path(cwd)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "spawns the configured agent or this test binary, never git"
+    )]
     let mut command = Command::new(program);
     command
         .args(&argv[1..])
@@ -676,6 +680,10 @@ mod tests {
         // not mutate: re-run this one test in a child that has it.
         if std::env::var_os("CALICHE_ACP_SCRUB_FOO_TOKEN").is_none() {
             let name = "client::tests::peer_gets_host_tokens_only_when_it_opts_in";
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "spawns the configured agent or this test binary, never git"
+            )]
             let output =
                 tokio::process::Command::new(std::env::current_exe().expect("test binary"))
                     .args(["--exact", name, "--nocapture"])

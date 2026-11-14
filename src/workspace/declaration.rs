@@ -7,7 +7,6 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Default relative path for a workspace declaration.
 pub const DEFAULT_WORKSPACE_TOML: &str = ".caliche/workspace.toml";
@@ -356,7 +355,7 @@ fn clone_repo(url: &str, dest: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create repo parent {}", parent.display()))?;
     }
-    let status = Command::new("git")
+    let status = crate::policy::program_command("git")
         .arg("clone")
         .arg("--depth")
         .arg("1")

@@ -206,6 +206,10 @@ impl HarnessRuntime for ExternalCliRuntime {
             );
         }
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "spawns the configured agent or this test binary, never git"
+        )]
         let mut command = Command::new(&self.spec.command);
         command
             .args(&self.spec.args_prefix)
@@ -415,6 +419,10 @@ mod tests {
         const PLANTED: &str = "CALICHE_SCRUB_PROBE_TOKEN";
         if std::env::var_os(PLANTED).is_none() {
             let name = "external::tests::harness_gets_its_configured_env_but_no_host_credentials";
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "spawns the configured agent or this test binary, never git"
+            )]
             let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
                 .args(["--exact", name, "--nocapture"])
                 .env(PLANTED, "planted")

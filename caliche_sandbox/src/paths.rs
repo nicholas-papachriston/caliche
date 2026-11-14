@@ -1046,7 +1046,7 @@ mod swap_tests {
     fn read_and_write_refuse_a_fifo_without_blocking() {
         let (_ws, _out, workspace) = fixture();
         let config = config_for(&workspace);
-        let status = std::process::Command::new("mkfifo")
+        let status = caliche_policy::program_command("mkfifo")
             .arg(workspace.join("pipe"))
             .status()
             .expect("run mkfifo");

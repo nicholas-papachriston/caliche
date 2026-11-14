@@ -246,7 +246,7 @@ impl SandboxInstance for WasmtimeSandboxInstance {
             &std::env::var_os("PATH").unwrap_or_default(),
             &self.workspace,
         )?;
-        let mut cmd = std::process::Command::new(wasmtime);
+        let mut cmd = caliche_policy::program_command(wasmtime);
         cmd.arg("run");
         for preopen in self.preopened_dirs() {
             cmd.arg("--dir").arg(preopen);

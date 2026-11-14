@@ -69,7 +69,7 @@ impl LspClient {
             return Err(anyhow!("LSP command is empty"));
         }
 
-        let mut process = Command::new(&config.command)
+        let mut process = Command::from(crate::policy::program_command(&config.command))
             .args(&config.args)
             .env_clear()
             .envs(caliche_contracts::child_env::host_child_env_with(

@@ -1083,7 +1083,7 @@ mod tests {
         }
 
         fn make_fifo(path: &Path) {
-            let made = std::process::Command::new("mkfifo")
+            let made = caliche::policy::program_command("mkfifo")
                 .arg(path)
                 .status()
                 .expect("mkfifo");

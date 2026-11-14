@@ -241,7 +241,17 @@ impl ContextResolver {
                 resolve_clipboard()
             }
             ContextReference::GitDiff => {
-                resolve_git(&self.workspace_root, ["diff", "HEAD"], "Git Diff").await
+                resolve_git(
+                    &self.workspace_root,
+                    [
+                        "diff",
+                        caliche::policy::GIT_DIFF_SAFETY_FLAGS[0],
+                        caliche::policy::GIT_DIFF_SAFETY_FLAGS[1],
+                        "HEAD",
+                    ],
+                    "Git Diff",
+                )
+                .await
             }
             ContextReference::GitStatus => {
                 resolve_git(&self.workspace_root, ["status", "--short"], "Git Status").await
@@ -570,7 +580,9 @@ fn resolve_clipboard() -> anyhow::Result<ResolvedItem> {
 /// Run `git args` in the repository at the workspace root. Its `.git` is
 /// checked first ([`check_repository`](caliche_sandbox::git_access::check_repository)),
 /// and `git` is pinned to the checked git dir and work tree, so it reads no
-/// repository a gitfile names outside the workspace and none above it.
+/// repository a gitfile names outside the workspace and none above it. A
+/// repository whose config names a program is refused, and git runs with
+/// no system or global config and no program of its own.
 async fn resolve_git<const N: usize>(
     workspace_root: &Path,
     args: [&str; N],
@@ -578,10 +590,8 @@ async fn resolve_git<const N: usize>(
 ) -> anyhow::Result<ResolvedItem> {
     let workspace = workspace_root.canonicalize()?;
     let checked = caliche_sandbox::git_access::check_repository(&workspace, &workspace)?;
-    let mut command = checked.git_command();
-    command
-        .args(["-c", &format!("{}=false", caliche::policy::FSMONITOR_KEY)])
-        .args(args);
+    let mut command = checked.git_command()?;
+    command.args(args);
     let output = tokio::process::Command::from(command).output().await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.is_empty() {
@@ -740,7 +750,7 @@ mod link_tests {
     }
 
     fn git_init(dir: &std::path::Path) {
-        let status = std::process::Command::new("git")
+        let status = caliche::policy::program_command("git")
             .args(["init", "-q"])
             .current_dir(dir)
             .status()
@@ -793,6 +803,48 @@ mod link_tests {
             "{}",
             linked_status.message
         );
+    }
+
+    /// A repository whose config names a program for git to run, here an
+    /// external diff that would write a marker, is refused by `@diff`, and
+    /// the program never runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_diff_refuses_a_repository_that_names_a_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let own = tempfile::tempdir().expect("own");
+        let root = own.path().canonicalize().expect("canonical");
+        git_init(&root);
+        let markers = tempfile::tempdir().expect("markers");
+        let marker = markers.path().join("ran");
+        let script = markers.path().join("ext.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let config = root.join(".git/config");
+        let mut text = std::fs::read_to_string(&config).expect("config");
+        text.push_str(&format!("[diff]\n\texternal = {}\n", script.display()));
+        std::fs::write(&config, text).expect("write config");
+
+        let resolved = ContextResolver::new(root.clone(), None, Vec::new())
+            .resolve_prompt("@diff")
+            .await;
+
+        assert!(
+            resolved.message.ends_with(&format!(
+                "[Error loading @diff: {}]",
+                caliche_sandbox::git_access::refusal::program_keys(
+                    &root.join(".git"),
+                    &["diff.external".to_string()]
+                )
+            )),
+            "{}",
+            resolved.message
+        );
+        assert!(!marker.exists(), "the external diff ran");
     }
 
     #[tokio::test]

@@ -35,7 +35,7 @@ fn planted_runs(marker: &Path) -> String {
 
 /// A pid that has exited and been reaped.
 fn dead_pid() -> std::io::Result<i64> {
-    let mut child = std::process::Command::new("/bin/sh")
+    let mut child = caliche::policy::program_command("/bin/sh")
         .args(["-c", "exit 0"])
         .spawn()?;
     let pid = i64::from(child.id());
@@ -78,7 +78,7 @@ async fn planted_tools_on_path_never_run() -> anyhow::Result<()> {
     env.set("PATH", path);
 
     // The plant works: a bare lookup runs it.
-    std::process::Command::new("kill")
+    caliche::policy::program_command("kill")
         .args(["-0", "1"])
         .status()
         .unwrap();
@@ -86,7 +86,7 @@ async fn planted_tools_on_path_never_run() -> anyhow::Result<()> {
     std::fs::remove_file(&marker).unwrap();
 
     // process_tracker: the group dies by SIGTERM from the system kill.
-    let mut child = std::process::Command::new("/bin/sleep")
+    let mut child = caliche::policy::program_command("/bin/sleep")
         .arg("30")
         .process_group(0)
         .spawn()
@@ -97,7 +97,7 @@ async fn planted_tools_on_path_never_run() -> anyhow::Result<()> {
     // task_ledger: reopening checks the dead owner with the system kill and
     // reads the host with the system hostname. The planted kill exits 0,
     // which would keep the row running.
-    let host = std::process::Command::new(SystemBinary::Hostname.path().unwrap())
+    let host = caliche::policy::program_command(SystemBinary::Hostname.path().unwrap())
         .output()
         .unwrap();
     let host = String::from_utf8_lossy(&host.stdout).trim().to_owned();

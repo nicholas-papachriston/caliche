@@ -14,7 +14,6 @@
 
 use caliche_cli::storage::{SecureCredentialManager, record_shell_env_keys, shell_env_keys};
 use caliche_contracts::credential_env;
-use std::process::Command;
 
 /// Set in the child process that runs the checks.
 const CHILD: &str = "CALICHE_TEST_GATEWAY_SHELL_KEY_CHILD";
@@ -36,7 +35,7 @@ fn the_shell_key_beats_the_keychain_and_a_key_saved_mid_session() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(std::env::current_exe().expect("test binary"))
+    let output = caliche::policy::program_command(std::env::current_exe().expect("test binary"))
         .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
         .env(CHILD, "1")
         .env("HOME", dir.path())

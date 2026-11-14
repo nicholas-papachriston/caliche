@@ -76,7 +76,7 @@ async fn fake_model() -> anyhow::Result<String> {
 /// `echo input | caliche --pipe "run it"` in `workspace`. Returns the exit
 /// code and stdout.
 async fn pipe(home: &Path, workspace: &Path, base_url: &str) -> anyhow::Result<(i32, String)> {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_caliche"));
+    let mut command = caliche::policy::program_command(env!("CARGO_BIN_EXE_caliche"));
     command
         .args(["--pipe", "run it"])
         .current_dir(workspace)

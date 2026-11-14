@@ -17,9 +17,6 @@ use remote_files::{
     TempCheckout, clone_repo, collect_hash_files, git_head, replace_tree, skill_tree_diff,
 };
 
-#[cfg(test)]
-use std::process::Command;
-
 use crate::gateway::egress::{EgressClass, current_policy};
 
 const LOCK_FILE: &str = "skills-lock.json";
@@ -792,20 +789,20 @@ mod tests {
     }
 
     fn git_commit(repo: &Path, message: &str) {
-        let init = Command::new("git")
+        let init = crate::policy::program_command("git")
             .args(["init"])
             .arg(repo)
             .status()
             .expect("git init");
         assert!(init.success());
-        let add = Command::new("git")
+        let add = crate::policy::program_command("git")
             .args(["-C"])
             .arg(repo)
             .args(["add", "."])
             .status()
             .expect("git add");
         assert!(add.success());
-        let commit = Command::new("git")
+        let commit = crate::policy::program_command("git")
             .args(["-c", "user.email=test@example.com", "-c", "user.name=test"])
             .args(["-C"])
             .arg(repo)

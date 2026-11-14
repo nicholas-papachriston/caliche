@@ -226,7 +226,9 @@ mod project_dir_tests {
     fn a_fifo_project_profile_is_skipped_without_blocking() -> Result<()> {
         let (_repo_dir, repo, _outside_dir, _outside) = repo_and_outside()?;
         let fifo = repo.join(".caliche/agents/hang.md");
-        let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+        let made = crate::policy::program_command("mkfifo")
+            .arg(&fifo)
+            .status()?;
         assert!(made.success());
 
         let (tx, rx) = std::sync::mpsc::channel();

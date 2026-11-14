@@ -167,7 +167,10 @@ impl ProcessDocumentTool {
 
     async fn perform_ocr(path: &Path, language: &str) -> ToolResult {
         // Check if tesseract is available
-        let tesseract_check = Command::new("tesseract").arg("--version").output().await;
+        let tesseract_check = Command::from(crate::policy::program_command("tesseract"))
+            .arg("--version")
+            .output()
+            .await;
 
         if tesseract_check.is_err() {
             return ToolResult::error(
@@ -250,7 +253,10 @@ impl ProcessDocumentTool {
         };
 
         // Try using pdftotext if available (part of poppler-utils)
-        let pdftotext_check = Command::new("pdftotext").arg("-v").output().await;
+        let pdftotext_check = Command::from(crate::policy::program_command("pdftotext"))
+            .arg("-v")
+            .output()
+            .await;
 
         if pdftotext_check.is_ok() {
             return Self::extract_pdf_with_pdftotext(bytes).await;
@@ -333,7 +339,7 @@ async fn run_with_input(
     input: Vec<u8>,
 ) -> std::io::Result<std::process::Output> {
     use tokio::io::AsyncWriteExt as _;
-    let mut child = Command::new(program)
+    let mut child = Command::from(crate::policy::program_command(program))
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

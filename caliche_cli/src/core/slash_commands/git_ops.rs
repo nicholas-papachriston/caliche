@@ -85,7 +85,7 @@ impl SlashCommandExecutor {
     async fn run_shell_command(command: &str, cwd: &Path) -> std::io::Result<std::process::Output> {
         #[cfg(windows)]
         {
-            tokio::process::Command::new("cmd")
+            tokio::process::Command::from(caliche::policy::program_command("cmd"))
                 .args(["/C", command])
                 .current_dir(cwd)
                 .env(NO_CWD_EXE_LOOKUP, "1")
@@ -94,7 +94,7 @@ impl SlashCommandExecutor {
         }
         #[cfg(not(windows))]
         {
-            tokio::process::Command::new("sh")
+            tokio::process::Command::from(caliche::policy::program_command("sh"))
                 .args(["-lc", command])
                 .current_dir(cwd)
                 .output()
@@ -221,12 +221,13 @@ mod tests {
             "{}::check_does_not_run_a_program_from_the_working_directory",
             &module[module.find("::").expect("crate prefix") + 2..]
         );
-        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-            .args(["--exact", name.as_str(), "--test-threads=1"])
-            .env(CHILD_RUN, "1")
-            .env_remove(NO_CWD_EXE_LOOKUP)
-            .output()
-            .expect("rerun the test in a child");
+        let output =
+            caliche::policy::program_command(std::env::current_exe().expect("test binary"))
+                .args(["--exact", name.as_str(), "--test-threads=1"])
+                .env(CHILD_RUN, "1")
+                .env_remove(NO_CWD_EXE_LOOKUP)
+                .output()
+                .expect("rerun the test in a child");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "{stdout}");
         assert!(stdout.contains("1 passed"), "{stdout}");

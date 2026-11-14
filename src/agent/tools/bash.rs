@@ -535,7 +535,7 @@ async fn execute_bash_command(
     shell: &str,
 ) -> Result<BashCommandOutcome> {
     // Build command
-    let mut cmd = TokioCommand::new(shell);
+    let mut cmd = TokioCommand::from(crate::policy::program_command(shell));
     cmd.arg("-c").arg(command);
 
     // Set working directory if provided
@@ -822,14 +822,15 @@ mod tests {
         // may not mutate: re-run this one test in a child that has them.
         if std::env::var_os("CALICHE_SCRUB_FOO_TOKEN").is_none() {
             let name = "agent::tools::bash::tests::unsandboxed_bash_does_not_receive_host_tokens";
-            let output =
-                tokio::process::Command::new(std::env::current_exe().expect("test binary"))
-                    .args(["--exact", name, "--nocapture"])
-                    .env("CALICHE_BASH_SCRUB_PROBE", "kept")
-                    .env("CALICHE_SCRUB_FOO_TOKEN", "planted")
-                    .output()
-                    .await
-                    .expect("re-run test");
+            let output = tokio::process::Command::from(crate::policy::program_command(
+                std::env::current_exe().expect("test binary"),
+            ))
+            .args(["--exact", name, "--nocapture"])
+            .env("CALICHE_BASH_SCRUB_PROBE", "kept")
+            .env("CALICHE_SCRUB_FOO_TOKEN", "planted")
+            .output()
+            .await
+            .expect("re-run test");
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success() && stdout.contains("1 passed"),

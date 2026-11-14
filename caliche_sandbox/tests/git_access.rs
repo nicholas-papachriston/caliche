@@ -192,7 +192,7 @@ fn the_pinned_git_runs_in_the_checked_repository() {
     let (_ws_dir, ws) = canonical_dir();
     let inner = ws.join("inner");
     std::fs::create_dir(&inner).expect("inner");
-    let init = std::process::Command::new("git")
+    let init = caliche_policy::program_command("git")
         .args(["init", "-q"])
         .current_dir(&inner)
         .status()
@@ -202,6 +202,7 @@ fn the_pinned_git_runs_in_the_checked_repository() {
 
     let output = checked
         .git_command()
+        .expect("no program keys")
         .args(["rev-parse", "--absolute-git-dir"])
         .output()
         .expect("git rev-parse");
@@ -220,7 +221,7 @@ fn the_pin_overrides_inherited_repository_variables() {
     let (_ws_dir, ws) = canonical_dir();
     let (_out_dir, outside) = canonical_dir();
     for dir in [&ws, &outside] {
-        let init = std::process::Command::new("git")
+        let init = caliche_policy::program_command("git")
             .args(["init", "-q"])
             .current_dir(dir)
             .status()
@@ -228,7 +229,7 @@ fn the_pin_overrides_inherited_repository_variables() {
         assert!(init.success());
     }
     let checked = check_repository(&ws, &ws).expect("checked");
-    let mut command = std::process::Command::new("git");
+    let mut command = caliche_policy::program_command("git");
     command
         .env("GIT_DIR", outside.join(".git"))
         .env("GIT_COMMON_DIR", outside.join(".git"))
@@ -251,4 +252,64 @@ fn the_pin_overrides_inherited_repository_variables() {
         .map(|line| PathBuf::from(line).canonicalize().ok())
         .collect();
     assert_eq!(reported, vec![Some(ws.join(".git")), Some(ws.join(".git"))]);
+}
+
+/// Set in the child run of [`inherited_config_and_programs_do_not_reach_git`].
+const CHILD_MARKER_DIR: &str = "CALICHE_GIT_RUNNER_CHILD_MARKERS";
+
+/// An inherited `GIT_EXTERNAL_DIFF`, and a filter driver added through
+/// `GIT_CONFIG_COUNT`, do not run when git diffs a changed file.
+#[cfg(unix)]
+#[test]
+fn inherited_config_and_programs_do_not_reach_git() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(markers) = std::env::var_os(CHILD_MARKER_DIR) else {
+        let markers = tempfile::tempdir().expect("markers");
+        let script = |name: &str| {
+            let path = markers.path().join(format!("{name}.sh"));
+            let ran = markers.path().join(name);
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\ntouch '{}'\ncat\n", ran.display()),
+            )
+            .expect("script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            path
+        };
+        let name = "inherited_config_and_programs_do_not_reach_git";
+        let output = caliche_policy::program_command(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD_MARKER_DIR, markers.path())
+            .env("GIT_EXTERNAL_DIFF", script("external"))
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "filter.planted.clean")
+            .env("GIT_CONFIG_VALUE_0", script("filter"))
+            .output()
+            .expect("child");
+        assert!(output.status.success(), "{output:?}");
+        let ran: Vec<_> = ["external", "filter"]
+            .into_iter()
+            .filter(|name| markers.path().join(name).exists())
+            .collect();
+        assert_eq!(ran, Vec::<&str>::new());
+        return;
+    };
+    let _ = markers;
+    let repo = tempfile::tempdir().expect("repo");
+    let git = |args: &[&str]| {
+        let status = caliche_policy::git_command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.path().join(".gitattributes"), "a.txt filter=planted\n").expect("attrs");
+    std::fs::write(repo.path().join("a.txt"), "one\n").expect("a");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "one"]);
+    std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit");
+    git(&["diff"]);
 }

@@ -50,7 +50,7 @@ pub fn fire_notify_command(
         .unwrap_or_default();
     let prompt_preview = sanitize_notify_preview(prompt_preview);
 
-    let _ = tokio::process::Command::new("sh")
+    let _ = tokio::process::Command::from(caliche::policy::program_command("sh"))
         .arg("-c")
         .arg(command)
         .env("CALICHE_TURN_STATUS", status)

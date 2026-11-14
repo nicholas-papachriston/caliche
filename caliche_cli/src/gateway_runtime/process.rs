@@ -35,7 +35,7 @@ pub(super) async fn cleanup_dead(registry: &mut GatewayRuntimeRegistry) {
 
 #[cfg(unix)]
 pub(super) async fn find_listener_pid_for_port(port: u16) -> Option<u32> {
-    let output = Command::new(SystemBinary::Lsof.path()?)
+    let output = Command::from(caliche::policy::program_command(SystemBinary::Lsof.path()?))
         .arg("-nP")
         .arg("-tiTCP")
         .arg(port.to_string())
@@ -112,7 +112,7 @@ where
     let Some(ps) = SystemBinary::Ps.path() else {
         return Vec::new();
     };
-    let output = Command::new(ps)
+    let output = Command::from(caliche::policy::program_command(ps))
         .arg("-axo")
         .arg("pid=,command=")
         .stdin(Stdio::null())
@@ -165,7 +165,7 @@ async fn is_process_alive_impl(pid: u32) -> bool {
     let Some(ps) = SystemBinary::Ps.path() else {
         return true;
     };
-    let status = Command::new(ps)
+    let status = Command::from(caliche::policy::program_command(ps))
         .arg("-p")
         .arg(pid.to_string())
         .arg("-o")
@@ -188,7 +188,7 @@ async fn is_process_alive_impl(pid: u32) -> bool {
 
 #[cfg(windows)]
 async fn is_process_alive_impl(pid: u32) -> bool {
-    match Command::new("tasklist")
+    match Command::from(caliche::policy::program_command("tasklist"))
         .args(["/FI", &format!("PID eq {}", pid), "/NH"])
         .output()
         .await

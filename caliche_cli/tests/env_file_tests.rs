@@ -9,7 +9,7 @@ use caliche_server::paths::CONFIG_DIR_ENV;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 const PLANTED_TEMPERATURE: &str = "0.42";
 
@@ -18,7 +18,7 @@ fn bin() -> &'static str {
 }
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(bin());
+    let mut command = caliche::policy::program_command(bin());
     command
         .args(args)
         .current_dir(project)

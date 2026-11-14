@@ -184,7 +184,7 @@ async fn wait_until_listening(port: u16, listening: bool) -> anyhow::Result<()> 
 
 async fn send_signal(pid: Option<u32>, signal: &str) -> anyhow::Result<()> {
     let pid = pid.ok_or_else(|| anyhow::anyhow!("server already exited"))?;
-    let status = tokio::process::Command::new("kill")
+    let status = tokio::process::Command::from(caliche::policy::program_command("kill"))
         .arg(format!("-{signal}"))
         .arg(pid.to_string())
         .status()
@@ -201,19 +201,21 @@ async fn sigterm_keeps_a_task_recorded_during_the_drain() -> anyhow::Result<()> 
     let log_path = home.path().join("server.log");
     let mut model = FakeModel::start(Some(Reply::BashCall)).await?;
     let port = free_port()?;
-    let mut server = tokio::process::Command::new(env!("CARGO_BIN_EXE_caliche_server"))
-        .args(["--provider", "ollama", "--model", "fake-model", "--port"])
-        .arg(port.to_string())
-        .current_dir(&workspace)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", home.path())
-        .env("XDG_DATA_HOME", home.path().join("xdg"))
-        .env("OLLAMA_BASE_URL", &model.base_url)
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&log_path)?)
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut server = tokio::process::Command::from(caliche::policy::program_command(env!(
+        "CARGO_BIN_EXE_caliche_server"
+    )))
+    .args(["--provider", "ollama", "--model", "fake-model", "--port"])
+    .arg(port.to_string())
+    .current_dir(&workspace)
+    .env_clear()
+    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+    .env("HOME", home.path())
+    .env("XDG_DATA_HOME", home.path().join("xdg"))
+    .env("OLLAMA_BASE_URL", &model.base_url)
+    .stdout(Stdio::null())
+    .stderr(std::fs::File::create(&log_path)?)
+    .kill_on_drop(true)
+    .spawn()?;
     let log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
     wait_until_listening(port, true).await?;

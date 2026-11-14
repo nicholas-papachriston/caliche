@@ -249,7 +249,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     #[cfg(unix)]
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     #[test]
     fn push_never_buffers_more_than_the_limit() {
@@ -285,7 +285,7 @@ mod tests {
         // The leader exits at once and nothing kills the background `yes`, as
         // if it had escaped the tree kill. It floods stdout until its reader
         // closes the pipe.
-        let child = Command::new("sh")
+        let child = caliche_policy::program_command("sh")
             .args(["-c", "yes & echo $! >&2"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -325,7 +325,7 @@ mod tests {
     fn failed_wait_kills_the_process_tree_before_returning() {
         // The leader exits at once; a background sleep in its process group
         // keeps stdout open.
-        let child = Command::new("sh")
+        let child = caliche_policy::program_command("sh")
             .args(["-c", "sleep 600 &"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

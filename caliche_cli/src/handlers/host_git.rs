@@ -96,7 +96,7 @@ impl HostGit {
     /// `git -c core.fsmonitor=false -c safe.bareRepository=explicit` in the
     /// repository directory.
     pub(crate) fn command(&self) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new("git");
+        let mut command = tokio::process::Command::from(caliche::policy::program_command("git"));
         command
             .args(["-c", &format!("{FSMONITOR_KEY}=false")])
             .args(["-c", &format!("{SAFE_BARE_REPOSITORY_KEY}=explicit")])
@@ -191,10 +191,9 @@ fn outside_modules(path: &str, dot_git: &Path, named: &Path, modules: &Path) -> 
 mod tests {
     use super::*;
     use caliche::policy::{CONFIG_FILE, GITFILE_PREFIX, clear_git_config};
-    use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
-        let mut command = Command::new("git");
+        let mut command = caliche::policy::program_command("git");
         let status = clear_git_config(&mut command)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args([
@@ -213,7 +212,7 @@ mod tests {
     /// Trimmed stdout of `git args` in `dir`: a path as git reports it
     /// (`C:/...` on Windows).
     fn git_reports(dir: &Path, args: &[&str]) -> String {
-        let mut command = Command::new("git");
+        let mut command = caliche::policy::program_command("git");
         let output = clear_git_config(&mut command)
             .args(args)
             .current_dir(dir)
@@ -453,7 +452,8 @@ mod tests {
         if std::env::var_os(ISOLATED).is_some() {
             return false;
         }
-        let mut command = Command::new(std::env::current_exe().expect("test binary"));
+        let mut command =
+            caliche::policy::program_command(std::env::current_exe().expect("test binary"));
         let output = clear_git_config(&mut command)
             .args(["--exact", test, "--nocapture", "--test-threads=1"])
             .env(ISOLATED, "1")

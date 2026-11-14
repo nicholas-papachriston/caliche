@@ -158,7 +158,7 @@ fn probe_dir() -> PathBuf {
 
 /// A command that starts from the scrubbed host environment.
 fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
+    let mut command = Command::from(crate::policy::program_command(program));
     command
         .env_clear()
         .envs(caliche_contracts::child_env::host_child_env());

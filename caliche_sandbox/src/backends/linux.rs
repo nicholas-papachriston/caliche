@@ -510,7 +510,7 @@ raise SystemExit(1)
 
     #[cfg(feature = "landlock-net")]
     fn python3_available() -> bool {
-        std::process::Command::new("python3")
+        caliche_policy::program_command("python3")
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -672,7 +672,7 @@ fn run_exec(
         .map(|plan| MountExec::new(plan, cwd))
         .transpose()?;
 
-    let mut cmd = std::process::Command::new(shell);
+    let mut cmd = caliche_policy::program_command(shell);
     cmd.args(command.get(1..).unwrap_or(&[]));
     cmd.current_dir(cwd);
     cmd.env_clear();

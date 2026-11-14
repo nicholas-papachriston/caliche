@@ -35,7 +35,7 @@ mod linux {
             println!("cargo:rustc-cfg=sandbox_landlock_tcp_available");
         }
 
-        let python3 = std::process::Command::new("python3")
+        let python3 = caliche_policy::program_command("python3")
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

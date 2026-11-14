@@ -102,7 +102,7 @@ impl ValidationHook {
             None => return (true, String::new(), String::new()),
         };
         let args: Vec<&str> = parts.collect();
-        let output = tokio::process::Command::new(program)
+        let output = tokio::process::Command::from(crate::policy::program_command(program))
             .args(&args)
             .current_dir(cwd)
             .env_clear()

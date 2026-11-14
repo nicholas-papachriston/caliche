@@ -85,7 +85,7 @@ pub async fn run_editor_command() -> Result<Option<String>> {
     println!("File: {}", temp_path.display());
 
     // Open editor (blocking operation)
-    let status = std::process::Command::new(&editor)
+    let status = caliche::policy::program_command(&editor)
         .arg(&temp_path)
         .status()?;
 

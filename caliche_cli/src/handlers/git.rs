@@ -334,7 +334,7 @@ async fn open_git_editor(git: &HostGit, initial_message: &str) -> Result<Option<
     editor_args.push(temp_path.display().to_string());
 
     // Open editor (blocking operation)
-    let status = tokio::process::Command::new(editor_cmd)
+    let status = tokio::process::Command::from(caliche::policy::program_command(editor_cmd))
         .args(&editor_args)
         .status()
         .await

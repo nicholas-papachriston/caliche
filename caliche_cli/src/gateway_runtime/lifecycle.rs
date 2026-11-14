@@ -181,7 +181,7 @@ fn gateway_command(
     llm_config: &GatewayLlmConfigStatus,
     main_gateway_url: Option<&str>,
 ) -> std::process::Command {
-    let mut cmd = std::process::Command::new(exe);
+    let mut cmd = caliche::policy::program_command(exe);
     cmd.arg("--server")
         .arg("--port")
         .arg(port.to_string())

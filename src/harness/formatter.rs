@@ -28,7 +28,7 @@ pub async fn run_formatter_if_match(rules: &[FormatterRule], path: &Path) -> Opt
             let cmd_str = rule.command.replace("$FILE", &posix_single_quote(&abs_str));
             tracing::debug!(formatter = %cmd_str, file = %abs_str, "running formatter");
 
-            let result = Command::new("sh")
+            let result = Command::from(crate::policy::program_command("sh"))
                 .arg("-c")
                 .arg(&cmd_str)
                 .env_clear()
@@ -211,7 +211,7 @@ mod tests {
 
         let injected = "/tmp/foo'; echo INJECTED; '.rs";
         let quoted = posix_single_quote(injected);
-        let output = std::process::Command::new("sh")
+        let output = crate::policy::program_command("sh")
             .arg("-c")
             .arg(format!("printf %s {quoted}"))
             .output()

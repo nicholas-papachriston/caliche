@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -203,7 +202,7 @@ impl Drop for TempCheckout {
 }
 
 pub(super) fn clone_repo(url: &str, dest: &Path) -> Result<String> {
-    let status = Command::new("git")
+    let status = crate::policy::program_command("git")
         .args(["clone", "--depth", "1", "--", url])
         .arg(dest)
         .status()
@@ -215,7 +214,7 @@ pub(super) fn clone_repo(url: &str, dest: &Path) -> Result<String> {
 }
 
 pub(super) fn git_head(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::policy::program_command("git")
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "HEAD"])

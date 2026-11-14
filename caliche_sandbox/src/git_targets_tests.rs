@@ -4,12 +4,11 @@ use caliche_policy::{
     MODULES_DIR, OBJECTS_DIR, REFS_DIR, clear_git_config, discover, plant_linked_worktree,
     write_loose_git_dir,
 };
-use std::process::Command;
 
 /// Runs host `git`. A test host without it fails these tests rather
 /// than skipping them, so they always run.
 fn git(dir: &Path, args: &[&str]) {
-    let mut command = Command::new("git");
+    let mut command = caliche_policy::program_command("git");
     let status = clear_git_config(&mut command)
         .args([
             "-c",
@@ -282,7 +281,7 @@ fn git_dir_cases(base: &Path) -> Vec<(&'static str, PathBuf)> {
 /// `ceiling`, with no user or system config, or `None`.
 #[cfg(unix)]
 fn git_finds(dir: &Path, ceiling: &Path) -> Option<PathBuf> {
-    let mut command = Command::new("git");
+    let mut command = caliche_policy::program_command("git");
     let output = clear_git_config(&mut command)
         .args(["rev-parse", "--absolute-git-dir"])
         .env("GIT_CEILING_DIRECTORIES", ceiling)

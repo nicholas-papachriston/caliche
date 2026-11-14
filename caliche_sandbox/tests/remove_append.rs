@@ -21,7 +21,7 @@ fn link_dir(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).expect("symlink");
     #[cfg(windows)]
     {
-        let status = std::process::Command::new("cmd")
+        let status = caliche_policy::program_command("cmd")
             .arg("/C")
             .arg("mklink")
             .arg("/J")

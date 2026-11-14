@@ -222,7 +222,7 @@ fn xcode_developer_dir() -> Option<&'static Path> {
         .get_or_init(|| {
             // Absolute, with a clean env, so neither PATH nor DEVELOPER_DIR
             // can steer the answer.
-            let output = std::process::Command::new("/usr/bin/xcode-select")
+            let output = caliche_policy::program_command("/usr/bin/xcode-select")
                 .arg("--print-path")
                 .env_clear()
                 .stdin(std::process::Stdio::null())
@@ -349,7 +349,7 @@ impl SandboxInstance for MacOSSeatbeltInstance {
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| self.workspace.clone());
 
-        let mut cmd = std::process::Command::new(SANDBOX_EXEC);
+        let mut cmd = caliche_policy::program_command(SANDBOX_EXEC);
         cmd.arg("-f").arg(&profile_path);
         cmd.arg("--");
         cmd.arg(command.first().copied().unwrap_or("sh"));

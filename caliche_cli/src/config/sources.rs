@@ -66,7 +66,7 @@ impl RemoteConfigSource {
 
         let cwd = std::env::current_dir().ok()?;
         let git_root = find_git_root(&cwd)?;
-        let output = std::process::Command::new("git")
+        let output = caliche::policy::program_command("git")
             .args(["config", "--get", "remote.origin.url"])
             .current_dir(&git_root)
             .output()
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn a_fifo_project_toml_is_skipped_without_blocking() {
         let repo = tempfile::tempdir().expect("tempdir");
-        let made = std::process::Command::new("mkfifo")
+        let made = caliche::policy::program_command("mkfifo")
             .arg(repo.path().join("caliche.toml"))
             .status()
             .expect("mkfifo");

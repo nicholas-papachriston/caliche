@@ -79,20 +79,22 @@ async fn prompt(
     base_url: &str,
     text: &str,
 ) -> anyhow::Result<(i32, String, String)> {
-    let child = Command::new(env!("CARGO_BIN_EXE_caliche"))
-        .args(["-p", text])
-        .current_dir(workspace)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", home)
-        .env("AGENT_PROVIDER", "ollama")
-        .env("OLLAMA_MODEL", "fake-model")
-        .env("OLLAMA_BASE_URL", base_url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+    let child = Command::from(caliche::policy::program_command(env!(
+        "CARGO_BIN_EXE_caliche"
+    )))
+    .args(["-p", text])
+    .current_dir(workspace)
+    .env_clear()
+    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+    .env("HOME", home)
+    .env("AGENT_PROVIDER", "ollama")
+    .env("OLLAMA_MODEL", "fake-model")
+    .env("OLLAMA_BASE_URL", base_url)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()?;
     let output = tokio::time::timeout(WAIT, child.wait_with_output()).await??;
     Ok((
         output.status.code().unwrap_or(-1),

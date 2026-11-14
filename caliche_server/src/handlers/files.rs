@@ -503,7 +503,7 @@ mod tests {
             AFTER_VALIDATE.with(|cell| {
                 *cell.borrow_mut() = Some(Box::new(|validated: &Path| {
                     std::fs::remove_file(validated).expect("remove");
-                    let made = std::process::Command::new("mkfifo")
+                    let made = caliche::policy::program_command("mkfifo")
                         .arg(validated)
                         .status()
                         .expect("mkfifo");

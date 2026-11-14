@@ -169,6 +169,10 @@ mod tests {
         const VALUE: &str = "probe-secret-value";
         if std::env::var_os(NAME).is_none() {
             let test = "transcript::tests::from_env_redacts_credential_values_and_keeps_others";
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "spawns the configured agent or this test binary, never git"
+            )]
             let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
                 .args(["--exact", test, "--nocapture"])
                 .env(NAME, VALUE)

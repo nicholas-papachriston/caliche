@@ -144,7 +144,9 @@ impl Home {
     /// The CLI binary with only this home and the fake model in its
     /// environment.
     fn cli(&self, model: &FakeModel) -> anyhow::Result<Command> {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_caliche"));
+        let mut command = Command::from(caliche::policy::program_command(env!(
+            "CARGO_BIN_EXE_caliche"
+        )));
         command
             .current_dir(self.dir.path().join("workspace"))
             .env_clear()
@@ -254,7 +256,7 @@ async fn send_signal(child: &Child, signal: &str) -> anyhow::Result<()> {
     let pid = child
         .id()
         .ok_or_else(|| anyhow::anyhow!("CLI already exited"))?;
-    let status = Command::new("kill")
+    let status = Command::from(caliche::policy::program_command("kill"))
         .arg(format!("-{signal}"))
         .arg(pid.to_string())
         .status()

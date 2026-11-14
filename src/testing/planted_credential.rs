@@ -30,7 +30,7 @@ pub(crate) fn rerun_in_child(
     if std::env::var_os(PLANTED_CREDENTIAL).is_some() {
         return false;
     }
-    let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+    let mut command = crate::policy::program_command(std::env::current_exe().expect("test binary"));
     command
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(PLANTED_CREDENTIAL, "planted")
