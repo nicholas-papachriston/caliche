@@ -516,11 +516,13 @@ mod sandboxed_writes {
 
     /// `refs` swapped for a link to an outside copy after the check: the
     /// commit's ref update resolves outside the grant and the kernel
-    /// refuses it, so the outside copy is unchanged.
+    /// refuses it, so the outside copy is unchanged. The copy is under
+    /// `/tmp`, which the sandbox may read, so only the write is refused.
     #[tokio::test]
     async fn a_refs_dir_swapped_for_a_link_after_the_check_is_not_written() {
         let (_ws_dir, ws) = canonical_dir();
-        let (_out_dir, outside) = canonical_dir();
+        let out_dir = tempfile::tempdir_in("/tmp").expect("outside");
+        let outside = out_dir.path().canonicalize().expect("canonical");
         staged_repo(&ws);
         let checked = check_repository(&ws, &ws).expect("checked");
         let main_before = std::fs::read(ws.join(".git/refs/heads/main")).expect("main");
