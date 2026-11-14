@@ -94,7 +94,8 @@ fn classify_v4(v4: Ipv4Addr) -> Option<SsrfClass> {
 /// The IPv4 address an IPv6 address carries, which a router or a
 /// translator would deliver to: IPv4-mapped `::ffff:a.b.c.d`,
 /// IPv4-compatible `::a.b.c.d` (not `::` or `::1`), NAT64
-/// `64:ff9b::a.b.c.d`, and 6to4 `2002:aabb:ccdd::/48`.
+/// `64:ff9b::a.b.c.d`, 6to4 `2002:aabb:ccdd::/48`, and Teredo
+/// `2001:0::/32`, whose client address is the last 32 bits inverted.
 #[must_use]
 pub fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4_mapped() {
@@ -112,7 +113,17 @@ pub fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
     if segments[0] == 0x2002 {
         return Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]));
     }
+    if segments[..2] == [0x2001, 0] {
+        return Some(Ipv4Addr::from(!u32::from(tail)));
+    }
     None
+}
+
+/// Whether `v6` is in the local-use NAT64 prefix `64:ff9b:1::/48`, where a
+/// network's own translator may carry an IPv4 address at any of several
+/// offsets, so the target cannot be read off the address.
+fn is_local_use_nat64(v6: Ipv6Addr) -> bool {
+    v6.segments()[..3] == [0x64, 0xff9b, 1]
 }
 
 fn classify_v6(v6: Ipv6Addr) -> Option<SsrfClass> {
@@ -121,6 +132,9 @@ fn classify_v6(v6: Ipv6Addr) -> Option<SsrfClass> {
     }
     if v6.is_loopback() || v6.is_unspecified() {
         return Some(SsrfClass::Loopback);
+    }
+    if is_local_use_nat64(v6) {
+        return Some(SsrfClass::Private);
     }
     if v6.is_unicast_link_local() {
         return Some(SsrfClass::LinkLocal);
@@ -151,6 +165,10 @@ mod tests {
             "64:ff9b::808:808",
             "2002:808:808::1",
             "::1",
+            "64:ff9b:1::7f00:1",
+            "64:ff9b:1:808:8:800::",
+            "2001:0:4136:e378:8000:63bf:80ff:fffe",
+            "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
         ];
 
         assert_eq!(
@@ -163,6 +181,10 @@ mod tests {
                 None,
                 None,
                 Some(SsrfClass::Loopback),
+                Some(SsrfClass::Private),
+                Some(SsrfClass::Private),
+                Some(SsrfClass::Loopback),
+                None,
             ]
         );
     }
