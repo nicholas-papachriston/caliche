@@ -237,10 +237,15 @@ mod sandboxed {
             .expect("swap");
         let seen = sandboxed(&checked, &ws, &["log", "--format=%s", &outside_head]).await;
 
-        assert_eq!(
-            seen.map(|(code, out)| (code == 0, out)),
-            Ok((false, String::new()))
-        );
+        // Seatbelt lets git run and refuses the read through the link; the
+        // Linux git guard refuses the linked git dir before git starts.
+        #[cfg(target_os = "macos")]
+        let expected = Ok((false, String::new()));
+        #[cfg(target_os = "linux")]
+        let expected = Err(caliche_sandbox::paths::git_refusal::git_dir_in_workspace(
+            &ws.join(".git/objects"),
+        ));
+        assert_eq!(seen.map(|(code, out)| (code == 0, out)), expected);
     }
 
     /// A checked repository below the workspace swapped for a link to an
