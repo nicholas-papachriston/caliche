@@ -157,14 +157,17 @@ pub mod refusal {
 
     /// The workspace's `.git` names a linked-worktree record outside it that
     /// git wrote before that `.git` last changed: a record left behind by a
-    /// deleted worktree, now matched by new files at its old path.
+    /// deleted worktree, now matched by new files at its old path. The
+    /// message names the remedy for a real worktree whose `.git` was
+    /// rewritten later (restored, copied, edited): touching the record.
     #[must_use]
     pub fn stale_worktree(dot_git: &Path, git_dir: &Path) -> String {
         format!(
             "{} names the worktree record {}, which is older than it; if this \
-             is that worktree, run `git worktree repair` in it",
+             is that worktree, run `touch {}`",
             dot_git.display(),
-            git_dir.display()
+            git_dir.display(),
+            git_dir.join(super::WORKTREE_GITDIR_FILE).display()
         )
     }
 
@@ -386,7 +389,7 @@ fn names_back(git_dir: &Path, dot_git: &Path) -> bool {
 }
 
 /// How long after its worktree record a linked worktree's `.git` may have
-/// changed: `git worktree add` and `git worktree repair` write both at once.
+/// changed: `git worktree add` writes the record and then the `.git`.
 pub const WORKTREE_RECORD_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Whether `dot_git` changed more than [`WORKTREE_RECORD_SLACK`] after the
@@ -394,28 +397,41 @@ pub const WORKTREE_RECORD_SLACK: std::time::Duration = std::time::Duration::from
 /// time, which unpacking or copying files sets to now whatever times they
 /// carry, so a `.git` placed at a deleted worktree's old path is newer than
 /// the record left behind.
+///
+/// A real worktree whose `.git` was rewritten later is refused too; the
+/// refusal names `touch` on the record as the remedy (`git worktree repair`
+/// writes nothing when the two already name each other).
+///
+/// What this does not catch, each needing an action outside the model's
+/// reach: a later change to the record itself (a touch, chmod or chown over
+/// the other repository), a directory whose `.git` predates the record
+/// renamed onto the old path (a rename keeps the child's change time), and
+/// a `.git` written within the slack. Off Unix the modification time is
+/// used, which an archive can set; there every git tool refuses before it
+/// runs git (no native sandbox confines git's reads), so no git command
+/// reads the record's repository.
 fn changed_after_record(git_dir: &Path, dot_git: &Path) -> io::Result<bool> {
     let record = changed_at(&git_dir.join(WORKTREE_GITDIR_FILE))?;
     let gitfile = changed_at(dot_git)?;
-    Ok(gitfile > record + WORKTREE_RECORD_SLACK.as_nanos() as i128)
+    Ok(gitfile
+        .duration_since(record)
+        .is_ok_and(|later| later > WORKTREE_RECORD_SLACK))
 }
 
-/// When `path` last changed, in nanoseconds since the epoch: its inode
-/// change time on Unix, its modification time elsewhere.
-fn changed_at(path: &Path) -> io::Result<i128> {
+/// When `path` last changed: its inode change time on Unix, its
+/// modification time elsewhere.
+fn changed_at(path: &Path) -> io::Result<std::time::SystemTime> {
     let meta = std::fs::symlink_metadata(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()))
+        let seconds = u64::try_from(meta.ctime()).map_err(io::Error::other)?;
+        let nanos = u32::try_from(meta.ctime_nsec()).map_err(io::Error::other)?;
+        Ok(std::time::UNIX_EPOCH + std::time::Duration::new(seconds, nanos))
     }
     #[cfg(not(unix))]
     {
-        let modified = meta.modified()?;
-        let since = modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(io::Error::other)?;
-        Ok(since.as_nanos() as i128)
+        meta.modified()
     }
 }
 

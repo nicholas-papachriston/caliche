@@ -93,14 +93,31 @@ async fn a_stale_worktree_record_is_refused() {
     .await;
     gitfile(&ws, &linked);
 
+    let stale = outcome(&ws, &ws);
+    // The remedy the refusal names: touch the record.
+    std::fs::File::options()
+        .write(true)
+        .open(linked.join(WORKTREE_GITDIR_FILE))
+        .expect("record")
+        .set_modified(std::time::SystemTime::now())
+        .expect("touch");
+    let touched = outcome(&ws, &ws);
+
     assert_eq!(
-        outcome(&ws, &ws),
-        Err(format!(
-            "{}/.git names the worktree record {}/.git/worktrees/ws, which is older than it; \
-             if this is that worktree, run `git worktree repair` in it",
-            ws.display(),
-            main.display()
-        ))
+        (stale, touched),
+        (
+            Err(format!(
+                "{ws}/.git names the worktree record {main}/.git/worktrees/ws, which is older \
+                 than it; if this is that worktree, run `touch {main}/.git/worktrees/ws/gitdir`",
+                ws = ws.display(),
+                main = main.display()
+            )),
+            Ok(CheckedRepository {
+                work_tree: ws.clone(),
+                git_dir: linked.clone(),
+                common_dir: main.join(".git"),
+            }),
+        )
     );
 }
 
