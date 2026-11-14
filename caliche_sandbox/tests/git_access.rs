@@ -562,8 +562,9 @@ mod sandboxed_writes {
     }
 
     /// A commit does not enter a submodule whose gitfile names a repository
-    /// outside the workspace: git would read it for the commit's status
-    /// check, and the sandbox would refuse the read.
+    /// outside the workspace: with nothing staged, git reads it for the
+    /// status it prints, and the sandbox would refuse the read. The commit
+    /// ends as git ends one with nothing to commit.
     #[tokio::test]
     async fn a_commit_does_not_enter_a_submodule_that_names_the_outside() {
         let (_ws_dir, ws) = canonical_dir();
@@ -595,16 +596,29 @@ mod sandboxed_writes {
             ],
         );
         gitfile(&ws.join("sub"), &victim.join(".git"));
+        host(
+            &ws,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "with sub",
+            ],
+        );
         let checked = check_repository(&ws, &ws).expect("checked");
 
         let committed = write(
             &checked,
             &ws,
-            &["commit", "--cleanup=verbatim", "--message=with sub"],
+            &["commit", "--cleanup=verbatim", "--message=nothing"],
         )
         .await;
 
-        assert_eq!(committed, Ok(0));
+        assert_eq!(committed, Ok(1));
         assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "with sub");
     }
 
