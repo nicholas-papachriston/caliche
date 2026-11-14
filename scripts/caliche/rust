@@ -167,8 +167,14 @@ run_workspace_tests() {
 # --init reaps killed children, so the process-tree tests see them exit.
 LINUX_TEST_IMAGE="rust@sha256:f58923369ba295ae1f60bc49d03f2c955a5c93a0b7d49acfb2b2a65bebaf350d"
 # One test from each Linux-only area: Landlock with TCP rules, the git
-# guard, hardening, fork safety, and the two /proc parsers.
+# guard, hardening, fork safety, and the two /proc parsers. Also every
+# test that runs git inside Landlock, and the refusal of git write ops.
 LINUX_SENTINEL_TESTS=(
+  git_reads_the_checked_repository_inside_the_sandbox
+  a_link_swapped_into_the_git_dir_after_the_check_is_not_read
+  a_repository_swapped_for_a_link_after_the_check_is_not_read
+  a_repository_that_names_a_program_is_refused
+  a_git_write_op_refuses_on_linux
   tcp_connect_is_denied
   a_directory_nobody_can_list_is_refused
   exec_cannot_change_the_workspace_git_dir
