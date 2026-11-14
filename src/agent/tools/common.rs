@@ -126,7 +126,7 @@ pub mod path {
         let normalized_path = canonical_tool_path(&path, path_str)?;
 
         if let Some(should_be_file) = must_be_file {
-            let metadata = tool_metadata(&normalized_path)
+            let metadata = resolved_metadata(&normalized_path)
                 .with_context(|| format!("Failed to access path '{path_str}'"))?;
             if should_be_file && !metadata.is_file() {
                 bail!("Path '{path_str}' is not a file (it may be a directory)");
@@ -829,7 +829,7 @@ pub mod path {
 
     /// Validates file size against a maximum
     pub fn validate_file_size(path: &Path, max_size: u64) -> Result<u64> {
-        let metadata = tool_metadata(path).context("Failed to get file metadata")?;
+        let metadata = resolved_metadata(path).context("Failed to get file metadata")?;
 
         let file_size = metadata.len();
         if file_size > max_size {
