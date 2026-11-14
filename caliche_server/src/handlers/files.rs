@@ -354,7 +354,7 @@ pub(crate) fn read_workspace_bytes(
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     // A by-path check only picks the 400 message for a directory; the open
     // below is what refuses anything but a regular file.
-    if caliche_sandbox::list_dir_beneath(&root, &target).is_ok() {
+    if !is_listed_file(&root, &target) {
         return Err((StatusCode::BAD_REQUEST, NOT_A_FILE.to_string()));
     }
     after_validate(&target);
@@ -388,6 +388,19 @@ pub(crate) fn read_workspace_bytes(
         ));
     }
     Ok((target, bytes))
+}
+
+/// Whether `target`, below the canonical `root`, is listed as a regular
+/// file in its parent, read without following a link.
+fn is_listed_file(root: &Path, target: &Path) -> bool {
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return false;
+    };
+    caliche_sandbox::list_dir_beneath(root, parent).is_ok_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.name == name && entry.kind == caliche_sandbox::EntryKind::File)
+    })
 }
 
 #[cfg(test)]
