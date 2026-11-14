@@ -561,6 +561,53 @@ mod sandboxed_writes {
         );
     }
 
+    /// A commit does not enter a submodule whose gitfile names a repository
+    /// outside the workspace: git would read it for the commit's status
+    /// check, and the sandbox would refuse the read.
+    #[tokio::test]
+    async fn a_commit_does_not_enter_a_submodule_that_names_the_outside() {
+        let (_ws_dir, ws) = canonical_dir();
+        let victim_dir = tempfile::tempdir_in("/tmp").expect("victim");
+        let victim = victim_dir.path().canonicalize().expect("canonical");
+        staged_repo(&victim);
+        host(
+            &victim,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "v",
+            ],
+        );
+        let head = host(&victim, &["rev-parse", "HEAD"]);
+        staged_repo(&ws);
+        host(
+            &ws,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},sub"),
+            ],
+        );
+        gitfile(&ws.join("sub"), &victim.join(".git"));
+        let checked = check_repository(&ws, &ws).expect("checked");
+
+        let committed = write(
+            &checked,
+            &ws,
+            &["commit", "--cleanup=verbatim", "--message=with sub"],
+        )
+        .await;
+
+        assert_eq!(committed, Ok(0));
+        assert_eq!(host(&ws, &["log", "-1", "--format=%s"]), "with sub");
+    }
+
     /// A commit in a workspace that is a linked worktree writes the
     /// worktree's index and the shared objects and refs.
     #[tokio::test]

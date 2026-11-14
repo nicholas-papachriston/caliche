@@ -43,12 +43,14 @@ pub const GIT_IDENTITY_VARS: [&str; 4] = [
 ];
 
 /// Config every git write op gets on its command line: no automatic gc or
-/// maintenance (which would write outside the granted paths) and no signing.
-pub const GIT_WRITE_OVERRIDES: [(&str, &str); 4] = [
+/// maintenance (which would write outside the granted paths), no signing,
+/// and no submodule reads (a commit's status check would enter one).
+pub const GIT_WRITE_OVERRIDES: [(&str, &str); 5] = [
     ("gc.auto", "0"),
     ("maintenance.auto", "false"),
     ("commit.gpgSign", "false"),
     ("tag.gpgSign", "false"),
+    ("diff.ignoreSubmodules", "all"),
 ];
 
 impl CheckedRepository {
