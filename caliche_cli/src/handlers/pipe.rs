@@ -119,9 +119,17 @@ pub async fn run_pipe_input(
     service.set_artifact_store(Some(std::sync::Arc::new(
         caliche::ArtifactStore::for_workspace(&workspace_root, None),
     )));
-    let resolved = ContextResolver::from_service(&service)
-        .resolve_prompt(prompt)
-        .await;
+    let resolved = if args.refs {
+        ContextResolver::from_service(&service)
+            .resolve_prompt(prompt)
+            .await
+    } else {
+        crate::context_refs::ResolvedContext {
+            message: prompt.to_owned(),
+            attachments: Vec::new(),
+            allowed_paths: Vec::new(),
+        }
+    };
     let full_message = format!("{}\n\n---\nContent:\n{}", resolved.message, content);
 
     if let Some(token) = cancellation_token
