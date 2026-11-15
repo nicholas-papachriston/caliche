@@ -39,6 +39,9 @@ caliche --prompt "List likely refactors"
 # Pipe stdin into a prompt
 cat src/main.rs | caliche --pipe "Review this file"
 
+# --pipe refuses @ references in its prompt unless --pipe-refs is given
+git diff | caliche --pipe-refs --pipe "Review this against @src/lib.rs"
+
 # JSON output for automation
 caliche --message "status" --output-format json
 ```

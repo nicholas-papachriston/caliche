@@ -83,7 +83,7 @@ pub use server::ServerHandler;
 pub use share::{ShareArgs, ShareHandler, UnshareArgs, UnshareHandler};
 
 pub use lsp::LspHandler;
-pub use pipe::{PipeArgs, PipeHandler};
+pub use pipe::{PIPE_REFS_OFF, PipeArgs, PipeHandler};
 pub use session::SessionHandler;
 pub use utility::{ListModelsHandler, ListToolsHandler};
 
@@ -166,6 +166,7 @@ pub async fn dispatch(args: &Args, ctx: &mut CommandContext<'_>) -> CliResult<Co
     if let Some(ref prompt) = args.pipe {
         let pipe_args = PipeArgs {
             prompt: prompt.clone(),
+            refs: args.pipe_refs,
             output_format: args.output_format.clone(),
             sandbox: args.sandbox.clone(),
             sandbox_backend: args.sandbox_backend.clone(),

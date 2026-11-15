@@ -11,10 +11,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use caliche::AgentService;
 
+/// Why `--pipe` refused a prompt with an `@` reference in it.
+pub const PIPE_REFS_OFF: &str =
+    "--pipe does not read @ references in its prompt unless --pipe-refs is given";
+
 /// Arguments for the pipe command.
 #[derive(Debug, Clone)]
 pub struct PipeArgs {
     pub prompt: String,
+    /// `--pipe-refs`: read `@` references in the prompt.
+    pub refs: bool,
     pub output_format: OutputFormat,
     /// `--sandbox`: the policy tools run under.
     pub sandbox: Option<String>,
@@ -75,6 +81,12 @@ pub async fn run_pipe_input(
     use std::io::{self, BufRead, IsTerminal};
     let prompt = args.prompt.as_str();
     let output_format = &args.output_format;
+
+    if !args.refs
+        && let Some(mention) = crate::context_refs::parse_context_mentions(prompt).first()
+    {
+        anyhow::bail!("{PIPE_REFS_OFF}: @{}", mention.raw);
+    }
 
     if io::stdin().is_terminal() {
         anyhow::bail!(
@@ -306,6 +318,7 @@ mod tests {
     fn test_pipe_args() {
         let args = PipeArgs {
             prompt: "Summarize this".to_string(),
+            refs: false,
             output_format: OutputFormat::Text,
             sandbox: None,
             sandbox_backend: None,

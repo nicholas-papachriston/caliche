@@ -65,6 +65,12 @@ pub struct Args {
     #[arg(long, help_heading = "Input/Output")]
     pub pipe: Option<String>,
 
+    /// With --pipe: read @ references (files, @diff, @status, URLs) in the
+    /// prompt. Off by default, so a prompt built from other text cannot
+    /// pull files into the request.
+    #[arg(long, requires = "pipe", help_heading = "Input/Output")]
+    pub pipe_refs: bool,
+
     /// Output format (text, json, jsonl, stream)
     #[arg(
         long,
