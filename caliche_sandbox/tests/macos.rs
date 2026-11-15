@@ -1183,8 +1183,8 @@ fn create_refuses_a_fifo_or_oversized_git_metadata() {
         (".git/index", None),
         (".git/modules/empty/index", None),
         (".git/config", None),
-        (".git/index", Some(caliche_policy::MAX_GIT_INDEX_BYTES + 1)),
-        (".git/config", Some(caliche_policy::MAX_GIT_TEXT_BYTES + 1)),
+        (".git/index", Some((1 << 30) + 1)),
+        (".git/config", Some((1 << 20) + 1)),
     ]
     .iter()
     .map(|(relative, sparse_len)| {
