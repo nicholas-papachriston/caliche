@@ -42,7 +42,7 @@ These presets control what the native JavaScript and Python bindings include.
 | Feature | Contents |
 | --- | --- |
 | `bindings-minimal` | The smallest native build: the HTTP providers, the core and HTTP tools, MCP, and compaction. |
-| `bindings-agent` | Everything in `bindings-minimal`, plus the grep and git tools and the sandbox. |
+| `bindings-agent` | Everything in `bindings-minimal`, plus the grep and git tools and the sandbox. The git tools refuse on Windows, where the sandbox does not confine files. |
 | `bindings-app` | The default native build. Everything in `bindings-agent`, plus JWT validation, prompts and chains, document loaders, reasoning patterns, and vector memory. `bindings` is an alias for this preset. |
 | `bindings-sql` and `bindings-redis` | Optional SQL and Redis persistence for the bindings. |
 

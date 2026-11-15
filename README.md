@@ -283,6 +283,7 @@ These are the defaults:
 - The CLI runs shell and file tools in the `workspace-write` sandbox. Tools can write only inside the workspace and a private temporary directory. `--sandbox` selects a stricter policy (`read-only`), or turns the sandbox off (`danger-full-access`, which logs a warning).
 - Every tool call goes through the policy gate before any hook runs. A deny from the compiled-in floor always blocks the call, and a write outside the workspace needs approval.
 - The file write tools refuse paths inside Git metadata, such as `.git` directories, in every approval mode.
+- The git tools, `@diff` and `@status` run git only inside a native sandbox that confines file access: macOS Seatbelt, or Linux Landlock for reads. On Windows every git tool refuses, because the Windows sandbox backend does not confine files.
 - By default, the HTTP server listens on `127.0.0.1:3000` and does not authenticate requests, and all of its callers share one session list; see [HTTP server defaults](SECURITY.md#http-server-defaults).
 
 `--yolo` approves every tool call that would otherwise ask for approval. It does not override a deny. Use it only in a disposable environment; the reason is in [SECURITY.md](SECURITY.md#accept-all).

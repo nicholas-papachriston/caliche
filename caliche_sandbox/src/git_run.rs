@@ -24,7 +24,8 @@ pub const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Returned when no native sandbox backend can confine git's file reads.
 pub const NO_GIT_SANDBOX: &str = "git needs a native OS sandbox that confines file access \
-     (macOS Seatbelt, Linux Landlock or a Windows job); none is available, so git did not run";
+     (macOS Seatbelt or Linux Landlock); none is available here, and on Windows the job \
+     backend does not confine files, so git did not run";
 
 /// Returned when a git write op runs where the kernel cannot keep the rest
 /// of the git dir read-only.

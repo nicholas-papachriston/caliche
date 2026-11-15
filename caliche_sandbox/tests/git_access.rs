@@ -728,9 +728,11 @@ async fn git_does_not_run_without_a_native_sandbox() {
 
     for error in [read, write] {
         assert!(
-            error
-                .to_string()
-                .starts_with(caliche_sandbox::git_run::NO_GIT_SANDBOX),
+            error.to_string().starts_with(
+                "git needs a native OS sandbox that confines file access (macOS Seatbelt or \
+                 Linux Landlock); none is available here, and on Windows the job backend does \
+                 not confine files, so git did not run"
+            ),
             "{error}"
         );
     }
