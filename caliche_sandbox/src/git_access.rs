@@ -157,16 +157,22 @@ pub mod refusal {
 
     /// The workspace's `.git` names a linked-worktree record outside it that
     /// git wrote before that `.git` last changed: a record left behind by a
-    /// deleted worktree, now matched by new files at its old path. The
-    /// message names the remedy for a real worktree whose `.git` was
-    /// rewritten later (restored, copied, edited): touching the record.
+    /// deleted worktree, now matched by new files at its old path. Touching
+    /// the record accepts a real worktree whose `.git` was rewritten later
+    /// (restored, copied, edited), and it accepts a planted one just the
+    /// same, so the message gives that step to the user, after a check that
+    /// the directory is their own worktree.
     #[must_use]
     pub fn stale_worktree(dot_git: &Path, git_dir: &Path) -> String {
+        let work_tree = dot_git.parent().unwrap_or(dot_git);
         format!(
-            "{} names the worktree record {}, which is older than it; if this \
-             is that worktree, run `touch {}`",
+            "{} names the worktree record {}, which is older than it, so git did \
+             not run; a record left by a deleted worktree looks the same. For the \
+             user: only if {} is your own worktree of that repository, restored \
+             or copied, run `touch {}` yourself to accept it",
             dot_git.display(),
             git_dir.display(),
+            work_tree.display(),
             git_dir.join(super::WORKTREE_GITDIR_FILE).display()
         )
     }

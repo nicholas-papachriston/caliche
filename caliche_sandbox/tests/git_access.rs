@@ -108,7 +108,10 @@ async fn a_stale_worktree_record_is_refused() {
         (
             Err(format!(
                 "{ws}/.git names the worktree record {main}/.git/worktrees/ws, which is older \
-                 than it; if this is that worktree, run `touch {main}/.git/worktrees/ws/gitdir`",
+                 than it, so git did not run; a record left by a deleted worktree looks the \
+                 same. For the user: only if {ws} is your own worktree of that repository, \
+                 restored or copied, run `touch {main}/.git/worktrees/ws/gitdir` yourself to \
+                 accept it",
                 ws = ws.display(),
                 main = main.display()
             )),
