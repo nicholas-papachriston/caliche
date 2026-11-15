@@ -144,18 +144,28 @@ pub fn is_git_dir(dir: &Path) -> bool {
 /// regular file (a FIFO, a socket, a device or a directory).
 pub const NOT_A_REGULAR_GIT_FILE: &str = "is not a regular file";
 
+/// Largest index [`read_git_file`] reads for its callers that read one.
+pub const MAX_GIT_INDEX_BYTES: u64 = 1 << 30;
+
+/// Largest text git metadata file [`read_git_text`] reads: `config`,
+/// `HEAD`, `commondir`, a gitfile or a worktree record.
+pub const MAX_GIT_TEXT_BYTES: u64 = 1 << 20;
+
 /// Read a git metadata file (an index, `config`, `HEAD`, `commondir`, a
-/// gitfile or a worktree record) on the host. The open never waits: on
-/// Unix it passes `O_NONBLOCK`, so a FIFO planted at the path cannot stall
-/// the caller. Anything but a regular file is then refused with
-/// [`NOT_A_REGULAR_GIT_FILE`]. A link is followed, as git follows it; a
-/// caller that refuses links checks that first.
+/// gitfile or a worktree record) on the host, up to `max_bytes`. The open
+/// never waits: on Unix it passes `O_NONBLOCK`, so a FIFO planted at the
+/// path cannot stall the caller. Anything but a regular file is then
+/// refused with [`NOT_A_REGULAR_GIT_FILE`]. At most `max_bytes` plus one
+/// byte is read, and a file that holds more is refused, however its size
+/// changes while it is read. A link is followed, as git follows it; these
+/// paths are in git dirs, which a sandboxed command cannot write. Read a
+/// work-tree file such as `.gitmodules` with a no-follow reader instead.
 ///
 /// # Errors
 ///
 /// The open or read error, or [`std::io::ErrorKind::InvalidData`] for a
-/// path that is not a regular file.
-pub fn read_git_file(path: &Path) -> std::io::Result<Vec<u8>> {
+/// path that is not a regular file or is over `max_bytes`.
+pub fn read_git_file(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -163,26 +173,33 @@ pub fn read_git_file(path: &Path) -> std::io::Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
+    let file = options.open(path)?;
+    let refuse = |why: String| {
+        Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{} {NOT_A_REGULAR_GIT_FILE}", path.display()),
-        ));
+            format!("{} {why}", path.display()),
+        ))
+    };
+    if !file.metadata()?.is_file() {
+        return refuse(NOT_A_REGULAR_GIT_FILE.to_owned());
     }
     let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut data)?;
+    if u64::try_from(data.len()).unwrap_or(u64::MAX) > max_bytes {
+        return refuse(format!("is larger than {max_bytes} bytes"));
+    }
     Ok(data)
 }
 
-/// [`read_git_file`] as UTF-8 text.
+/// [`read_git_file`] with [`MAX_GIT_TEXT_BYTES`], as UTF-8 text.
 ///
 /// # Errors
 ///
 /// As [`read_git_file`], or [`std::io::ErrorKind::InvalidData`] when the
 /// file is not UTF-8.
 pub fn read_git_text(path: &Path) -> std::io::Result<String> {
-    String::from_utf8(read_git_file(path)?)
+    String::from_utf8(read_git_file(path, MAX_GIT_TEXT_BYTES)?)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
@@ -319,7 +336,7 @@ fn valid_head(head: &Path) -> bool {
         return std::fs::read_link(head)
             .is_ok_and(|target| target.to_string_lossy().starts_with(REFS_PREFIX));
     }
-    let Ok(bytes) = read_git_file(head) else {
+    let Ok(bytes) = read_git_file(head, MAX_GIT_TEXT_BYTES) else {
         return false;
     };
     head_text_is_valid(&String::from_utf8_lossy(&bytes))

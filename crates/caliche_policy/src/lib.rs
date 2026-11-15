@@ -107,9 +107,10 @@ pub use fs::{
 };
 pub use git_discovery::{
     ClassifyFault, Discovery, GIT_CONFIG_GLOBAL_VAR, GIT_CONFIG_NOSYSTEM_VAR, GIT_DIR_LINKS,
-    ISOLATED_GIT_CONFIG, LOOSE_HEAD_CONTENTS, NOT_A_REGULAR_GIT_FILE, WorkspaceGit, classify,
-    clear_git_config, common_dir, common_dir_path, discover, gitfile_path, is_git_dir,
-    plant_linked_worktree, read_git_file, read_git_text, read_gitfile, write_loose_git_dir,
+    ISOLATED_GIT_CONFIG, LOOSE_HEAD_CONTENTS, MAX_GIT_INDEX_BYTES, MAX_GIT_TEXT_BYTES,
+    NOT_A_REGULAR_GIT_FILE, WorkspaceGit, classify, clear_git_config, common_dir, common_dir_path,
+    discover, gitfile_path, is_git_dir, plant_linked_worktree, read_git_file, read_git_text,
+    read_gitfile, write_loose_git_dir,
 };
 pub use git_runner::{
     GIT_CONFIG_SYSTEM_VAR, GIT_DIFF_SAFETY_FLAGS, GIT_HOSTILE_VARS, GIT_PROGRAM_OVERRIDES,

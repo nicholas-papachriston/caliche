@@ -1173,48 +1173,66 @@ async fn a_shared_temp_root_spelled_another_way_is_not_writable() {
     assert!(!planted.exists());
 }
 
-/// A FIFO planted at a git metadata file the backend reads on the host
-/// (the root index, a submodule's index under `.git/modules`, the config)
-/// does not stall `create`: the read refuses it at once.
+/// A FIFO or an oversized file planted at a git metadata file the backend
+/// reads on the host (the root index, a submodule's index under
+/// `.git/modules`, the config) does not stall `create` or fill memory: the
+/// read refuses it at once, before reading it.
 #[test]
-fn create_does_not_wait_on_a_fifo_in_git_metadata() {
-    let outcomes: Vec<String> = [".git/index", ".git/modules/empty/index", ".git/config"]
-        .iter()
-        .map(|relative| {
-            let dir = tempfile::TempDir::new().expect("tempdir");
-            let base = dir.path().canonicalize().expect("canonical");
-            let root = submodule_fixture(&base);
-            let fifo = root.join(relative);
-            std::fs::remove_file(&fifo).expect("remove the file");
-            let status = caliche_policy::program_command("mkfifo")
-                .arg(&fifo)
-                .status()
-                .expect("run mkfifo");
-            assert!(status.success());
-            let (tx, rx) = std::sync::mpsc::channel();
-            let config = writable_base_config(&base);
-            let workspace = root.clone();
-            std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("runtime");
-                let created = runtime.block_on(MacOSSeatbeltBackend.create(&config, &workspace));
-                let _ = tx.send(created.err().map(|err| format!("{err:#}")));
-            });
-            let outcome = rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("create must not wait on a FIFO")
-                .unwrap_or_else(|| "created".to_owned());
-            outcome.replace(root.to_str().expect("utf-8 root"), "<ws>")
-        })
-        .collect();
+fn create_refuses_a_fifo_or_oversized_git_metadata() {
+    let outcomes: Vec<String> = [
+        (".git/index", None),
+        (".git/modules/empty/index", None),
+        (".git/config", None),
+        (".git/index", Some(caliche_policy::MAX_GIT_INDEX_BYTES + 1)),
+        (".git/config", Some(caliche_policy::MAX_GIT_TEXT_BYTES + 1)),
+    ]
+    .iter()
+    .map(|(relative, sparse_len)| {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let base = dir.path().canonicalize().expect("canonical");
+        let root = submodule_fixture(&base);
+        let planted = root.join(relative);
+        match sparse_len {
+            Some(len) => std::fs::File::options()
+                .write(true)
+                .open(&planted)
+                .and_then(|file| file.set_len(*len))
+                .expect("grow the file"),
+            None => {
+                std::fs::remove_file(&planted).expect("remove the file");
+                let status = caliche_policy::program_command("mkfifo")
+                    .arg(&planted)
+                    .status()
+                    .expect("run mkfifo");
+                assert!(status.success());
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let config = writable_base_config(&base);
+        let workspace = root.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let created = runtime.block_on(MacOSSeatbeltBackend.create(&config, &workspace));
+            let _ = tx.send(created.err().map(|err| format!("{err:#}")));
+        });
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("create must not wait on the file")
+            .unwrap_or_else(|| "created".to_owned());
+        outcome.replace(root.to_str().expect("utf-8 root"), "<ws>")
+    })
+    .collect();
     assert_eq!(
         outcomes,
         [
             "read <ws>/.git/index: <ws>/.git/index is not a regular file",
             "read <ws>/.git/modules/empty/index: <ws>/.git/modules/empty/index is not a regular file",
             "read <ws>/.git/config: <ws>/.git/config is not a regular file",
+            "read <ws>/.git/index: <ws>/.git/index is larger than 1073741824 bytes",
+            "read <ws>/.git/config: <ws>/.git/config is larger than 1048576 bytes",
         ]
     );
 }

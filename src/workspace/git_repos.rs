@@ -58,10 +58,20 @@ fn repos_from_gitmodules(root: &Path) -> Option<Vec<PathBuf>> {
 /// True when `.gitmodules` lists at least one safe relative submodule path.
 #[must_use]
 pub(crate) fn uses_declared_submodules(root: &Path) -> bool {
-    let Ok(contents) = crate::policy::read_git_text(&root.join(".gitmodules")) else {
+    let Some(contents) = read_gitmodules(root) else {
         return false;
     };
     !parse_gitmodules(&contents).is_empty()
+}
+
+/// The `.gitmodules` text at `root`, read with no link followed below the
+/// canonical root and at most 1 MiB. A sandboxed command can write this
+/// file, so a link, a FIFO or an oversized file is skipped with a warning.
+/// Links in the root's own path (such as `/var` on macOS) are resolved
+/// first, as the user chose that path.
+fn read_gitmodules(root: &Path) -> Option<String> {
+    let root = canonical_or_owned(root);
+    crate::discovery::auto::read_workspace_text(&root, &root.join(".gitmodules"))
 }
 
 fn append_declared_repo(repos: &mut Vec<PathBuf>, path: PathBuf) {
@@ -90,7 +100,7 @@ fn skip_discovery_dir(name: &str) -> bool {
 }
 
 fn gitmodules_worktrees(root: &Path) -> Vec<PathBuf> {
-    let Ok(contents) = crate::policy::read_git_text(&root.join(".gitmodules")) else {
+    let Some(contents) = read_gitmodules(root) else {
         return Vec::new();
     };
     parse_gitmodules(&contents)
@@ -244,6 +254,62 @@ mod tests {
             .expect("discovery must not wait on a FIFO");
 
         assert_eq!(repos, vec![root.clone(), root.join("child")]);
+    }
+
+    /// A root with `listed` and `extra` repos whose `.gitmodules` text names
+    /// only `listed`, placed by `plant`. Returns the canonical root and the
+    /// repos discovery finds.
+    fn discover_with_gitmodules(
+        plant: impl FnOnce(&std::path::Path, &str),
+    ) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+        let dir = TempDir::new().expect("temp");
+        let root = dir.path().join("ws");
+        fs::create_dir_all(&root).expect("ws");
+        let root = root.canonicalize().expect("canonical");
+        init_git(&root);
+        init_git(&root.join("listed"));
+        init_git(&root.join("extra"));
+        plant(&root, "[submodule \"listed\"]\n\tpath = listed\n");
+        let repos = discover_git_repos(&root);
+        (root, repos)
+    }
+
+    /// An oversized `.gitmodules` (a command in the sandbox can make a
+    /// sparse one of any size) is not read: discovery walks the tree.
+    #[test]
+    fn discover_git_repos_skips_an_oversized_gitmodules() {
+        let (root, mut repos) = discover_with_gitmodules(|root, text| {
+            let path = root.join(".gitmodules");
+            fs::write(&path, text).expect("gitmodules");
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|file| file.set_len(2 << 20))
+                .expect("grow");
+        });
+        repos.sort();
+        assert_eq!(
+            repos,
+            vec![root.clone(), root.join("extra"), root.join("listed")]
+        );
+    }
+
+    /// A `.gitmodules` that is a link is not followed: its target's
+    /// `path =` lines do not choose the repos.
+    #[cfg(unix)]
+    #[test]
+    fn discover_git_repos_does_not_follow_a_gitmodules_link() {
+        let outside = TempDir::new().expect("outside");
+        let target = outside.path().join("modules");
+        let (root, mut repos) = discover_with_gitmodules(|root, text| {
+            fs::write(&target, text).expect("target");
+            std::os::unix::fs::symlink(&target, root.join(".gitmodules")).expect("link");
+        });
+        repos.sort();
+        assert_eq!(
+            repos,
+            vec![root.clone(), root.join("extra"), root.join("listed")]
+        );
     }
 
     #[test]

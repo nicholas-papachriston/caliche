@@ -354,7 +354,7 @@ pub(crate) fn only_root(targets: &[PathBuf]) -> bool {
 /// index.
 fn index_gitlinks(git_dir: &Path) -> Result<Vec<PathBuf>> {
     let index = git_dir.join(INDEX_FILE);
-    let data = match caliche_policy::read_git_file(&index) {
+    let data = match caliche_policy::read_git_file(&index, caliche_policy::MAX_GIT_INDEX_BYTES) {
         Ok(data) => data,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err).with_context(|| format!("read {}", index.display())),
