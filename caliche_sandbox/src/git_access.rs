@@ -362,7 +362,7 @@ fn valid_head(text: &str) -> bool {
 fn common_dir_of(workspace: &Path, git_dir: &Path, own_worktree: bool) -> io::Result<PathBuf> {
     let file = git_dir.join(COMMONDIR_FILE);
     let text = if own_worktree {
-        std::fs::read_to_string(&file)
+        caliche_policy::read_git_text(&file)
     } else {
         read_beneath(workspace, &file)
     };
@@ -381,7 +381,7 @@ fn common_dir_of(workspace: &Path, git_dir: &Path, own_worktree: bool) -> io::Re
 /// Whether the linked-worktree git dir `git_dir` names `dot_git` in its
 /// `gitdir` file, as `git worktree add` writes it.
 fn names_back(git_dir: &Path, dot_git: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(git_dir.join(WORKTREE_GITDIR_FILE)) else {
+    let Ok(text) = caliche_policy::read_git_text(&git_dir.join(WORKTREE_GITDIR_FILE)) else {
         return false;
     };
     let named = PathBuf::from(common_dir_path(&text));

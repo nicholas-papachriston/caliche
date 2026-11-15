@@ -58,7 +58,7 @@ fn repos_from_gitmodules(root: &Path) -> Option<Vec<PathBuf>> {
 /// True when `.gitmodules` lists at least one safe relative submodule path.
 #[must_use]
 pub(crate) fn uses_declared_submodules(root: &Path) -> bool {
-    let Ok(contents) = std::fs::read_to_string(root.join(".gitmodules")) else {
+    let Ok(contents) = crate::policy::read_git_text(&root.join(".gitmodules")) else {
         return false;
     };
     !parse_gitmodules(&contents).is_empty()
@@ -90,7 +90,7 @@ fn skip_discovery_dir(name: &str) -> bool {
 }
 
 fn gitmodules_worktrees(root: &Path) -> Vec<PathBuf> {
-    let Ok(contents) = std::fs::read_to_string(root.join(".gitmodules")) else {
+    let Ok(contents) = crate::policy::read_git_text(&root.join(".gitmodules")) else {
         return Vec::new();
     };
     parse_gitmodules(&contents)
@@ -217,6 +217,33 @@ mod tests {
         assert!(belongs_to_repo(&parent_file, dir.path()));
         assert!(!belongs_to_repo(&nested, dir.path()));
         assert!(belongs_to_repo(&nested, &child));
+    }
+
+    /// A FIFO at `.gitmodules` (a command in the sandbox can make one) is
+    /// not read: discovery returns at once and walks the tree instead.
+    #[cfg(unix)]
+    #[test]
+    fn discover_git_repos_does_not_wait_on_a_fifo_gitmodules() {
+        let dir = TempDir::new().expect("temp");
+        let root = dir.path().canonicalize().expect("canonical");
+        init_git(&root);
+        init_git(&root.join("child"));
+        let status = crate::policy::program_command("mkfifo")
+            .arg(root.join(".gitmodules"))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let walked = root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(discover_git_repos(&walked));
+        });
+        let repos = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("discovery must not wait on a FIFO");
+
+        assert_eq!(repos, vec![root.clone(), root.join("child")]);
     }
 
     #[test]

@@ -354,7 +354,7 @@ pub(crate) fn only_root(targets: &[PathBuf]) -> bool {
 /// index.
 fn index_gitlinks(git_dir: &Path) -> Result<Vec<PathBuf>> {
     let index = git_dir.join(INDEX_FILE);
-    let data = match std::fs::read(&index) {
+    let data = match caliche_policy::read_git_file(&index) {
         Ok(data) => data,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err).with_context(|| format!("read {}", index.display())),
@@ -402,7 +402,7 @@ fn common_dir(git_dir: &Path) -> Result<PathBuf> {
 /// Whether the repository's object ids are SHA-256 (32 bytes in the index).
 fn uses_sha256(git_dir: &Path) -> Result<bool> {
     let config = common_dir(git_dir)?.join(CONFIG_FILE);
-    let text = match std::fs::read_to_string(&config) {
+    let text = match caliche_policy::read_git_text(&config) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err).with_context(|| format!("read {}", config.display())),

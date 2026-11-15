@@ -13,6 +13,7 @@
 //! one that git rejects is not, because git would walk past it.
 
 use crate::fs::{COMMONDIR_FILE, GIT_DIR_NAME, GITFILE_PREFIX, HEAD_FILE, OBJECTS_DIR, REFS_DIR};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Start of a `HEAD` file that names a ref.
@@ -139,6 +140,52 @@ pub fn is_git_dir(dir: &Path) -> bool {
         && valid_head(&dir.join(HEAD_FILE))
 }
 
+/// What a git metadata file read on the host says when the path is not a
+/// regular file (a FIFO, a socket, a device or a directory).
+pub const NOT_A_REGULAR_GIT_FILE: &str = "is not a regular file";
+
+/// Read a git metadata file (an index, `config`, `HEAD`, `commondir`, a
+/// gitfile or a worktree record) on the host. The open never waits: on
+/// Unix it passes `O_NONBLOCK`, so a FIFO planted at the path cannot stall
+/// the caller. Anything but a regular file is then refused with
+/// [`NOT_A_REGULAR_GIT_FILE`]. A link is followed, as git follows it; a
+/// caller that refuses links checks that first.
+///
+/// # Errors
+///
+/// The open or read error, or [`std::io::ErrorKind::InvalidData`] for a
+/// path that is not a regular file.
+pub fn read_git_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} {NOT_A_REGULAR_GIT_FILE}", path.display()),
+        ));
+    }
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// [`read_git_file`] as UTF-8 text.
+///
+/// # Errors
+///
+/// As [`read_git_file`], or [`std::io::ErrorKind::InvalidData`] when the
+/// file is not UTF-8.
+pub fn read_git_text(path: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_git_file(path)?)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
 /// The directory a gitfile names, relative to the gitfile's parent.
 /// [`None`] when `dot_git` is missing, not a regular file, or not a gitfile.
 /// A symlink is [`None`]: git follows it, and the link can be retargeted.
@@ -151,7 +198,7 @@ pub fn read_gitfile(dot_git: &Path) -> std::io::Result<Option<PathBuf>> {
     if !meta.is_file() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(dot_git)?;
+    let text = read_git_text(dot_git)?;
     let Some(named) = gitfile_path(&text) else {
         return Ok(None);
     };
@@ -174,7 +221,7 @@ pub fn gitfile_path(text: &str) -> Option<&str> {
 /// A zero-length file is an error: git dies when it reads one.
 pub fn common_dir(git_dir: &Path) -> std::io::Result<PathBuf> {
     let file = git_dir.join(COMMONDIR_FILE);
-    match std::fs::read_to_string(&file) {
+    match read_git_text(&file) {
         Ok(text) if text.is_empty() => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "empty commondir",
@@ -272,7 +319,7 @@ fn valid_head(head: &Path) -> bool {
         return std::fs::read_link(head)
             .is_ok_and(|target| target.to_string_lossy().starts_with(REFS_PREFIX));
     }
-    let Ok(bytes) = std::fs::read(head) else {
+    let Ok(bytes) = read_git_file(head) else {
         return false;
     };
     head_text_is_valid(&String::from_utf8_lossy(&bytes))

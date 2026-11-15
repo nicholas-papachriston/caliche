@@ -1172,3 +1172,49 @@ async fn a_shared_temp_root_spelled_another_way_is_not_writable() {
     assert_eq!(seen, ["read=1 write=1"; 7]);
     assert!(!planted.exists());
 }
+
+/// A FIFO planted at a git metadata file the backend reads on the host
+/// (the root index, a submodule's index under `.git/modules`, the config)
+/// does not stall `create`: the read refuses it at once.
+#[test]
+fn create_does_not_wait_on_a_fifo_in_git_metadata() {
+    let outcomes: Vec<String> = [".git/index", ".git/modules/empty/index", ".git/config"]
+        .iter()
+        .map(|relative| {
+            let dir = tempfile::TempDir::new().expect("tempdir");
+            let base = dir.path().canonicalize().expect("canonical");
+            let root = submodule_fixture(&base);
+            let fifo = root.join(relative);
+            std::fs::remove_file(&fifo).expect("remove the file");
+            let status = caliche_policy::program_command("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("run mkfifo");
+            assert!(status.success());
+            let (tx, rx) = std::sync::mpsc::channel();
+            let config = writable_base_config(&base);
+            let workspace = root.clone();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                let created = runtime.block_on(MacOSSeatbeltBackend.create(&config, &workspace));
+                let _ = tx.send(created.err().map(|err| format!("{err:#}")));
+            });
+            let outcome = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("create must not wait on a FIFO")
+                .unwrap_or_else(|| "created".to_owned());
+            outcome.replace(root.to_str().expect("utf-8 root"), "<ws>")
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            "read <ws>/.git/index: <ws>/.git/index is not a regular file",
+            "read <ws>/.git/modules/empty/index: <ws>/.git/modules/empty/index is not a regular file",
+            "read <ws>/.git/config: <ws>/.git/config is not a regular file",
+        ]
+    );
+}
