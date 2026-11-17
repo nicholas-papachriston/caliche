@@ -495,11 +495,7 @@ fn apply_coalesced_paths(
 ) {
     for (path, kind) in paths {
         let indexed = index_event(kind);
-        let file = if gitignore::under_memory_dir(&config.root_path, path) {
-            std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
-        } else {
-            crate::agent::tools::common::path::is_walked_file(path)
-        };
+        let file = gitignore::is_index_file(&config.root_path, path);
         let removable = WorkspaceWatcher::could_have_been_indexed(path, config);
         match (indexed, file, removable) {
             (true, true, _) => {

@@ -50,7 +50,7 @@ pub fn collect_files(
     let ext_set: std::collections::HashSet<String> =
         extensions.iter().map(|s| s.to_lowercase()).collect();
     let prune = |entry: &WalkedEntry| {
-        super::git_repos::is_git_root(&entry.path) || is_excluded(extra.as_ref(), entry, true)
+        super::git_repos::is_git_root(&entry.path) || is_excluded(extra.as_ref(), entry)
     };
     let mut files = Vec::new();
     let report = walk_tree_pruned(walk_root, WalkOptions::default(), &prune, &mut |entry| {
@@ -60,7 +60,7 @@ pub fn collect_files(
         if entry.kind == EntryKind::File
             && max_file_size.is_none_or(|max| entry.len <= max)
             && (ext_set.is_empty() || extension_allowed(&entry.path, &ext_set))
-            && !is_excluded(extra.as_ref(), entry, false)
+            && !is_excluded(extra.as_ref(), entry)
         {
             files.push(root.join(&entry.relative));
         }
@@ -78,9 +78,13 @@ pub fn collect_files(
     CollectedFiles { files, unlisted }
 }
 
-fn is_excluded(extra: Option<&Gitignore>, entry: &WalkedEntry, is_dir: bool) -> bool {
-    is_dir == (entry.kind == EntryKind::Dir)
-        && extra.is_some_and(|gi| gi.matched(&entry.path, is_dir).is_ignore())
+/// True when an extra exclude pattern matches `entry`. A walk checks each
+/// directory before it enters it, so only the entry itself is matched.
+fn is_excluded(extra: Option<&Gitignore>, entry: &WalkedEntry) -> bool {
+    extra.is_some_and(|gi| {
+        gi.matched(&entry.path, entry.kind == EntryKind::Dir)
+            .is_ignore()
+    })
 }
 
 /// True when `path` is under `root` or the shared workspace memory directory.
@@ -104,8 +108,17 @@ pub fn matches_index_filters(
     if !ext_set.is_empty() && !extension_allowed(path, &ext_set) {
         return false;
     }
-    let is_dir = crate::agent::tools::common::path::entry_kind(path) == Some(EntryKind::Dir);
-    extra_excludes(root, exclude_patterns).is_none_or(|gi| !gi.matched(path, is_dir).is_ignore())
+    // The path may be gone, so it is matched as a file, along with every
+    // directory above it: a directory pattern such as `nested/` excludes
+    // the files below it.
+    extra_excludes(root, exclude_patterns).is_none_or(|gi| {
+        let matched = if path.starts_with(root) {
+            gi.matched_path_or_any_parents(path, false)
+        } else {
+            gi.matched(path, false)
+        };
+        !matched.is_ignore()
+    })
 }
 
 /// True when a live file should be indexed: filters, size, and gitignore.
@@ -125,19 +138,16 @@ pub fn path_allowed(
         return false;
     }
     if under_memory_dir(root, path) {
-        return std::fs::symlink_metadata(path)
-            .is_ok_and(|meta| meta.is_file() && max_file_size.is_none_or(|max| meta.len() <= max));
+        return memory_file_len(path).is_some_and(|len| max_file_size.is_none_or(|max| len <= max));
     }
-    let extra = extra_excludes(root, exclude_patterns);
-    let prune = |entry: &WalkedEntry| {
-        !path.starts_with(&entry.path) || is_excluded(extra.as_ref(), entry, true)
-    };
+    // `matches_index_filters` has already checked the extra excludes
+    // against `path` and every directory above it.
+    let prune = |entry: &WalkedEntry| !path.starts_with(&entry.path);
     let mut allowed = false;
     walk_tree_pruned(root, WalkOptions::default(), &prune, &mut |entry| {
         if entry.path == path {
-            allowed = entry.kind == EntryKind::File
-                && max_file_size.is_none_or(|max| entry.len <= max)
-                && !is_excluded(extra.as_ref(), entry, false);
+            allowed =
+                entry.kind == EntryKind::File && max_file_size.is_none_or(|max| entry.len <= max);
             return ControlFlow::Break(());
         }
         ControlFlow::Continue(())
@@ -145,9 +155,30 @@ pub fn path_allowed(
     allowed
 }
 
+/// True when `path` is a regular file the index could hold: a memory note
+/// stat'ed without following a final link, or a workspace file listed by a
+/// no-link walk of its parent.
+pub fn is_index_file(root: &Path, path: &Path) -> bool {
+    if under_memory_dir(root, path) {
+        memory_file_len(path).is_some()
+    } else {
+        crate::agent::tools::common::path::is_walked_file(path)
+    }
+}
+
+/// The length of the memory note at `path`, or `None` when it is not a
+/// regular file. A link is not followed. The memory directory is in the
+/// embedding catalog, outside the workspace.
+fn memory_file_len(path: &Path) -> Option<u64> {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|meta| meta.len())
+}
+
 /// True when `path` is in the shared memory directory of `root`, which is
 /// outside the workspace, under the embedding catalog.
-pub fn under_memory_dir(root: &Path, path: &Path) -> bool {
+fn under_memory_dir(root: &Path, path: &Path) -> bool {
     let memory_dir = super::config::workspace_memory_markdown_dir(root);
     path.starts_with(memory_dir)
 }
@@ -266,5 +297,159 @@ mod tests {
             .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
             .collect();
         assert_eq!(names, vec!["keep.rs".to_string()]);
+    }
+
+    fn file_names(files: &[PathBuf]) -> Vec<String> {
+        let mut names: Vec<String> = files
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A directory pattern excludes the files below it, from the walk and
+    /// from the single-path checks.
+    #[test]
+    fn a_directory_exclude_covers_the_files_below_it() {
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        write_file(&root, "keep.rs", "fn keep() {}");
+        write_file(&root, "nested/inner/skip.rs", "fn skip() {}");
+        let exts = vec!["rs".to_string()];
+        let excludes = vec!["nested/".to_string()];
+        let skip = root.join("nested/inner/skip.rs");
+
+        let collected = collect_files(&root, &root, None, &exts, None, &excludes);
+
+        assert_eq!(file_names(&collected.files), vec!["keep.rs"]);
+        assert!(!path_allowed(&root, &skip, None, &exts, &excludes));
+        assert!(!matches_index_filters(&root, &skip, &exts, &excludes));
+        assert!(path_allowed(
+            &root,
+            &root.join("keep.rs"),
+            None,
+            &exts,
+            &excludes
+        ));
+    }
+
+    /// A file over the size limit is neither collected nor allowed.
+    #[test]
+    fn a_file_over_the_size_limit_is_left_out() {
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        write_file(&root, "small.rs", "1234");
+        write_file(&root, "big.rs", "12345");
+        let exts = vec!["rs".to_string()];
+
+        let collected = collect_files(&root, &root, Some(4), &exts, None, &[]);
+
+        assert_eq!(file_names(&collected.files), vec!["small.rs"]);
+        assert!(!path_allowed(
+            &root,
+            &root.join("big.rs"),
+            Some(4),
+            &exts,
+            &[]
+        ));
+        assert!(path_allowed(
+            &root,
+            &root.join("small.rs"),
+            Some(4),
+            &exts,
+            &[]
+        ));
+    }
+
+    /// Files the user's global git excludes list are not collected.
+    #[test]
+    #[serial_test::serial(env)]
+    fn collect_files_honors_the_global_git_excludes() {
+        let config = TempDir::new().expect("config");
+        write_file(config.path(), "git/ignore", "globalsecret.toml\n");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("HOME", config.path());
+        env.set("XDG_CONFIG_HOME", config.path());
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        write_file(&root, "globalsecret.toml", "secret");
+        write_file(&root, "ok.toml", "ok");
+
+        let collected = collect_files(&root, &root, None, &[], None, &[]);
+
+        assert_eq!(file_names(&collected.files), vec!["ok.toml"]);
+        assert!(!path_allowed(
+            &root,
+            &root.join("globalsecret.toml"),
+            None,
+            &[],
+            &[]
+        ));
+    }
+
+    /// A directory the walk cannot list is reported in the form of the root
+    /// the caller named, so its entries match the manifest keys.
+    #[cfg(unix)]
+    #[test]
+    fn an_unlisted_directory_is_named_below_the_given_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().expect("temp dir");
+        let real = tmp.path().canonicalize().expect("canonical").join("real");
+        write_file(&real, "locked/a.rs", "fn a() {}");
+        let named = tmp.path().canonicalize().expect("canonical").join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let locked = real.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("lock");
+
+        let collected = collect_files(&named, &real, None, &[], None, &[]);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock");
+
+        assert_eq!(collected.unlisted, vec![named.join("locked")]);
+    }
+
+    /// A memory note that is a link, or over the size limit, is not allowed.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(env)]
+    fn a_memory_note_that_is_a_link_is_not_allowed() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let outside = TempDir::new().expect("outside");
+        write_file(outside.path(), "secret.md", "secret");
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        let memory = super::super::config::workspace_memory_markdown_dir(&root);
+        write_file(&memory, "note.md", "a note");
+        std::os::unix::fs::symlink(outside.path().join("secret.md"), memory.join("leak.md"))
+            .expect("note link");
+        let exts = vec!["md".to_string()];
+
+        assert!(!path_allowed(
+            &root,
+            &memory.join("leak.md"),
+            None,
+            &exts,
+            &[]
+        ));
+        assert!(path_allowed(
+            &root,
+            &memory.join("note.md"),
+            None,
+            &exts,
+            &[]
+        ));
+        assert!(!path_allowed(
+            &root,
+            &memory.join("note.md"),
+            Some(5),
+            &exts,
+            &[]
+        ));
     }
 }
