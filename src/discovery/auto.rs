@@ -316,7 +316,7 @@ fn collect_candidates<F>(
     candidates_fn: F,
 ) -> Vec<Candidate>
 where
-    F: Fn(&Path) -> Vec<PathBuf>,
+    F: Fn(&Path, Listing) -> Vec<PathBuf>,
 {
     let mut confined = vec![cwd];
     if let Some(root) = repo_root
@@ -326,7 +326,7 @@ where
     }
     let mut candidates = Vec::new();
     for base in &confined {
-        for path in candidates_fn(base) {
+        for path in candidates_fn(base, Listing::Confined) {
             candidates.push(Candidate {
                 path,
                 confine: Some(base.to_path_buf()),
@@ -334,7 +334,12 @@ where
         }
     }
     if let Some(home) = home_dir {
-        for path in candidates_fn(home) {
+        let listing = if confined.iter().any(|base| home.starts_with(base)) {
+            Listing::Confined
+        } else {
+            Listing::Follow
+        };
+        for path in candidates_fn(home, listing) {
             // A home file inside the workspace (home is the workspace, or the
             // workspace is a folder of home) is a workspace file: read it
             // confined, once.
@@ -440,7 +445,7 @@ fn discover_rules(
     }
 }
 
-fn markdown_rule_candidates(base: &Path) -> Vec<PathBuf> {
+fn markdown_rule_candidates(base: &Path, listing: Listing) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let names = [
         "AGENTS.md",
@@ -453,7 +458,7 @@ fn markdown_rule_candidates(base: &Path) -> Vec<PathBuf> {
         out.push(base.join(name));
     }
     let cursor_rules = base.join(".cursor").join("rules");
-    collect_markdown_files_recursive(&cursor_rules, &mut out, 3);
+    collect_markdown_files_recursive(&cursor_rules, &mut out, 3, listing);
     out
 }
 
@@ -503,19 +508,26 @@ fn discover_skills(
     }
 }
 
-fn skill_candidates(base: &Path) -> Vec<PathBuf> {
+fn skill_candidates(base: &Path, listing: Listing) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_markdown_files_recursive(&base.join(".cursor").join("skills"), &mut out, 4);
-    collect_named_files_recursive(&base.join(".cursor").join("rules"), "SKILL.md", &mut out, 4);
+    collect_markdown_files_recursive(&base.join(".cursor").join("skills"), &mut out, 4, listing);
+    collect_named_files_recursive(
+        &base.join(".cursor").join("rules"),
+        "SKILL.md",
+        &mut out,
+        4,
+        listing,
+    );
     collect_named_files_recursive(
         &base.join(".caliche").join("skills"),
         "SKILL.md",
         &mut out,
         3,
+        listing,
     );
-    collect_markdown_files_recursive(&base.join(".caliche").join("skills"), &mut out, 3);
+    collect_markdown_files_recursive(&base.join(".caliche").join("skills"), &mut out, 3, listing);
     for relative in [".agents/skills", ".claude/skills", ".codex/skills"] {
-        collect_named_files_recursive(&base.join(relative), "SKILL.md", &mut out, 4);
+        collect_named_files_recursive(&base.join(relative), "SKILL.md", &mut out, 4, listing);
     }
     // AGENTS.md and .cursor/rules live on the rules path (`discover_rules`).
     // Including them here inflated the progressive skill index and system prompt.
@@ -557,11 +569,16 @@ fn discover_commands(
     }
 }
 
-fn command_candidates(base: &Path) -> Vec<PathBuf> {
+fn command_candidates(base: &Path, listing: Listing) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_markdown_files_recursive(&base.join(".caliche").join("commands"), &mut out, 3);
-    collect_markdown_files_recursive(&base.join(".cursor").join("commands"), &mut out, 3);
-    collect_markdown_files_recursive(&base.join(".claude").join("commands"), &mut out, 3);
+    collect_markdown_files_recursive(
+        &base.join(".caliche").join("commands"),
+        &mut out,
+        3,
+        listing,
+    );
+    collect_markdown_files_recursive(&base.join(".cursor").join("commands"), &mut out, 3, listing);
+    collect_markdown_files_recursive(&base.join(".claude").join("commands"), &mut out, 3, listing);
     out
 }
 
@@ -613,16 +630,27 @@ fn discover_subagents(
 /// The list covers Caliche's own layouts (`.caliche/agents`, `.caliche/subagents`),
 /// the Shotput default (`.agents`), and Cursor (`.cursor/subagents`), so one descriptor file
 /// works for the runtime, the template engine, and the editor without being copied.
-fn subagent_candidates(base: &Path) -> Vec<PathBuf> {
+fn subagent_candidates(base: &Path, listing: Listing) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_markdown_files_recursive(&base.join(".cursor").join("subagents"), &mut out, 4);
-    collect_markdown_files_recursive(&base.join(".caliche").join("subagents"), &mut out, 3);
+    collect_markdown_files_recursive(
+        &base.join(".cursor").join("subagents"),
+        &mut out,
+        4,
+        listing,
+    );
+    collect_markdown_files_recursive(
+        &base.join(".caliche").join("subagents"),
+        &mut out,
+        3,
+        listing,
+    );
     collect_markdown_files_recursive(
         &base.join(".caliche").join(SUBAGENT_PROFILE_DIR),
         &mut out,
         3,
+        listing,
     );
-    collect_markdown_files_recursive(&base.join(SHOTPUT_SUBAGENT_DIR), &mut out, 3);
+    collect_markdown_files_recursive(&base.join(SHOTPUT_SUBAGENT_DIR), &mut out, 3, listing);
     out
 }
 
@@ -654,7 +682,7 @@ fn discover_mcp_servers(
     }
 }
 
-fn mcp_candidates(base: &Path) -> Vec<PathBuf> {
+fn mcp_candidates(base: &Path, _listing: Listing) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let names = [
         "mcp.json",
@@ -916,8 +944,13 @@ fn normalize_name(s: &str) -> String {
         .collect()
 }
 
-fn collect_markdown_files_recursive(base: &Path, out: &mut Vec<PathBuf>, max_depth: usize) {
-    collect_files_recursive(base, out, max_depth, |p| {
+fn collect_markdown_files_recursive(
+    base: &Path,
+    out: &mut Vec<PathBuf>,
+    max_depth: usize,
+    listing: Listing,
+) {
+    collect_files_recursive(base, out, max_depth, listing, |p| {
         p.extension().and_then(|e| e.to_str()) == Some("md")
     });
 }
@@ -927,17 +960,52 @@ fn collect_named_files_recursive(
     file_name: &str,
     out: &mut Vec<PathBuf>,
     max_depth: usize,
+    listing: Listing,
 ) {
-    collect_files_recursive(base, out, max_depth, |p| {
+    collect_files_recursive(base, out, max_depth, listing, |p| {
         p.file_name().and_then(|n| n.to_str()) == Some(file_name)
     });
 }
 
-fn collect_files_recursive<F>(base: &Path, out: &mut Vec<PathBuf>, max_depth: usize, matcher: F)
-where
+/// How a candidate directory is listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Listing {
+    /// A directory below the workspace: listed with no link followed, so a
+    /// planted link cannot add outside names to the candidates.
+    Confined,
+    /// The home directory, whose files users link in on purpose.
+    Follow,
+}
+
+/// Files `matcher` accepts under `base`, up to `max_depth` levels down (1 is
+/// `base`'s own entries).
+fn collect_files_recursive<F>(
+    base: &Path,
+    out: &mut Vec<PathBuf>,
+    max_depth: usize,
+    listing: Listing,
+    matcher: F,
+) where
     F: Fn(&Path) -> bool + Copy,
 {
-    if max_depth == 0 || !base.exists() || !base.is_dir() {
+    if max_depth == 0 {
+        return;
+    }
+    if listing == Listing::Confined {
+        let options = crate::agent::tools::tree_walk::WalkOptions {
+            max_depth: Some(max_depth),
+            include_hidden: true,
+            honor_ignores: false,
+        };
+        let _ = crate::agent::tools::tree_walk::walk_tree(base, options, &mut |entry| {
+            if entry.kind == caliche_sandbox::EntryKind::File && matcher(&entry.path) {
+                out.push(entry.path.clone());
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+        return;
+    }
+    if !base.is_dir() {
         return;
     }
     let rd = match std::fs::read_dir(base) {
@@ -947,7 +1015,7 @@ where
     for entry in rd.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_files_recursive(&path, out, max_depth - 1, matcher);
+            collect_files_recursive(&path, out, max_depth - 1, listing, matcher);
             continue;
         }
         if matcher(&path) {
@@ -1148,10 +1216,30 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// A link to an outside directory, planted in a workspace command
+    /// folder, adds none of the outside files to the candidates.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_dir_below_the_workspace_adds_no_candidates() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let base = dir.path().canonicalize().expect("canonical");
+        let outside = tempfile::TempDir::new().expect("outside");
+        fs::write(outside.path().join("leak.md"), "# leak").expect("leak");
+        let commands = base.join(".caliche").join("commands");
+        fs::create_dir_all(&commands).expect("commands");
+        fs::write(commands.join("ok.md"), "# ok").expect("ok");
+        std::os::unix::fs::symlink(outside.path(), commands.join("linked")).expect("link");
+
+        let found = command_candidates(&base, Listing::Confined);
+
+        assert_eq!(found, vec![commands.join("ok.md")]);
+    }
+
     #[test]
     fn skill_candidates_exclude_markdown_rules() {
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let base = dir.path();
+        let canonical = dir.path().canonicalize().expect("canonical");
+        let base = canonical.as_path();
         fs::write(base.join("AGENTS.md"), "# agents").expect("write AGENTS.md");
         fs::write(base.join("CLAUDE.md"), "# claude").expect("write CLAUDE.md");
         let skills_dir = base.join(".caliche").join("skills").join("demo");
@@ -1162,7 +1250,7 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let candidates = skill_candidates(base);
+        let candidates = skill_candidates(base, Listing::Confined);
         assert!(
             candidates
                 .iter()
@@ -1181,10 +1269,11 @@ mod tests {
     #[test]
     fn markdown_rules_read_agents_md_and_skip_claude_md() {
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let base = dir.path();
+        let canonical = dir.path().canonicalize().expect("canonical");
+        let base = canonical.as_path();
         fs::write(base.join("AGENTS.md"), "# agents").expect("write AGENTS.md");
         fs::write(base.join("CLAUDE.md"), "# other").expect("write CLAUDE.md");
-        let names: Vec<String> = markdown_rule_candidates(base)
+        let names: Vec<String> = markdown_rule_candidates(base, Listing::Confined)
             .into_iter()
             .filter_map(|path| {
                 path.file_name()
@@ -1199,7 +1288,8 @@ mod tests {
     #[test]
     fn skill_candidates_include_harness_skill_dirs() {
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let base = dir.path();
+        let canonical = dir.path().canonicalize().expect("canonical");
+        let base = canonical.as_path();
         for relative in [
             ".agents/skills/demo",
             ".claude/skills/demo",
@@ -1209,7 +1299,7 @@ mod tests {
             fs::create_dir_all(&skill).expect("skill dir");
             fs::write(skill.join("SKILL.md"), "---\nname: demo\n---\nbody\n").expect("skill");
         }
-        let candidates = skill_candidates(base);
+        let candidates = skill_candidates(base, Listing::Confined);
         assert_eq!(candidates.len(), 3, "{candidates:?}");
     }
 
