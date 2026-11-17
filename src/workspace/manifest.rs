@@ -328,9 +328,11 @@ impl IndexManifest {
     }
 }
 
-/// Stat a file as `(mtime_secs, size_bytes)` without reading content.
+/// Stat a file as `(mtime_secs, size_bytes)` without reading content. A
+/// link is not followed: its own metadata is returned, and the guarded read
+/// refuses it later.
 pub async fn file_stat(p: &Path) -> anyhow::Result<(u64, u64)> {
-    let meta = tokio::fs::metadata(p).await?;
+    let meta = tokio::fs::symlink_metadata(p).await?;
     let mtime = meta.modified()?;
     let secs = mtime
         .duration_since(UNIX_EPOCH)
@@ -364,6 +366,27 @@ pub async fn file_record_with_content(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A link is stat'ed itself, not followed: its size is the length of
+    /// the target path it holds, not the target's size.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_stat_does_not_follow_a_link() {
+        let dir = TempDir::new().expect("temp dir");
+        let target = dir.path().join("target.rs");
+        tokio::fs::write(&target, "a".repeat(100))
+            .await
+            .expect("target");
+        let link = dir.path().join("link.rs");
+        std::os::unix::fs::symlink(&target, &link).expect("link");
+
+        let (_, size) = file_stat(&link).await.expect("stat");
+
+        assert_eq!(
+            size,
+            u64::try_from(target.as_os_str().len()).expect("length")
+        );
+    }
 
     #[tokio::test]
     async fn load_with_fingerprint_clears_stale_vector_artifacts_on_mismatch() {

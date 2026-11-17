@@ -64,7 +64,7 @@ impl WorkspaceIndexer {
         let mut total_chunks = 0usize;
         let mut failures = Vec::new();
         for repo in repos {
-            let repo_config = nested_repo_config(&self.config, &repo);
+            let repo_config = repo_config(&self.config, &repo);
             if let PersistenceConfig::Disk { path } = &repo_config.persistence {
                 self.record_root_marker_at(path, &repo);
             }
@@ -97,9 +97,17 @@ impl WorkspaceIndexer {
     /// Index one worktree using this indexer's root and persistence path.
     async fn index_tree(&self) -> anyhow::Result<WorkspaceIndexResult> {
         let root = &self.config.root_path;
+        if self.config.read_root.is_some() && !resolves_to_itself(root) {
+            return Ok(WorkspaceIndexResult {
+                files_indexed: 0,
+                total_chunks: 0,
+                failures: vec![format!("{}: {NESTED_REPO_MOVED}", root.display())],
+            });
+        }
         let mut paths = self.collect_index_paths().await?;
-        if let Ok(mut memory_files) =
-            crate::workspace::list_workspace_memory_markdown_files(root).await
+        if self.config.read_root.is_none()
+            && let Ok(mut memory_files) =
+                crate::workspace::list_workspace_memory_markdown_files(root).await
         {
             paths.append(&mut memory_files);
         }
@@ -376,18 +384,15 @@ impl WorkspaceIndexer {
 }
 
 /// The config for `repo`, a git worktree that discovery found under
-/// `top`'s root: its own root and store, with reads kept beneath `top`'s root.
-fn nested_repo_config(
-    top: &WorkspaceIndexerConfig,
-    repo: &std::path::Path,
-) -> WorkspaceIndexerConfig {
+/// `top`'s root: its own root and store. A repo nested below the top root
+/// also gets the top root as its `read_root`.
+fn repo_config(top: &WorkspaceIndexerConfig, repo: &std::path::Path) -> WorkspaceIndexerConfig {
+    let workspace = git_repos::canonical_or_owned(&top.root_path);
     let mut config = top.clone();
     config.root_path = repo.to_path_buf();
-    config.read_root = Some(
-        top.read_root
-            .clone()
-            .unwrap_or_else(|| top.root_path.clone()),
-    );
+    if repo != workspace {
+        config.read_root = Some(workspace);
+    }
     if matches!(top.persistence, PersistenceConfig::Disk { .. }) {
         config.persistence = PersistenceConfig::Disk {
             path: store_dir_for_repo(top, repo),
@@ -396,14 +401,27 @@ fn nested_repo_config(
     config
 }
 
+/// Failure for a nested repository whose root no longer resolves to the
+/// path discovery returned (it was moved or swapped for a link).
+pub(crate) const NESTED_REPO_MOVED: &str =
+    "nested repository root moved since discovery; not indexed";
+
+/// Prefix of every refused or failed read in [`read_index_file`].
+pub(crate) const READ_FAILED: &str = "Failed to read file: ";
+
+/// True when `path` resolves to itself, with no link anywhere in it.
+fn resolves_to_itself(path: &std::path::Path) -> bool {
+    std::fs::canonicalize(path).is_ok_and(|canonical| canonical == path)
+}
+
 /// Read `path`, a file the index walk or the file watcher found, without
 /// following a link.
 ///
 /// A file in the workspace is opened below the canonical top workspace root
-/// (`read_root` for a nested repository, else `root_path`) and
-/// a file in the shared memory directory below that directory, one
-/// component at a time, so a link in the project cannot pull a file from
-/// outside into the index. `path` may name the root in its configured or
+/// (`read_root` for a nested repository, else `root_path`), and for the top
+/// repository only a file in its shared memory directory below that
+/// directory, one component at a time, so a link in the project cannot pull
+/// a file from outside into the index. `path` may name the root in its configured or
 /// its canonical form.
 pub(crate) async fn read_index_file(
     config: &WorkspaceIndexerConfig,
@@ -415,13 +433,17 @@ pub(crate) async fn read_index_file(
     } else {
         DEFAULT_MAX_FILE_SIZE
     };
-    let bases = [
+    let mut bases = vec![
         config
             .read_root
             .clone()
             .unwrap_or_else(|| config.root_path.clone()),
-        crate::workspace::config::workspace_memory_markdown_dir(&config.root_path),
     ];
+    if config.read_root.is_none() {
+        bases.push(crate::workspace::config::workspace_memory_markdown_dir(
+            &config.root_path,
+        ));
+    }
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         for base in bases {
@@ -432,7 +454,7 @@ pub(crate) async fn read_index_file(
                 continue;
             };
             let mut file = path::open_walked_file(&root, &root.join(below))
-                .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("{READ_FAILED}{e}"))?;
             let len = file.metadata()?.len();
             if len > max_size as u64 {
                 anyhow::bail!(
@@ -441,10 +463,10 @@ pub(crate) async fn read_index_file(
             }
             let mut text = String::new();
             file.read_to_string(&mut text)
-                .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("{READ_FAILED}{e}"))?;
             return Ok(text);
         }
-        anyhow::bail!("Failed to read file: '{}' is outside the index roots", path.display())
+        anyhow::bail!("{READ_FAILED}'{}' is outside the index roots", path.display())
     })
     .await
     .map_err(|e| anyhow::anyhow!("Index read task failed: {e}"))?
@@ -638,6 +660,60 @@ mod tests {
         );
     }
 
+    /// Memory belongs to the top repository: the top's memory note is
+    /// indexed and a nested repository's own note is not.
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn index_reads_memory_for_the_top_repo_only() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        let child = root.join("child");
+        for repo in [&root, &child] {
+            std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        }
+        std::fs::write(child.join("c.rs"), "fn c() {}").expect("child file");
+        for (repo, note) in [(&root, "top.md"), (&child, "child.md")] {
+            let memory = crate::workspace::config::workspace_memory_markdown_dir(repo);
+            std::fs::create_dir_all(&memory).expect("memory dir");
+            std::fs::write(memory.join(note), "a note").expect("note");
+        }
+
+        let (indexer, _) = indexer(&root, PersistenceConfig::InMemory);
+        let result = indexer.index().await.expect("index");
+
+        assert_eq!((result.files_indexed, result.failures), (2, Vec::new()));
+    }
+
+    /// A nested repository swapped for a link after discovery is not
+    /// walked: nothing is read from the link's target and no outside name
+    /// reaches the failures.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_nested_repo_swapped_for_a_link_is_not_indexed() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        let outside = TempDir::new().expect("outside");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}").expect("secret");
+        let sub = root.join("sub");
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+        let (top, _) = indexer(&root, PersistenceConfig::InMemory);
+        let nested =
+            WorkspaceIndexer::new(Arc::clone(&top.rag_service), repo_config(&top.config, &sub));
+
+        let result = nested.index_tree().await.expect("index");
+
+        assert_eq!(
+            (result.files_indexed, result.failures),
+            (0, vec![format!("{}: {NESTED_REPO_MOVED}", sub.display())])
+        );
+    }
+
     #[cfg(feature = "vector-store-sqlite")]
     #[tokio::test]
     #[serial_test::serial(env)]
@@ -688,7 +764,7 @@ mod tests {
 #[cfg(test)]
 #[cfg(unix)]
 mod link_tests {
-    use super::read_index_file;
+    use super::{READ_FAILED, read_index_file, repo_config};
     use crate::workspace::config::{PersistenceConfig, WorkspaceIndexerConfig};
 
     /// A workspace with `ok.rs` and `leak.rs`, a link to a file outside it,
@@ -727,15 +803,69 @@ mod link_tests {
     async fn an_indexed_read_in_a_swapped_nested_repo_is_refused() {
         let (outside, ws, top) = workspace();
         let sub = ws.path().canonicalize().expect("canonical").join("sub");
-        let config = super::nested_repo_config(&top, &sub);
+        let config = repo_config(&top, &sub);
         std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
 
         let read = read_index_file(&config, &sub.join("secret.rs")).await;
 
         let err = read.expect_err("a swapped nested repo must not be read");
         assert!(
-            err.to_string().starts_with("Failed to read file: "),
+            err.to_string()
+                .starts_with(&format!("{READ_FAILED}refusing to follow symlink at 'sub'")),
             "{err}"
+        );
+    }
+
+    /// The store of a nested repository is named by its path beneath the
+    /// workspace: swapping the repository for a link to another workspace
+    /// does not change it.
+    #[test]
+    fn a_swapped_nested_repo_keeps_its_own_store() {
+        let (outside, ws, _) = workspace();
+        let top = WorkspaceIndexerConfig::new(ws.path().to_path_buf()).persistence(
+            PersistenceConfig::Disk {
+                path: ws.path().join("catalog").join("top"),
+            },
+        );
+        let sub = ws.path().join("sub");
+        std::fs::create_dir(&sub).expect("sub");
+        let before = crate::workspace::config::store_dir_for_repo(&top, &sub);
+        std::fs::remove_dir(&sub).expect("move away");
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+
+        let after = crate::workspace::config::store_dir_for_repo(&top, &sub);
+
+        assert_eq!(after, before);
+    }
+
+    /// A nested repository indexes no memory of its own: a file in its
+    /// memory directory is outside its read roots.
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn a_nested_repo_reads_no_memory_of_its_own() {
+        let catalog = tempfile::tempdir().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let (_outside, ws, top) = workspace();
+        let sub = ws.path().canonicalize().expect("canonical").join("sub");
+        std::fs::create_dir(&sub).expect("sub");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&sub);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        let note = memory.join("note.md");
+        std::fs::write(&note, "nested note").expect("note");
+
+        let read = read_index_file(&repo_config(&top, &sub), &note)
+            .await
+            .map_err(|err| err.to_string());
+
+        assert_eq!(
+            read,
+            Err(format!(
+                "{READ_FAILED}'{}' is outside the index roots",
+                note.display()
+            ))
         );
     }
 
@@ -746,10 +876,7 @@ mod link_tests {
         let read = read_index_file(&config, &ws.path().join("leak.rs")).await;
 
         let err = read.expect_err("a link must not be read");
-        assert!(
-            err.to_string().starts_with("Failed to read file: "),
-            "{err}"
-        );
+        assert!(err.to_string().starts_with(READ_FAILED), "{err}");
         assert!(!err.to_string().contains("secret"), "{err}");
     }
 }

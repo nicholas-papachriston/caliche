@@ -85,7 +85,13 @@ pub fn default_file_extensions() -> Vec<String> {
 /// Compute a stable workspace hash for global shared storage paths.
 pub fn workspace_hash(root_path: &Path) -> String {
     let normalized = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
-    let path_str = normalized.to_string_lossy().to_string();
+    path_hash(&normalized)
+}
+
+/// The [`workspace_hash`] of a path that is already canonical, without
+/// resolving it again.
+fn path_hash(path: &Path) -> String {
+    let path_str = path.to_string_lossy().to_string();
     let mut hasher = DefaultHasher::new();
     path_str.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
@@ -115,19 +121,28 @@ pub fn workspace_shared_storage_dir(root_path: &Path) -> PathBuf {
 ///
 /// The current workspace uses `config.persistence`. Nested git worktrees use sibling
 /// folders named by [`workspace_hash`] so a parent agent can search every repo DB.
+/// A repo below the workspace is named by its path beneath the canonical
+/// workspace root and is not resolved again, so a nested directory swapped
+/// for a link cannot name another workspace's store.
 #[must_use]
 pub fn store_dir_for_repo(config: &WorkspaceIndexerConfig, repo_root: &Path) -> PathBuf {
     match &config.persistence {
         PersistenceConfig::InMemory => workspace_shared_storage_dir(repo_root),
         PersistenceConfig::Disk { path } => {
-            let canonical_repo = super::git_repos::canonical_or_owned(repo_root);
-            let canonical_workspace = super::git_repos::canonical_or_owned(&config.root_path);
-            if canonical_repo == canonical_workspace {
+            let workspace = super::git_repos::canonical_or_owned(&config.root_path);
+            let repo = repo_root
+                .strip_prefix(&workspace)
+                .or_else(|_| repo_root.strip_prefix(&config.root_path))
+                .map_or_else(
+                    |_| super::git_repos::canonical_or_owned(repo_root),
+                    |below| workspace.join(below),
+                );
+            if repo == workspace {
                 path.clone()
             } else {
                 path.parent()
                     .map_or_else(|| path.clone(), Path::to_path_buf)
-                    .join(workspace_hash(&canonical_repo))
+                    .join(path_hash(&repo))
             }
         }
     }
@@ -212,10 +227,11 @@ pub struct WorkspaceIndexerConfig {
     /// Provider/model/chunking fingerprint for persisted workspace embeddings.
     /// A mismatch clears the persisted vector index before re-indexing.
     pub index_fingerprint: Option<String>,
-    /// The top workspace root, set on a nested repository's config. Indexed
-    /// files are then opened beneath it, one component at a time with no
-    /// link followed, instead of beneath `root_path`, so a nested repository
-    /// swapped for a link after discovery cannot redirect the reads.
+    /// The canonical top workspace root, set on a nested repository's
+    /// config. Its files are then opened beneath it, one component at a
+    /// time with no link followed, instead of beneath `root_path`; the
+    /// repository indexes no memory of its own; and it is not walked once
+    /// `root_path` no longer resolves to itself.
     pub(crate) read_root: Option<PathBuf>,
 }
 
