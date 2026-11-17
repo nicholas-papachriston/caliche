@@ -68,10 +68,22 @@ pub fn walk_tree(
     options: WalkOptions,
     visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
 ) -> Vec<String> {
+    walk_tree_pruned(root, options, &|_| false, visit)
+}
+
+/// [`walk_tree`], but a directory for which `prune` returns true is visited
+/// and not entered.
+pub fn walk_tree_pruned(
+    root: &Path,
+    options: WalkOptions,
+    prune: &dyn Fn(&WalkedEntry) -> bool,
+    visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
+) -> Vec<String> {
     let mut walk = Walk {
         root,
         options,
         ignores: Vec::new(),
+        prune,
         visit,
         errors: Vec::new(),
     };
@@ -90,6 +102,7 @@ struct Walk<'a> {
     options: WalkOptions,
     /// The ignore matchers of the directories above the current one.
     ignores: Vec<Gitignore>,
+    prune: &'a dyn Fn(&WalkedEntry) -> bool,
     visit: &'a mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
     errors: Vec<String>,
 }
@@ -144,7 +157,10 @@ impl Walk<'_> {
                 len: entry.len,
             };
             (self.visit)(&walked)?;
-            if is_dir && self.options.max_depth.is_none_or(|max| depth < max) {
+            if is_dir
+                && self.options.max_depth.is_none_or(|max| depth < max)
+                && !(self.prune)(&walked)
+            {
                 self.dir(&walked.path, depth + 1)?;
             }
         }
@@ -286,6 +302,30 @@ mod tests {
 
         assert_eq!(names, vec!["sub"]);
         assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    /// A pruned directory is visited and not entered.
+    #[test]
+    fn a_pruned_directory_is_not_entered() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        std::fs::create_dir_all(root.join("skip/inner")).expect("dirs");
+        std::fs::write(root.join("skip/inner/a.rs"), "a").expect("a");
+        std::fs::write(root.join("b.rs"), "b").expect("b");
+
+        let mut names = Vec::new();
+        let errors = walk_tree_pruned(
+            &root,
+            WalkOptions::default(),
+            &|entry| entry.relative == Path::new("skip"),
+            &mut |entry| {
+                names.push(entry.relative.to_string_lossy().replace('\\', "/"));
+                ControlFlow::Continue(())
+            },
+        );
+
+        assert_eq!(names, vec!["b.rs", "skip"]);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
