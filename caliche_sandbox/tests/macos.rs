@@ -865,7 +865,7 @@ async fn every_attack_on_submodule_metadata_is_denied() {
 /// parent, with a writable root around it, runs in its own sandbox. Each
 /// prints its name only if it succeeds; none may.
 #[tokio::test]
-async fn every_attempt_to_plant_a_git_dir_is_denied() {
+async fn every_attempt_to_plant_a_git_dir_but_a_move_in_is_denied() {
     let attacks: Vec<(&str, String)> = vec![
         (
             "make it in the parent",

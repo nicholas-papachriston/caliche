@@ -151,8 +151,8 @@ pub const MAX_GIT_INDEX_BYTES: u64 = 1 << 30;
 /// `HEAD`, `commondir`, a gitfile or a worktree record.
 pub const MAX_GIT_TEXT_BYTES: u64 = 1 << 20;
 
-/// Read a git dir file or gitfile (an index, `config`, `HEAD`, `commondir`, a
-/// gitfile or a worktree record) on the host, up to `max_bytes`. The open
+/// Read a git dir file (an index, `config`, `HEAD`, `commondir` or a
+/// worktree record) or a gitfile on the host, up to `max_bytes`. The open
 /// never waits: on Unix it passes `O_NONBLOCK`, so a FIFO planted at the
 /// path cannot stall the caller. Anything but a regular file is then
 /// refused with [`NOT_A_REGULAR_GIT_FILE`]. At most `max_bytes` plus one
