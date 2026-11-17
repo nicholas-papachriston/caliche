@@ -373,6 +373,38 @@ mod tests {
         assert!(!allowed);
     }
 
+    /// A FIFO at the `commondir` a `.git` file points to (a command in the
+    /// sandbox can make one) is not read: collecting returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_commondir_does_not_block_collecting() {
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        write_file(&root, "sub/a.rs", "a");
+        std::fs::create_dir_all(root.join("sub/gd")).expect("git dir");
+        std::fs::write(
+            root.join("sub/.git"),
+            format!("gitdir: {}\n", root.join("sub/gd").display()),
+        )
+        .expect("gitfile");
+        let status = crate::policy::program_command("mkfifo")
+            .arg(root.join("sub/gd/commondir"))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let walked = root.join("sub");
+        std::thread::spawn(move || {
+            let _ = tx.send(collect_files(&walked, None, &[], None, &[]).files);
+        });
+        let files = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("collecting must not wait on a FIFO");
+
+        assert_eq!(file_names(&files), vec!["a.rs"]);
+    }
+
     /// A memory note that is a link, or over the size limit, is not allowed.
     #[cfg(unix)]
     #[test]
