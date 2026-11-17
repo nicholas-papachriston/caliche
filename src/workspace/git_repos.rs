@@ -108,22 +108,31 @@ fn gitmodules_worktrees(base: &Path, root: &Path) -> Vec<PathBuf> {
     };
     parse_gitmodules(&contents)
         .into_iter()
-        .filter_map(|entry| contained_git_root(root, &entry.relative_path))
+        .filter_map(|entry| contained_git_root(base, root, &entry.relative_path))
         .collect()
 }
 
-/// Live git root for `relative` when it stays inside `root` after canonicalize.
-fn contained_git_root(root: &Path, relative: &str) -> Option<PathBuf> {
+/// Live git root for the submodule path `relative` under `root`, kept only
+/// when it resolves strictly inside the top root `base`.
+fn contained_git_root(base: &Path, root: &Path, relative: &str) -> Option<PathBuf> {
     if !is_safe_relative(relative) {
         return None;
     }
-    let candidate = root.join(relative);
-    if !is_git_root(&candidate) {
+    confined_git_root(base, &root.join(relative))
+}
+
+/// The canonical form of `candidate` when it is a git worktree strictly
+/// inside the canonical top root `base`.
+///
+/// A sandboxed command can swap a nested directory for a link at any time,
+/// so the check is made on the resolved path that is returned, never on an
+/// earlier resolve of a parent.
+fn confined_git_root(base: &Path, candidate: &Path) -> Option<PathBuf> {
+    if !is_git_root(candidate) {
         return None;
     }
-    let canonical_root = std::fs::canonicalize(root).ok()?;
-    let canonical = std::fs::canonicalize(&candidate).ok()?;
-    if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
+    let canonical = std::fs::canonicalize(candidate).ok()?;
+    if canonical == base || !canonical.starts_with(base) {
         return None;
     }
     Some(canonical)
@@ -158,27 +167,36 @@ pub fn discover_git_repos(root: &Path) -> Vec<PathBuf> {
                 .to_str()
                 .is_none_or(|name| !skip_discovery_dir(name))
         });
-    for entry in walker.build().flatten() {
-        if repos.len() >= MAX_NESTED_REPOS {
-            break;
-        }
-        let path = entry.path();
-        if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        if path == root || path == canonical_root {
-            continue;
-        }
-        if !is_git_root(path) {
-            continue;
-        }
-        push_unique(&mut repos, canonical_or_owned(path));
-    }
+    let dirs = walker
+        .build()
+        .flatten()
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_dir()))
+        .map(ignore::DirEntry::into_path);
+    append_walked_repos(&canonical_root, &mut repos, dirs);
 
     for path in gitmodules_worktrees(&canonical_root, &canonical_root) {
         push_unique(&mut repos, path);
     }
     repos
+}
+
+/// Append the git worktrees among the walked directories `dirs`, up to
+/// `MAX_NESTED_REPOS` in all. A directory listed by the walk can be a link
+/// by the time it is checked, so each is kept only when it resolves
+/// strictly inside the top root `base`.
+fn append_walked_repos(
+    base: &Path,
+    repos: &mut Vec<PathBuf>,
+    dirs: impl IntoIterator<Item = PathBuf>,
+) {
+    for path in dirs {
+        if repos.len() >= MAX_NESTED_REPOS {
+            break;
+        }
+        if let Some(repo) = confined_git_root(base, &path) {
+            push_unique(repos, repo);
+        }
+    }
 }
 
 /// True when `path` belongs to `root` and not to a nested git worktree.
@@ -290,6 +308,55 @@ mod tests {
         super::append_declared_repo(&base, &mut repos, sub.clone());
 
         assert_eq!(repos, vec![sub]);
+    }
+
+    /// A workspace `ws` (the canonical top root) with a git repo `outside`
+    /// next to it that holds a nested repo `inner`.
+    #[cfg(unix)]
+    fn workspace_and_outside_repo(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+        fs::create_dir_all(dir.path().join("ws")).expect("ws");
+        fs::create_dir_all(dir.path().join("outside")).expect("outside");
+        let base = dir.path().join("ws").canonicalize().expect("canonical");
+        let outside = dir
+            .path()
+            .join("outside")
+            .canonicalize()
+            .expect("canonical");
+        init_git(&base);
+        init_git(&outside);
+        init_git(&outside.join("inner"));
+        (base, outside)
+    }
+
+    /// A nested repository swapped for a link after its `.gitmodules` was
+    /// read: the submodule paths it listed resolve through the link, outside
+    /// the top root, so none is kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_submodule_path_through_a_swapped_link_is_not_listed() {
+        let dir = TempDir::new().expect("temp");
+        let (base, outside) = workspace_and_outside_repo(&dir);
+        std::os::unix::fs::symlink(&outside, base.join("sub")).expect("link");
+
+        let listed = super::contained_git_root(&base, &base.join("sub"), "inner");
+
+        assert_eq!(listed, None);
+    }
+
+    /// A directory the walk listed and a command then swapped for a link
+    /// to a repository outside the workspace is not kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_walked_dir_swapped_for_a_link_is_not_listed() {
+        let dir = TempDir::new().expect("temp");
+        let (base, outside) = workspace_and_outside_repo(&dir);
+        init_git(&base.join("kept"));
+        std::os::unix::fs::symlink(&outside, base.join("sub")).expect("link");
+
+        let mut repos = vec![base.clone()];
+        super::append_walked_repos(&base, &mut repos, [base.join("sub"), base.join("kept")]);
+
+        assert_eq!(repos, vec![base.clone(), base.join("kept")]);
     }
 
     /// A root with `listed` and `extra` repos whose `.gitmodules` text names
