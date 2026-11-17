@@ -1169,3 +1169,25 @@ fn a_git_dir_with_an_oversized_head_is_not_a_git_dir() {
         (true, false)
     );
 }
+
+/// Fails every read: reached only by a read past the bytes before it.
+struct FailsWhenRead;
+
+impl std::io::Read for FailsWhenRead {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("read past the limit"))
+    }
+}
+
+/// The bounded read stops one byte past the limit: a source that fails
+/// after `limit + 2` bytes is refused for its size, not for the failure.
+#[test]
+fn the_bounded_read_stops_one_byte_past_the_limit() {
+    use std::io::Read as _;
+    let source = std::io::repeat(b'a').take(10).chain(FailsWhenRead);
+
+    let read =
+        caliche_policy::read_bounded(source, Path::new("source"), 8).map_err(|err| err.to_string());
+
+    assert_eq!(read, Err("source is larger than 8 bytes".to_owned()));
+}
