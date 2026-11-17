@@ -18,7 +18,9 @@ use caliche_sandbox::EntryKind;
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::agent::tools::common::path::{list_resolved_dir, read_resolved_text, resolved_metadata};
+use crate::agent::tools::common::path::{
+    list_resolved_dir, open_resolved_file, read_resolved_text, resolved_metadata,
+};
 
 /// Directory names a walk never enters: version control metadata.
 pub const VCS_DIRS: [&str; 4] = [".git", ".hg", ".svn", ".jj"];
@@ -190,24 +192,14 @@ impl Walk<'_> {
                 .iter()
                 .any(|entry| entry.kind == EntryKind::File && entry.name == name)
         };
-        let dot_git =
+        let kind_of = |name: &str| {
             entries
                 .iter()
-                .find(|entry| entry.name == ".git")
-                .map_or(DotGit::None, |entry| match entry.kind {
-                    EntryKind::Dir => DotGit::Dir,
-                    EntryKind::File => DotGit::File,
-                    EntryKind::Other => DotGit::Other,
-                });
-        let has_jj = entries.iter().any(|entry| entry.name == ".jj");
-        let here = dir_ignores(
-            dir,
-            dot_git,
-            has_jj,
-            &listed,
-            self.options.ignores,
-            &mut self.errors,
-        );
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.kind)
+        };
+        let vcs = Vcs::of(dir, kind_of(".git"), kind_of(".jj"));
+        let here = dir_ignores(dir, vcs, &listed, self.options.ignores, &mut self.errors);
         self.ignores.push(here);
         let flow = self.entries(dir, depth, &entries);
         self.ignores.pop();
@@ -267,34 +259,78 @@ impl Walk<'_> {
 /// The ignore rules of each directory above `root`, outermost first.
 ///
 /// `root` is canonical, so every directory above it is too. The ignore
-/// files there are read, and their `.git` and `.jj` entries described, with
-/// no link followed; a link there counts as absent.
+/// files there are read with no link followed; their `.git` and `.jj`
+/// entries are read as in the walk, see [`Vcs::of`].
 fn outer_ignores(root: &Path, rules: Ignores, errors: &mut Vec<String>) -> Vec<DirIgnores> {
     let mut above: Vec<&Path> = root.ancestors().skip(1).collect();
     above.reverse();
     above
         .into_iter()
         .map(|dir| {
-            let dot_git = match resolved_metadata(&dir.join(".git")) {
-                Ok(meta) if meta.is_dir() => DotGit::Dir,
-                Ok(_) => DotGit::File,
-                Err(_) => DotGit::None,
+            let kind_of = |name: &str| match resolved_metadata(&dir.join(name)) {
+                Ok(meta) if meta.is_dir() => Some(EntryKind::Dir),
+                Ok(_) => Some(EntryKind::File),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => Some(EntryKind::Other),
             };
-            let has_jj = resolved_metadata(&dir.join(".jj")).is_ok();
-            dir_ignores(dir, dot_git, has_jj, &|_| true, rules, errors)
+            let vcs = Vcs::of(dir, kind_of(".git"), kind_of(".jj"));
+            dir_ignores(dir, vcs, &|_| true, rules, errors)
         })
         .collect()
 }
 
-/// What a directory's `.git` entry is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DotGit {
-    None,
-    Dir,
-    /// A `.git` file: a linked worktree or a submodule.
-    File,
-    /// A link or another kind; it is not followed.
-    Other,
+/// What a directory's `.git` and `.jj` entries make it.
+struct Vcs {
+    /// It is a repository root: its `.git` or `.jj` resolves to a directory
+    /// or a regular file, as the `ignore` crate counts one.
+    is_repo: bool,
+    /// The git directory whose `info/exclude` applies here.
+    git_dir: Option<PathBuf>,
+}
+
+impl Vcs {
+    /// Read the `.git` and `.jj` entries of `dir`, of the given kinds.
+    ///
+    /// A `.git` directory is the git directory, and a `.git` file points to
+    /// one. A link is followed as git follows it, and counts only when it
+    /// leads to a directory or a regular file: a dangling link, or one to a
+    /// FIFO or a device, makes no repository.
+    fn of(dir: &Path, git: Option<EntryKind>, jj: Option<EntryKind>) -> Self {
+        let entry = |name: &str, kind: Option<EntryKind>| match kind? {
+            EntryKind::Other => follow_link(&dir.join(name)),
+            kind => Some((dir.join(name), kind)),
+        };
+        let git = entry(".git", git);
+        let git_dir = match &git {
+            Some((path, EntryKind::Dir)) => Some(path.clone()),
+            Some((path, _)) => gitfile_common_dir(dir, path),
+            None => None,
+        };
+        Self {
+            is_repo: git.is_some() || entry(".jj", jj).is_some(),
+            git_dir,
+        }
+    }
+}
+
+/// Where the link `path` leads, if it reaches a directory or a regular
+/// file.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "a .git or .jj link, followed as git follows it; the target is then described with no link followed"
+    )
+)]
+fn follow_link(path: &Path) -> Option<(PathBuf, EntryKind)> {
+    let target = std::fs::canonicalize(path).ok()?;
+    let meta = resolved_metadata(&target).ok()?;
+    let kind = if meta.is_dir() {
+        EntryKind::Dir
+    } else {
+        EntryKind::File
+    };
+    Some((target, kind))
 }
 
 /// The ignore rules one directory adds, by source.
@@ -313,8 +349,7 @@ struct DirIgnores {
 /// try; a missing file adds nothing.
 fn dir_ignores(
     dir: &Path,
-    dot_git: DotGit,
-    has_jj: bool,
+    vcs: Vcs,
     listed: &dyn Fn(&str) -> bool,
     rules: Ignores,
     errors: &mut Vec<String>,
@@ -327,19 +362,15 @@ fn dir_ignores(
     let caliche = rules.caliche().then(|| file(".caliche_ignore")).flatten();
     let ignore = file(".ignore");
     let git = file(".gitignore");
-    let git_dir = match dot_git {
-        DotGit::Dir => Some(dir.join(".git")),
-        DotGit::File => gitfile_common_dir(dir, &dir.join(".git")),
-        DotGit::None | DotGit::Other => None,
-    };
-    let exclude =
-        git_dir.and_then(|git_dir| read_ignore(dir, &git_dir.join("info").join("exclude"), errors));
+    let exclude = vcs
+        .git_dir
+        .and_then(|git_dir| read_ignore(dir, &git_dir.join("info").join("exclude"), errors));
     DirIgnores {
         caliche,
         ignore,
         git,
         exclude,
-        has_git: rules.require_git() && (dot_git != DotGit::None || has_jj),
+        has_git: rules.require_git() && vcs.is_repo,
     }
 }
 
@@ -412,18 +443,20 @@ fn gitfile_common_dir(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(common).ok()
 }
 
-/// The first 4 KiB of a small git pointer file, as text.
+/// The first 4 KiB of a small git pointer file, as text. The pointer is
+/// followed as git follows it, then opened without blocking and only as a
+/// regular file, so a FIFO or a device there reads as no pointer.
 #[cfg_attr(
     tool_file_lint,
     expect(
         clippy::disallowed_methods,
-        reason = "a git directory pointer, capped at 4 KiB; it only locates info/exclude"
+        reason = "a git directory pointer, resolved as git resolves it; it is then opened with no link followed"
     )
 )]
 fn read_head(path: &Path) -> Option<String> {
     use std::io::Read as _;
     let mut text = String::new();
-    std::fs::File::open(path)
+    open_resolved_file(&std::fs::canonicalize(path).ok()?)
         .ok()?
         .take(4096)
         .read_to_string(&mut text)
@@ -784,6 +817,77 @@ mod tests {
                 link.display()
             )]
         );
+    }
+
+    /// The files a walk of `root` with `ignores` finds, relative to it.
+    fn walk_files(root: &Path, ignores: Ignores) -> Vec<String> {
+        let mut files = Vec::new();
+        let options = WalkOptions {
+            ignores,
+            ..WalkOptions::default()
+        };
+        let errors = walk_tree(root, options, &mut |entry| {
+            if entry.kind == EntryKind::File {
+                files.push(entry.relative.to_string_lossy().replace('\\', "/"));
+            }
+            ControlFlow::Continue(())
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+        files
+    }
+
+    /// A `.git` that is a link to a git directory is followed, as git
+    /// follows it: the repository's ignore rules and its `info/exclude`
+    /// apply, and the global excludes count.
+    #[test]
+    fn a_linked_git_dir_keeps_the_git_rules() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        write_all(
+            &top,
+            &[
+                ("global", "*.secret\n"),
+                ("store/info/exclude", "ex.txt\n"),
+                ("repo/.gitignore", "gi.txt\n"),
+                ("repo/a.rs", "a"),
+                ("repo/ex.txt", "e"),
+                ("repo/sub/b.rs", "b"),
+                ("repo/sub/ex.txt", "e"),
+                ("repo/sub/gi.txt", "g"),
+                ("repo/sub/k.secret", "s"),
+            ],
+        );
+        std::os::unix::fs::symlink("../store", top.join("repo/.git")).expect("git link");
+        set_test_global_excludes(Some(top.join("global")));
+
+        let tools = walk_files(&top.join("repo/sub"), Ignores::Tools);
+        let index = walk_files(&top.join("repo"), Ignores::Index);
+        set_test_global_excludes(None);
+
+        assert_eq!(tools, vec!["b.rs"]);
+        assert_eq!(index, vec!["a.rs", "sub/b.rs"]);
+    }
+
+    /// A dangling `.git` or `.jj` link in a subdirectory makes no
+    /// repository, so the parent's `.gitignore` still applies below it.
+    #[test]
+    fn a_dangling_vcs_link_makes_no_repository() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path().canonicalize().expect("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        write_all(
+            &repo,
+            &[
+                (".gitignore", "sec.txt\n"),
+                ("d/ok.rs", "o"),
+                ("d/sec.txt", "s"),
+                ("e/sec.txt", "s"),
+            ],
+        );
+        std::os::unix::fs::symlink("nowhere", repo.join("d/.git")).expect("git link");
+        std::os::unix::fs::symlink("nowhere", repo.join("e/.jj")).expect("jj link");
+
+        assert_eq!(walk_files(&repo, Ignores::Tools), vec!["d/ok.rs"]);
     }
 
     /// A pruned directory is visited and not entered.
