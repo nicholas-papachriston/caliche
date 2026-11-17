@@ -1,63 +1,86 @@
 //! Gitignore-aware file walking.
 //!
-//! Uses the `ignore` crate to walk directories while respecting
-//! .gitignore, .caliche_ignore, and optional size/extension filters.
+//! Walks with [`walk_tree_pruned`], which lists every directory one
+//! component at a time without following a link, honoring `.gitignore`,
+//! `.ignore`, `.caliche_ignore` and `.git/info/exclude`, plus optional
+//! size, extension and extra-exclude filters. A directory swapped for a link
+//! is refused, not followed, and is reported as unlisted.
 
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::path::PathBuf;
 
+use caliche_sandbox::EntryKind;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-/// Collect file paths under `root` respecting .gitignore and .caliche_ignore.
+use crate::agent::tools::tree_walk::{WalkOptions, WalkedEntry, walk_tree_pruned};
+
+/// The files a walk collected, and the directories it could not list.
+#[derive(Debug, Default)]
+pub struct CollectedFiles {
+    /// Files that pass the filters, named below the key root.
+    pub files: Vec<PathBuf>,
+    /// Directories the walk tried to list and could not (a link swapped in,
+    /// a permission or I/O error), named below the key root. Nothing below
+    /// them was seen.
+    pub unlisted: Vec<PathBuf>,
+}
+
+/// Collect file paths under `walk_root` respecting ignore files.
 ///
-/// - `root`: directory to walk
+/// - `root`: the form of the walked directory the returned paths start with
+/// - `walk_root`: the canonical directory to walk; it is listed as given,
+///   never resolved again, so a root that is now a link is refused
 /// - `max_file_size`: skip files larger than this (bytes); `None` = no limit
 /// - `extensions`: allowed extensions (e.g. `["rs", "py"]`); empty = allow all
 /// - `max_files`: stop after collecting this many files; `None` = no limit
 /// - `exclude_patterns`: extra gitignore-style patterns (in addition to ignore files)
 ///
-/// This runs blocking I/O. Call from `spawn_blocking` if used in async context.
+/// Nested git worktrees are not entered. This runs blocking I/O. Call from
+/// `spawn_blocking` if used in async context.
 pub fn collect_files(
     root: &Path,
+    walk_root: &Path,
     max_file_size: Option<u64>,
     extensions: &[String],
     max_files: Option<usize>,
     exclude_patterns: &[String],
-) -> Vec<PathBuf> {
-    let mut walker = walk_builder(root, max_file_size, exclude_patterns);
-    let extra = extra_excludes(root, exclude_patterns);
-    apply_exclude_filter(&mut walker, extra);
-
+) -> CollectedFiles {
+    let extra = extra_excludes(walk_root, exclude_patterns);
     let ext_set: std::collections::HashSet<String> =
         extensions.iter().map(|s| s.to_lowercase()).collect();
-    let has_ext_filter = !ext_set.is_empty();
-
-    let mut out = Vec::new();
-    for result in walker.build() {
-        if let Some(limit) = max_files
-            && out.len() >= limit
+    let prune = |entry: &WalkedEntry| {
+        super::git_repos::is_git_root(&entry.path) || is_excluded(extra.as_ref(), entry, true)
+    };
+    let mut files = Vec::new();
+    let report = walk_tree_pruned(walk_root, WalkOptions::default(), &prune, &mut |entry| {
+        if max_files.is_some_and(|limit| files.len() >= limit) {
+            return ControlFlow::Break(());
+        }
+        if entry.kind == EntryKind::File
+            && max_file_size.is_none_or(|max| entry.len <= max)
+            && (ext_set.is_empty() || extension_allowed(&entry.path, &ext_set))
+            && !is_excluded(extra.as_ref(), entry, false)
         {
-            break;
+            files.push(root.join(&entry.relative));
         }
+        ControlFlow::Continue(())
+    });
+    let unlisted = report
+        .unlisted
+        .iter()
+        .map(|dir| match dir.strip_prefix(walk_root) {
+            Ok(below) if below.as_os_str().is_empty() => root.to_path_buf(),
+            Ok(below) => root.join(below),
+            Err(_) => dir.clone(),
+        })
+        .collect();
+    CollectedFiles { files, unlisted }
+}
 
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let path = entry.path();
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-
-        if has_ext_filter && !extension_allowed(path, &ext_set) {
-            continue;
-        }
-
-        out.push(path.to_path_buf());
-    }
-
-    out
+fn is_excluded(extra: Option<&Gitignore>, entry: &WalkedEntry, is_dir: bool) -> bool {
+    is_dir == (entry.kind == EntryKind::Dir)
+        && extra.is_some_and(|gi| gi.matched(&entry.path, is_dir).is_ignore())
 }
 
 /// True when `path` is under `root` or the shared workspace memory directory.
@@ -81,14 +104,16 @@ pub fn matches_index_filters(
     if !ext_set.is_empty() && !extension_allowed(path, &ext_set) {
         return false;
     }
-    let is_dir = path.is_dir();
+    let is_dir = crate::agent::tools::common::path::entry_kind(path) == Some(EntryKind::Dir);
     extra_excludes(root, exclude_patterns).is_none_or(|gi| !gi.matched(path, is_dir).is_ignore())
 }
 
 /// True when a live file should be indexed: filters, size, and gitignore.
 ///
-/// Unlike walking the tree with `max_files = 1`, this checks `path` itself
-/// rather than whatever file the walker happens to visit first.
+/// `root` is a canonical directory. A workspace file is found by a no-link
+/// walk of the directories that lead to it, so a link anywhere on the way is
+/// refused. A file in the shared memory directory is stat'ed without
+/// following a final link.
 pub fn path_allowed(
     root: &Path,
     path: &Path,
@@ -99,20 +124,30 @@ pub fn path_allowed(
     if !matches_index_filters(root, path, extensions, exclude_patterns) {
         return false;
     }
-    if let Some(max) = max_file_size {
-        match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > max => return false,
-            Ok(_) => {}
-            Err(_) => return false,
+    if under_memory_dir(root, path) {
+        return std::fs::symlink_metadata(path)
+            .is_ok_and(|meta| meta.is_file() && max_file_size.is_none_or(|max| meta.len() <= max));
+    }
+    let extra = extra_excludes(root, exclude_patterns);
+    let prune = |entry: &WalkedEntry| {
+        !path.starts_with(&entry.path) || is_excluded(extra.as_ref(), entry, true)
+    };
+    let mut allowed = false;
+    walk_tree_pruned(root, WalkOptions::default(), &prune, &mut |entry| {
+        if entry.path == path {
+            allowed = entry.kind == EntryKind::File
+                && max_file_size.is_none_or(|max| entry.len <= max)
+                && !is_excluded(extra.as_ref(), entry, false);
+            return ControlFlow::Break(());
         }
-    }
-    if is_memory_path(root, path) {
-        return true;
-    }
-    gitignore_allows(root, path, max_file_size, exclude_patterns)
+        ControlFlow::Continue(())
+    });
+    allowed
 }
 
-fn is_memory_path(root: &Path, path: &Path) -> bool {
+/// True when `path` is in the shared memory directory of `root`, which is
+/// outside the workspace, under the embedding catalog.
+pub fn under_memory_dir(root: &Path, path: &Path) -> bool {
     let memory_dir = super::config::workspace_memory_markdown_dir(root);
     path.starts_with(memory_dir)
 }
@@ -143,80 +178,6 @@ fn extra_excludes(root: &Path, patterns: &[String]) -> Option<Gitignore> {
     builder.build().ok()
 }
 
-fn is_nested_git_worktree(root: &Path, entry: &ignore::DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return false;
-    }
-    if !entry
-        .file_type()
-        .is_some_and(|file_type| file_type.is_dir())
-    {
-        return false;
-    }
-    let path = entry.path();
-    path != root && super::git_repos::is_git_root(path)
-}
-
-fn walk_builder(
-    root: &Path,
-    max_file_size: Option<u64>,
-    _exclude_patterns: &[String],
-) -> ignore::WalkBuilder {
-    let mut walker = ignore::WalkBuilder::new(root);
-    walker
-        .standard_filters(true)
-        .require_git(false)
-        .add_custom_ignore_filename(".caliche_ignore");
-    if let Some(n) = max_file_size {
-        walker.max_filesize(Some(n));
-    }
-    let root_owned = root.to_path_buf();
-    walker.filter_entry(move |entry| !is_nested_git_worktree(&root_owned, entry));
-    walker
-}
-
-fn apply_exclude_filter(walker: &mut ignore::WalkBuilder, extra: Option<Gitignore>) {
-    let Some(extra) = extra else {
-        return;
-    };
-    walker.filter_entry(move |entry| {
-        let is_dir = entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_dir());
-        !extra.matched(entry.path(), is_dir).is_ignore()
-    });
-}
-
-fn gitignore_allows(
-    root: &Path,
-    candidate: &Path,
-    max_file_size: Option<u64>,
-    exclude_patterns: &[String],
-) -> bool {
-    let extra = extra_excludes(root, exclude_patterns);
-    let mut walker = walk_builder(root, max_file_size, exclude_patterns);
-    let candidate_owned = candidate.to_path_buf();
-    walker.filter_entry(move |entry| {
-        let path = entry.path();
-        let is_dir = entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_dir());
-        if extra
-            .as_ref()
-            .is_some_and(|gi| gi.matched(path, is_dir).is_ignore())
-        {
-            return false;
-        }
-        candidate_owned == path || candidate_owned.starts_with(path)
-    });
-    walker.build().flatten().any(|entry| {
-        entry.path() == candidate
-            && entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_file())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,14 +199,17 @@ mod tests {
         write_file(dir.path(), "skip.rs", "fn skip() {}");
         write_file(dir.path(), "nested/skip.rs", "fn nested() {}");
 
+        let root = dir.path().canonicalize().expect("canonical");
         let paths = collect_files(
-            dir.path(),
+            &root,
+            &root,
             None,
             &["rs".to_string()],
             None,
             &["skip.rs".to_string()],
         );
         let names: Vec<String> = paths
+            .files
             .iter()
             .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
             .collect();
@@ -254,16 +218,18 @@ mod tests {
 
     #[test]
     fn path_allowed_matches_the_named_file_not_the_first_walk_hit() {
-        let dir = TempDir::new().expect("temp dir");
-        write_file(dir.path(), "aaa.rs", "fn a() {}");
-        write_file(dir.path(), "zzz.rs", "fn z() {}");
-        let target = dir.path().join("zzz.rs");
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        let dir = root.as_path();
+        write_file(dir, "aaa.rs", "fn a() {}");
+        write_file(dir, "zzz.rs", "fn z() {}");
+        let target = dir.join("zzz.rs");
         let exts = vec!["rs".to_string()];
 
-        assert!(path_allowed(dir.path(), &target, None, &exts, &[]));
+        assert!(path_allowed(dir, &target, None, &exts, &[]));
         assert!(!path_allowed(
-            dir.path(),
-            &dir.path().join("missing.rs"),
+            dir,
+            &dir.join("missing.rs"),
             None,
             &exts,
             &[],
@@ -272,26 +238,16 @@ mod tests {
 
     #[test]
     fn path_allowed_rejects_gitignored_files() {
-        let dir = TempDir::new().expect("temp dir");
-        write_file(dir.path(), ".gitignore", "secret.rs\n");
-        write_file(dir.path(), "secret.rs", "fn secret() {}");
-        write_file(dir.path(), "ok.rs", "fn ok() {}");
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        let dir = root.as_path();
+        write_file(dir, ".gitignore", "secret.rs\n");
+        write_file(dir, "secret.rs", "fn secret() {}");
+        write_file(dir, "ok.rs", "fn ok() {}");
         let exts = vec!["rs".to_string()];
 
-        assert!(!path_allowed(
-            dir.path(),
-            &dir.path().join("secret.rs"),
-            None,
-            &exts,
-            &[],
-        ));
-        assert!(path_allowed(
-            dir.path(),
-            &dir.path().join("ok.rs"),
-            None,
-            &exts,
-            &[],
-        ));
+        assert!(!path_allowed(dir, &dir.join("secret.rs"), None, &exts, &[],));
+        assert!(path_allowed(dir, &dir.join("ok.rs"), None, &exts, &[],));
     }
 
     #[test]
@@ -302,8 +258,10 @@ mod tests {
         write_file(dir.path(), "child/.git/HEAD", "ref: refs/heads/main\n");
         write_file(dir.path(), "child/nested.rs", "fn nested() {}");
 
-        let paths = collect_files(dir.path(), None, &["rs".to_string()], None, &[]);
+        let root = dir.path().canonicalize().expect("canonical");
+        let paths = collect_files(&root, &root, None, &["rs".to_string()], None, &[]);
         let names: Vec<String> = paths
+            .files
             .iter()
             .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
             .collect();

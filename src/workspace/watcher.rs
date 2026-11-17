@@ -233,15 +233,6 @@ impl WorkspaceWatcher {
             DEFAULT_MAX_FILE_SIZE as u64
         };
 
-        // Quick size check
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.len() > max_size {
-                return false;
-            }
-        } else {
-            return false; // Can't read metadata, skip
-        }
-
         // Use gitignore-aware single-path matching so we check *this* file,
         // not whichever file a `max_files = 1` walk happens to visit first.
         gitignore::path_allowed(
@@ -504,7 +495,11 @@ fn apply_coalesced_paths(
 ) {
     for (path, kind) in paths {
         let indexed = index_event(kind);
-        let file = path.is_file();
+        let file = if gitignore::under_memory_dir(&config.root_path, path) {
+            std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+        } else {
+            crate::agent::tools::common::path::is_walked_file(path)
+        };
         let removable = WorkspaceWatcher::could_have_been_indexed(path, config);
         match (indexed, file, removable) {
             (true, true, _) => {
@@ -678,8 +673,72 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod link_tests {
-    use super::WorkspaceWatcher;
+    use super::{WorkspaceWatcher, apply_coalesced_paths};
     use crate::workspace::config::{PersistenceConfig, WorkspaceIndexerConfig};
+    use notify::EventKind;
+    use notify::event::{DataChange, ModifyKind};
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    /// Changed and removed paths after one modify event for `path`.
+    fn modify_event(
+        path: &Path,
+        config: &WorkspaceIndexerConfig,
+    ) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+        let mut changes = HashMap::new();
+        let mut removals = HashMap::new();
+        let event = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        apply_coalesced_paths(
+            &[(path.to_path_buf(), event)],
+            config,
+            &mut changes,
+            &mut removals,
+        );
+        (
+            changes.into_keys().collect(),
+            removals.into_keys().collect(),
+        )
+    }
+
+    /// A workspace file replaced by a link is a removal, not a change.
+    #[test]
+    fn a_file_replaced_by_a_link_is_removed() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical");
+        let path = root.join("a.rs");
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), &path).expect("file link");
+        let config = WorkspaceIndexerConfig::new(root);
+
+        let (changes, removals) = modify_event(&path, &config);
+
+        assert_eq!((changes, removals), (Vec::new(), vec![path]));
+    }
+
+    /// A memory note replaced by a link is a removal, not a change.
+    #[test]
+    #[serial_test::serial(env)]
+    fn a_memory_note_replaced_by_a_link_is_removed() {
+        let catalog = tempfile::tempdir().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.md"), "secret").expect("secret");
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&root);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        let path = memory.join("note.md");
+        std::os::unix::fs::symlink(outside.path().join("secret.md"), &path).expect("note link");
+        let config = WorkspaceIndexerConfig::new(root);
+
+        let (changes, removals) = modify_event(&path, &config);
+
+        assert_eq!((changes, removals), (Vec::new(), vec![path]));
+    }
 
     #[tokio::test]
     async fn a_changed_file_that_is_a_link_is_not_read() {

@@ -56,7 +56,7 @@ impl WorkspaceIndexer {
     pub async fn index(&self) -> anyhow::Result<WorkspaceIndexResult> {
         let repos = git_repos::discover_git_repos(&self.config.root_path);
         if repos.len() <= 1 {
-            self.record_root_marker(&self.config.root_path);
+            self.record_root_marker(&git_repos::canonical_or_owned(&self.config.root_path));
             return self.index_tree().await;
         }
 
@@ -97,19 +97,17 @@ impl WorkspaceIndexer {
     /// Index one worktree using this indexer's root and persistence path.
     async fn index_tree(&self) -> anyhow::Result<WorkspaceIndexResult> {
         let root = &self.config.root_path;
-        if self.config.read_root.is_some() && !resolves_to_itself(root) {
-            return Ok(WorkspaceIndexResult {
-                files_indexed: 0,
-                total_chunks: 0,
-                failures: vec![format!("{}: {NESTED_REPO_MOVED}", root.display())],
-            });
-        }
-        let mut paths = self.collect_index_paths().await?;
-        if self.config.read_root.is_none()
-            && let Ok(mut memory_files) =
-                crate::workspace::list_workspace_memory_markdown_files(root).await
-        {
-            paths.append(&mut memory_files);
+        let gitignore::CollectedFiles {
+            files: mut paths,
+            mut unlisted,
+        } = self.collect_index_paths().await?;
+        if self.config.read_root.is_none() {
+            match crate::workspace::list_workspace_memory_markdown_files(root).await {
+                Ok(mut memory_files) => paths.append(&mut memory_files),
+                Err(_) => unlisted.push(crate::workspace::config::workspace_memory_markdown_dir(
+                    root,
+                )),
+            }
         }
 
         let mut manifest = match &self.config.persistence {
@@ -120,8 +118,11 @@ impl WorkspaceIndexer {
             PersistenceConfig::InMemory => IndexManifest::new(),
         };
 
-        let mut failures = Vec::new();
-        self.purge_stale_entries(&paths, &mut manifest, &mut failures)
+        let mut failures: Vec<String> = unlisted
+            .iter()
+            .map(|dir| format!("{}: {UNLISTED_KEPT}", dir.display()))
+            .collect();
+        self.purge_stale_entries(&paths, &unlisted, &mut manifest, &mut failures)
             .await;
 
         if paths.is_empty() {
@@ -168,14 +169,23 @@ impl WorkspaceIndexer {
         })
     }
 
-    async fn collect_index_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    /// Walk this worktree. The top root is resolved once; a nested root is
+    /// already the canonical path discovery returned and is walked as is,
+    /// so one swapped for a link is refused and reported as unlisted.
+    async fn collect_index_paths(&self) -> anyhow::Result<gitignore::CollectedFiles> {
         let root_clone = self.config.root_path.clone();
+        let walk_root = if self.config.read_root.is_some() {
+            root_clone.clone()
+        } else {
+            git_repos::canonical_or_owned(&root_clone)
+        };
         let max_size = self.config.max_file_size;
         let exts_clone = self.config.resolved_extensions();
         let excludes = self.config.exclude_patterns.clone();
         tokio::task::spawn_blocking(move || {
             gitignore::collect_files(
                 &root_clone,
+                &walk_root,
                 Some(max_size as u64),
                 &exts_clone,
                 None,
@@ -186,9 +196,13 @@ impl WorkspaceIndexer {
         .map_err(|e| anyhow::anyhow!("Workspace walk task failed: {}", e))
     }
 
+    /// Remove the manifest entries this run did not find. An entry below a
+    /// directory in `unlisted`, which the walk could not list, is kept: not
+    /// seen is not gone, so a partial walk never becomes a purge.
     async fn purge_stale_entries(
         &self,
         paths: &[std::path::PathBuf],
+        unlisted: &[std::path::PathBuf],
         manifest: &mut IndexManifest,
         failures: &mut Vec<String>,
     ) {
@@ -200,6 +214,11 @@ impl WorkspaceIndexer {
             .indexed
             .keys()
             .filter(|path| !current_paths.contains(*path))
+            .filter(|path| {
+                !unlisted
+                    .iter()
+                    .any(|dir| std::path::Path::new(path).starts_with(dir))
+            })
             .cloned()
             .collect();
         let mut removed_stale = Vec::new();
@@ -401,18 +420,12 @@ fn repo_config(top: &WorkspaceIndexerConfig, repo: &std::path::Path) -> Workspac
     config
 }
 
-/// Failure for a nested repository whose root no longer resolves to the
-/// path discovery returned (it was moved or swapped for a link).
-pub(crate) const NESTED_REPO_MOVED: &str =
-    "nested repository root moved since discovery; not indexed";
+/// Failure for a directory the index walk could not list (a link swapped
+/// in, a permission or I/O error). The files indexed below it are kept.
+pub(crate) const UNLISTED_KEPT: &str = "could not be listed; its indexed files are kept";
 
 /// Prefix of every refused or failed read in [`read_index_file`].
 pub(crate) const READ_FAILED: &str = "Failed to read file: ";
-
-/// True when `path` resolves to itself, with no link anywhere in it.
-fn resolves_to_itself(path: &std::path::Path) -> bool {
-    std::fs::canonicalize(path).is_ok_and(|canonical| canonical == path)
-}
 
 /// Read `path`, a file the index walk or the file watcher found, without
 /// following a link.
@@ -499,6 +512,12 @@ mod tests {
         fn name(&self) -> &str {
             "stub"
         }
+    }
+
+    fn sorted_keys(manifest: &IndexManifest) -> Vec<String> {
+        let mut keys: Vec<String> = manifest.indexed.keys().cloned().collect();
+        keys.sort();
+        keys
     }
 
     fn indexer(
@@ -689,29 +708,118 @@ mod tests {
         assert_eq!((result.files_indexed, result.failures), (2, Vec::new()));
     }
 
-    /// A nested repository swapped for a link after discovery is not
-    /// walked: nothing is read from the link's target and no outside name
-    /// reaches the failures.
+    /// A nested repository swapped for a link after an earlier index: the
+    /// walk refuses its root, nothing is read from the link's target, and
+    /// the files indexed in the earlier run stay in its manifest.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_nested_repo_swapped_for_a_link_is_not_indexed() {
+    async fn a_nested_repo_swapped_for_a_link_keeps_its_index() {
         let dir = TempDir::new().expect("temp dir");
-        let root = dir.path().canonicalize().expect("canonical");
+        let root = dir.path().canonicalize().expect("canonical").join("ws");
+        let sub = root.join("sub");
         std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::create_dir_all(sub.join(".git")).expect("sub git dir");
+        std::fs::write(sub.join("a.rs"), "fn a() {}").expect("a");
         let outside = TempDir::new().expect("outside");
         std::fs::write(outside.path().join("secret.rs"), "fn secret() {}").expect("secret");
-        let sub = root.join("sub");
+        let persist = PersistenceConfig::Disk {
+            path: dir.path().join("catalog").join("top"),
+        };
+        let (top, _) = indexer(&root, persist);
+        let config = repo_config(&top.config, &sub);
+        let PersistenceConfig::Disk { path: store } = config.persistence.clone() else {
+            panic!("disk persistence");
+        };
+        let nested = WorkspaceIndexer::new(Arc::clone(&top.rag_service), config);
+        nested.index_tree().await.expect("first index");
+        std::fs::rename(&sub, root.join("moved")).expect("move away");
         std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
-        let (top, _) = indexer(&root, PersistenceConfig::InMemory);
-        let nested =
-            WorkspaceIndexer::new(Arc::clone(&top.rag_service), repo_config(&top.config, &sub));
 
-        let result = nested.index_tree().await.expect("index");
+        let result = nested.index_tree().await.expect("second index");
+        let kept = crate::workspace::manifest::IndexManifest::load(&store)
+            .await
+            .expect("manifest");
 
         assert_eq!(
             (result.files_indexed, result.failures),
-            (0, vec![format!("{}: {NESTED_REPO_MOVED}", sub.display())])
+            (0, vec![format!("{}: {UNLISTED_KEPT}", sub.display())])
         );
+        assert_eq!(
+            sorted_keys(&kept),
+            vec![sub.join("a.rs").display().to_string()]
+        );
+    }
+
+    /// Entries below a directory the walk could not list survive a purge;
+    /// entries the walk could have seen and did not are removed.
+    #[tokio::test]
+    async fn a_purge_keeps_entries_below_an_unlisted_directory() {
+        let dir = TempDir::new().expect("temp dir");
+        let (indexer, _) = indexer(dir.path(), PersistenceConfig::InMemory);
+        let mut manifest = IndexManifest::new();
+        let record = || crate::workspace::manifest::IndexedFileRecord {
+            mtime: 1,
+            size: 1,
+            checksum: "c".to_string(),
+        };
+        manifest.merge_from_indexed([
+            ("/ws/sub/kept.rs".to_string(), record()),
+            ("/ws/gone.rs".to_string(), record()),
+        ]);
+        let mut failures = Vec::new();
+
+        indexer
+            .purge_stale_entries(
+                &[],
+                &[std::path::PathBuf::from("/ws/sub")],
+                &mut manifest,
+                &mut failures,
+            )
+            .await;
+
+        assert_eq!(sorted_keys(&manifest), vec!["/ws/sub/kept.rs".to_string()]);
+    }
+
+    /// The top memory directory cannot be listed (here it is a file): the
+    /// memory notes indexed in an earlier run are kept.
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn an_unreadable_memory_dir_keeps_its_indexed_notes() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        std::fs::write(root.join("a.rs"), "fn a() {}").expect("a");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&root);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        std::fs::write(memory.join("note.md"), "a note").expect("note");
+        let persist_dir = root.join(".index");
+        let (indexer, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: persist_dir.clone(),
+            },
+        );
+        indexer.index().await.expect("first index");
+        std::fs::remove_dir_all(&memory).expect("remove memory dir");
+        std::fs::write(&memory, "not a dir").expect("memory file");
+
+        indexer.index().await.expect("second index");
+        let kept = crate::workspace::manifest::IndexManifest::load(&persist_dir)
+            .await
+            .expect("manifest");
+
+        assert_eq!(sorted_keys(&kept), {
+            let mut expected = vec![
+                memory.join("note.md").display().to_string(),
+                root.join("a.rs").display().to_string(),
+            ];
+            expected.sort();
+            expected
+        });
     }
 
     #[cfg(feature = "vector-store-sqlite")]
@@ -834,6 +942,44 @@ mod link_tests {
         std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
 
         let after = crate::workspace::config::store_dir_for_repo(&top, &sub);
+
+        assert_eq!(after, before);
+    }
+
+    /// A store's root marker records the worktree path discovery returned,
+    /// not the target of a link swapped in since.
+    #[test]
+    fn a_root_marker_records_the_discovered_path() {
+        let (outside, ws, _) = workspace();
+        let sub = ws.path().canonicalize().expect("canonical").join("sub");
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+        let store = ws.path().join("store");
+
+        crate::workspace::federated::write_workspace_root_marker(&store, &sub).expect("marker");
+
+        assert_eq!(
+            std::fs::read_to_string(store.join("workspace_root")).expect("read"),
+            sub.display().to_string()
+        );
+    }
+
+    /// A repo outside the workspace names its store by its path as given:
+    /// swapping that path for a link does not change the store.
+    #[test]
+    fn a_repo_outside_the_workspace_keeps_its_store_after_a_swap() {
+        let (outside, ws, _) = workspace();
+        let top = WorkspaceIndexerConfig::new(ws.path().to_path_buf()).persistence(
+            PersistenceConfig::Disk {
+                path: ws.path().join("catalog").join("top"),
+            },
+        );
+        let other = outside.path().join("other");
+        std::fs::create_dir(&other).expect("other");
+        let before = crate::workspace::config::store_dir_for_repo(&top, &other);
+        std::fs::remove_dir(&other).expect("move away");
+        std::os::unix::fs::symlink(ws.path(), &other).expect("swap");
+
+        let after = crate::workspace::config::store_dir_for_repo(&top, &other);
 
         assert_eq!(after, before);
     }

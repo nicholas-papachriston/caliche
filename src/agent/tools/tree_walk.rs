@@ -68,7 +68,22 @@ pub fn walk_tree(
     options: WalkOptions,
     visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
 ) -> Vec<String> {
-    walk_tree_pruned(root, options, &|_| false, visit)
+    walk_tree_pruned(root, options, &|_| false, visit).errors
+}
+
+/// What [`walk_tree_pruned`] reports besides the entries it visited.
+#[derive(Debug, Default)]
+pub struct WalkReport {
+    /// The errors met on the way, as [`walk_tree`] returns them.
+    pub errors: Vec<String>,
+    /// Directories the walk tried to list and could not: one swapped for a
+    /// link, or a permission or I/O error, `root` included. Nothing below
+    /// them was seen, so a caller must not treat their content as gone.
+    #[cfg_attr(
+        not(feature = "tools-rag"),
+        expect(dead_code, reason = "only the workspace indexer reads it")
+    )]
+    pub unlisted: Vec<PathBuf>,
 }
 
 /// [`walk_tree`], but a directory for which `prune` returns true is visited
@@ -78,7 +93,7 @@ pub fn walk_tree_pruned(
     options: WalkOptions,
     prune: &dyn Fn(&WalkedEntry) -> bool,
     visit: &mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
-) -> Vec<String> {
+) -> WalkReport {
     let mut walk = Walk {
         root,
         options,
@@ -86,6 +101,7 @@ pub fn walk_tree_pruned(
         prune,
         visit,
         errors: Vec::new(),
+        unlisted: Vec::new(),
     };
     if options.honor_ignores
         && let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), &mut walk.errors)
@@ -93,7 +109,10 @@ pub fn walk_tree_pruned(
         walk.ignores.push(exclude);
     }
     let _ = walk.dir(root, 1);
-    walk.errors
+    WalkReport {
+        errors: walk.errors,
+        unlisted: walk.unlisted,
+    }
 }
 
 /// The state one [`walk_tree`] threads through its recursion.
@@ -105,6 +124,7 @@ struct Walk<'a> {
     prune: &'a dyn Fn(&WalkedEntry) -> bool,
     visit: &'a mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
     errors: Vec<String>,
+    unlisted: Vec<PathBuf>,
 }
 
 impl Walk<'_> {
@@ -113,6 +133,7 @@ impl Walk<'_> {
             Ok(entries) => entries,
             Err(err) => {
                 self.errors.push(format!("{}: {err}", dir.display()));
+                self.unlisted.push(dir.to_path_buf());
                 return ControlFlow::Continue(());
             }
         };
@@ -304,6 +325,26 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
     }
 
+    /// A directory swapped for a link mid-walk is reported as unlisted, so a
+    /// caller can tell "not seen" from "gone".
+    #[test]
+    fn a_directory_swapped_mid_walk_is_reported_unlisted() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir(root.join("sub")).expect("sub");
+
+        let report = walk_tree_pruned(&root, WalkOptions::default(), &|_| false, &mut |entry| {
+            if entry.relative == Path::new("sub") {
+                std::fs::rename(root.join("sub"), root.join("moved")).expect("move");
+                std::os::unix::fs::symlink(outside.path(), root.join("sub")).expect("swap");
+            }
+            ControlFlow::Continue(())
+        });
+
+        assert_eq!(report.unlisted, vec![root.join("sub")]);
+    }
+
     /// A pruned directory is visited and not entered.
     #[test]
     fn a_pruned_directory_is_not_entered() {
@@ -314,7 +355,7 @@ mod tests {
         std::fs::write(root.join("b.rs"), "b").expect("b");
 
         let mut names = Vec::new();
-        let errors = walk_tree_pruned(
+        let report = walk_tree_pruned(
             &root,
             WalkOptions::default(),
             &|entry| entry.relative == Path::new("skip"),
@@ -325,7 +366,7 @@ mod tests {
         );
 
         assert_eq!(names, vec!["b.rs", "skip"]);
-        assert!(errors.is_empty(), "{errors:?}");
+        assert!(report.unlisted.is_empty());
     }
 
     #[test]
