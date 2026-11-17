@@ -44,3 +44,32 @@ pub fn scan(root: &Path) -> Vec<PathBuf> {
 
     out
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The map reads `.caliche_ignore`, and a `.gitignore` above the
+    /// repository root does not apply, as the walker it replaced did.
+    #[test]
+    fn scan_applies_the_repo_map_ignore_rules() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        let repo = top.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        for (path, text) in [
+            (top.join(".gitignore"), "above.rs\n"),
+            (repo.join(".caliche_ignore"), "hidden.rs\n"),
+            (repo.join("a.rs"), "a"),
+            (repo.join("above.rs"), "b"),
+            (repo.join("hidden.rs"), "h"),
+        ] {
+            std::fs::write(path, text).expect("write");
+        }
+
+        let mut files = scan(&repo);
+        files.sort();
+
+        assert_eq!(files, vec![repo.join("a.rs"), repo.join("above.rs")]);
+    }
+}
