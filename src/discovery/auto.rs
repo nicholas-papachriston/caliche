@@ -1571,6 +1571,24 @@ mod link_tests {
         );
     }
 
+    /// Commands are found three levels below the commands folder and no
+    /// deeper.
+    #[test]
+    fn commands_are_found_to_three_levels_and_no_deeper() {
+        let (_ws_dir, ws) = canonical_dir();
+        let commands = ws.join(".caliche/commands");
+        fs::create_dir_all(commands.join("a/b/c")).expect("command dirs");
+        fs::write(commands.join("a/b/three.md"), "three levels").expect("three");
+        fs::write(commands.join("a/b/c/four.md"), "four levels").expect("four");
+
+        let snapshot = discover_from(&ws, None, &only(false, true, false));
+
+        assert_eq!(
+            snapshot.diagnostics.scanned_paths,
+            vec![commands.join("a/b/three.md")]
+        );
+    }
+
     /// HOME set to a link to the workspace (as `/var` is to `/private/var`
     /// on macOS) is still seen as the workspace.
     #[test]

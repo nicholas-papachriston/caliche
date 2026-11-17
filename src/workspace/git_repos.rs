@@ -542,4 +542,16 @@ mod tests {
             vec![root.clone(), root.join("lib")]
         );
     }
+
+    /// A repo inside a skipped directory is not discovered: the walk does
+    /// not enter `node_modules`.
+    #[test]
+    fn a_repo_inside_a_skipped_directory_is_not_discovered() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        init_git(&root);
+        init_git(&root.join("node_modules/pkg"));
+
+        assert_eq!(discover_git_repos(&root), vec![root.clone()]);
+    }
 }

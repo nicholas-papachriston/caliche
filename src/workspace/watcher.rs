@@ -712,6 +712,37 @@ mod link_tests {
         assert_eq!((changes, removals), (Vec::new(), vec![path]));
     }
 
+    /// A memory note that is a regular file is reindexed on a change, even
+    /// when the catalog is reached through a link (as `/var` is on macOS).
+    #[test]
+    #[serial_test::serial(env)]
+    fn a_changed_memory_note_is_reindexed() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let real = tmp
+            .path()
+            .canonicalize()
+            .expect("canonical")
+            .join("catalog");
+        std::fs::create_dir_all(&real).expect("catalog");
+        let linked = tmp.path().canonicalize().expect("canonical").join("linked");
+        std::os::unix::fs::symlink(&real, &linked).expect("catalog link");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", &linked);
+        let ws = tempfile::tempdir().expect("workspace");
+        let root = ws.path().canonicalize().expect("canonical");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&root);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        let path = memory.join("note.md");
+        std::fs::write(&path, "a note").expect("note");
+        let config = WorkspaceIndexerConfig::new(root);
+
+        let (changes, removals) = modify_event(&path, &config);
+
+        assert_eq!((changes, removals), (vec![path], Vec::new()));
+    }
+
     /// A memory note replaced by a link is a removal, not a change.
     #[test]
     #[serial_test::serial(env)]

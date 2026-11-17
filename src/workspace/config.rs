@@ -401,8 +401,8 @@ mod tests {
         );
     }
 
-    /// A workspace with a file in it, a directory outside it, and a disk
-    /// config for the workspace.
+    /// A workspace, a directory outside it, and a disk config for the
+    /// workspace.
     #[cfg(unix)]
     fn swap_setup() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceIndexerConfig) {
         let outside = tempfile::tempdir().expect("outside dir");
