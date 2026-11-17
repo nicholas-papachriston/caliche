@@ -34,6 +34,18 @@ enum IndexPrepare {
     },
 }
 
+/// The roots and on-disk stores of the repos strictly below `repo`.
+fn nested_stores_of(
+    repo: &std::path::Path,
+    stores: &[(std::path::PathBuf, Option<std::path::PathBuf>)],
+) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    stores
+        .iter()
+        .filter(|(other, _)| other != repo && other.starts_with(repo))
+        .filter_map(|(other, store)| Some((other.clone(), store.clone()?)))
+        .collect()
+}
+
 /// Indexes a workspace directory into a RAG service.
 pub struct WorkspaceIndexer {
     rag_service: Arc<RagService>,
@@ -58,7 +70,7 @@ impl WorkspaceIndexer {
     /// Nested git worktrees get their own store directory and manifest. The RAG
     /// backend routes writes by file path when it is federated.
     pub async fn index(&self) -> anyhow::Result<WorkspaceIndexResult> {
-        let repos = git_repos::discover_git_repos(&self.config.root_path);
+        let mut repos = git_repos::discover_git_repos(&self.config.root_path);
         if repos.len() <= 1 {
             self.record_root_marker(&git_repos::canonical_or_owned(&self.config.root_path));
             return self.index_tree().await;
@@ -67,6 +79,9 @@ impl WorkspaceIndexer {
         let mut files_indexed = 0usize;
         let mut total_chunks = 0usize;
         let mut failures = Vec::new();
+        // A repo's purge releases the keys of the repos below it, so it must
+        // run before them whatever order `.gitmodules` lists them in.
+        repos.sort_by_key(|repo| repo.components().count());
         let stores: Vec<(std::path::PathBuf, Option<std::path::PathBuf>)> = repos
             .iter()
             .map(|repo| match repo_config(&self.config, repo).persistence {
@@ -80,11 +95,7 @@ impl WorkspaceIndexer {
                 self.record_root_marker_at(path, repo);
             }
             let mut repo_indexer = Self::new(Arc::clone(&self.rag_service), repo_config);
-            repo_indexer.nested_stores = stores
-                .iter()
-                .filter(|(other, _)| other != repo && other.starts_with(repo))
-                .filter_map(|(other, store)| Some((other.clone(), store.clone()?)))
-                .collect();
+            repo_indexer.nested_stores = nested_stores_of(repo, &stores);
             let result = repo_indexer.index_tree().await?;
             files_indexed = files_indexed.saturating_add(result.files_indexed);
             total_chunks = total_chunks.saturating_add(result.total_chunks);
@@ -1010,6 +1021,110 @@ mod tests {
 
         assert_eq!(top.rag_service.stats().await.expect("stats").1, 2);
         assert_eq!(sub_keys, vec![sub.join("a.rs").display().to_string()]);
+    }
+
+    /// Only the repos strictly below a repo, with a store on disk, are its
+    /// nested stores.
+    #[test]
+    fn the_nested_stores_are_the_repos_strictly_below() {
+        let path = std::path::PathBuf::from;
+        let stores = vec![
+            (path("/ws"), Some(path("/s/ws"))),
+            (path("/ws/a"), Some(path("/s/a"))),
+            (path("/ws/a/b"), Some(path("/s/b"))),
+            (path("/ws/ab"), Some(path("/s/ab"))),
+            (path("/ws/a/m"), None),
+        ];
+
+        assert_eq!(
+            nested_stores_of(std::path::Path::new("/ws/a"), &stores),
+            vec![(path("/ws/a/b"), path("/s/b"))]
+        );
+    }
+
+    /// The docs count and the keys of `repo`'s own manifest.
+    async fn docs_and_keys(top: &WorkspaceIndexer, repo: &std::path::Path) -> (usize, Vec<String>) {
+        let PersistenceConfig::Disk { path } = repo_config(&top.config, repo).persistence else {
+            panic!("store is on disk");
+        };
+        let keys = sorted_keys(&IndexManifest::load(&path).await.expect("manifest"));
+        (top.rag_service.stats().await.expect("stats").1, keys)
+    }
+
+    /// A child repo that `.gitmodules` lists before its parent keeps its
+    /// document: the parent runs and purges first.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_listed_before_its_parent_keeps_its_documents() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical").join("ws");
+        let a = root.join("a");
+        let b = a.join("b");
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::create_dir_all(a.join(".git")).expect("a git dir");
+        std::fs::create_dir_all(&b).expect("b");
+        std::fs::write(root.join("r.rs"), "fn r() {}").expect("r");
+        std::fs::write(a.join("x.rs"), "fn x() {}").expect("x");
+        std::fs::write(b.join("y.rs"), "fn y() {}").expect("y");
+        std::fs::write(root.join(".gitmodules"), "[submodule \"a\"]\n\tpath = a\n")
+            .expect("gitmodules");
+        let (top, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: dir.path().join("store"),
+            },
+        );
+        top.index().await.expect("first run");
+        std::fs::create_dir_all(b.join(".git")).expect("b git dir");
+        std::fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"b\"]\n\tpath = a/b\n[submodule \"a\"]\n\tpath = a\n",
+        )
+        .expect("gitmodules");
+
+        let result = top.index().await.expect("second run");
+
+        assert_eq!(result.failures, Vec::<String>::new());
+        assert_eq!(
+            docs_and_keys(&top, &b).await,
+            (3, vec![b.join("y.rs").display().to_string()])
+        );
+    }
+
+    /// Three nested repos hidden for one run and found again keep their
+    /// documents: each leftover key goes to the deepest repo that holds it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn three_nested_repos_found_again_keep_their_documents() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical").join("ws");
+        let a = root.join("a");
+        let b = a.join("b");
+        for repo in [&root, &a, &b] {
+            std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        }
+        std::fs::write(root.join("r.rs"), "fn r() {}").expect("r");
+        std::fs::write(a.join("x.rs"), "fn x() {}").expect("x");
+        std::fs::write(b.join("y.rs"), "fn y() {}").expect("y");
+        let (top, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: dir.path().join("store"),
+            },
+        );
+        top.index().await.expect("multi-repo run");
+        std::fs::rename(a.join(".git"), dir.path().join("a-git")).expect("hide a git");
+        std::fs::rename(b.join(".git"), dir.path().join("b-git")).expect("hide b git");
+        top.index().await.expect("single-repo run");
+        std::fs::rename(dir.path().join("a-git"), a.join(".git")).expect("restore a git");
+        std::fs::rename(dir.path().join("b-git"), b.join(".git")).expect("restore b git");
+
+        top.index().await.expect("multi-repo run again");
+
+        assert_eq!(
+            docs_and_keys(&top, &b).await,
+            (3, vec![b.join("y.rs").display().to_string()])
+        );
     }
 
     /// When the nested repo's manifest cannot drop a leftover key, the top
