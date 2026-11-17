@@ -1180,11 +1180,11 @@ impl std::io::Read for FailsWhenRead {
 }
 
 /// The bounded read stops one byte past the limit: a source that fails
-/// after `limit + 2` bytes is refused for its size, not for the failure.
+/// after `limit + 1` bytes is refused for its size, not for the failure.
 #[test]
 fn the_bounded_read_stops_one_byte_past_the_limit() {
     use std::io::Read as _;
-    let source = std::io::repeat(b'a').take(10).chain(FailsWhenRead);
+    let source = std::io::repeat(b'a').take(9).chain(FailsWhenRead);
 
     let read =
         caliche_policy::read_bounded(source, Path::new("source"), 8).map_err(|err| err.to_string());

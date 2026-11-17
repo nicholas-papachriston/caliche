@@ -157,9 +157,11 @@ pub const MAX_GIT_TEXT_BYTES: u64 = 1 << 20;
 /// path cannot stall the caller. Anything but a regular file is then
 /// refused with [`NOT_A_REGULAR_GIT_FILE`]. At most `max_bytes` plus one
 /// byte is read, and a file that holds more is refused, however its size
-/// changes while it is read. A link is followed, as git follows it; these
-/// paths are in git dirs, which a sandboxed command cannot write. Read a
-/// work-tree file such as `.gitmodules` with a no-follow reader instead.
+/// changes while it is read. A link is followed, as git follows it. A
+/// sandboxed command can still place some of these files (a `.git` moved
+/// into the workspace), so every read is limited in size and kind; a caller
+/// that must not follow links, such as one reading `.gitmodules`, uses a
+/// no-follow reader instead.
 ///
 /// # Errors
 ///
