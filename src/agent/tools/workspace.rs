@@ -41,11 +41,12 @@ fn append_labeled_names(output: &mut String, title: &str, names: &[String], suff
 
 #[cfg(feature = "tools-grep")]
 fn append_top_level_with_walker(output: &mut String, path: &Path) {
-    use crate::agent::tools::tree_walk::{WalkOptions, walk_tree};
+    use crate::agent::tools::tree_walk::{Ignores, WalkOptions, walk_tree};
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     let options = WalkOptions {
         max_depth: Some(1),
+        ignores: Ignores::Tools,
         ..Default::default()
     };
     let errors = walk_tree(path, options, &mut |entry| {
@@ -505,6 +506,7 @@ impl WorkspaceTool {
                     let max_results = 10;
                     let options = crate::agent::tools::tree_walk::WalkOptions {
                         max_depth: Some(10),
+                        ignores: crate::agent::tools::tree_walk::Ignores::Tools,
                         ..Default::default()
                     };
                     let _ = crate::agent::tools::tree_walk::walk_tree(

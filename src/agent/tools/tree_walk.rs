@@ -20,9 +20,6 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::agent::tools::common::path::{list_resolved_dir, read_resolved_text};
 
-/// Ignore files read in every directory of the walk.
-pub const IGNORE_FILES: [&str; 3] = [".gitignore", ".ignore", ".caliche_ignore"];
-
 /// Directory names a walk never enters: version control metadata.
 pub const VCS_DIRS: [&str; 4] = [".git", ".hg", ".svn", ".jj"];
 
@@ -33,11 +30,8 @@ pub struct WalkOptions {
     pub max_depth: Option<usize>,
     /// Visit names that start with `.`.
     pub include_hidden: bool,
-    /// Apply the user's global git excludes (`core.excludesFile`, else
-    /// `$XDG_CONFIG_HOME/git/ignore`), the [`IGNORE_FILES`] of every
-    /// directory above the root, the root's `.git/info/exclude`, and the
-    /// [`IGNORE_FILES`] of every directory walked. A deeper file wins.
-    pub honor_ignores: bool,
+    /// Which ignore rules apply.
+    pub ignores: Ignores,
 }
 
 impl Default for WalkOptions {
@@ -45,8 +39,49 @@ impl Default for WalkOptions {
         Self {
             max_depth: None,
             include_hidden: false,
-            honor_ignores: true,
+            ignores: Ignores::Index,
         }
+    }
+}
+
+/// The ignore rules a walk applies, each as the `ignore` crate's walker
+/// applied them with its standard filters for the callers this walk
+/// replaced.
+///
+/// The sources are the `.gitignore` and `.ignore` files and the
+/// `info/exclude` of a repository rooted there, for every directory walked
+/// and every directory above the root, and the user's global git excludes
+/// (`core.excludesFile`, else `$XDG_CONFIG_HOME/git/ignore`). A match is
+/// decided by source first (`.caliche_ignore`, then `.ignore`, then
+/// `.gitignore`, then `info/exclude`, then the global excludes) and, within
+/// a source, by the deepest directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ignores {
+    /// No ignore rules.
+    Off,
+    /// The rules the search and listing tools apply: the git sources count
+    /// only inside a repository and stop at the nearest repository root
+    /// going up, as in git (`require_git`); `.caliche_ignore` is not read.
+    Tools,
+    /// The rules the repository map applies: those of [`Ignores::Tools`]
+    /// and `.caliche_ignore`.
+    RepoMap,
+    /// The rules the indexer applies: the git sources apply everywhere,
+    /// through every directory above the root, and `.caliche_ignore` is
+    /// read too.
+    Index,
+}
+
+impl Ignores {
+    /// Whether the git sources need a repository, as the `ignore` crate's
+    /// `require_git`.
+    fn require_git(self) -> bool {
+        matches!(self, Self::Tools | Self::RepoMap)
+    }
+
+    /// Whether `.caliche_ignore` files are read.
+    fn caliche(self) -> bool {
+        matches!(self, Self::RepoMap | Self::Index)
     }
 }
 
@@ -104,13 +139,15 @@ pub fn walk_tree_pruned(
         root,
         options,
         ignores: Vec::new(),
+        global: None,
         prune,
         visit,
         errors: Vec::new(),
         unlisted: Vec::new(),
     };
-    if options.honor_ignores {
-        walk.ignores = outer_ignores(root, &mut walk.errors);
+    if options.ignores != Ignores::Off {
+        walk.global = global_excludes(root, &mut walk.errors);
+        walk.ignores = outer_ignores(root, options.ignores, &mut walk.errors);
     }
     let _ = walk.dir(root, 1);
     WalkReport {
@@ -123,8 +160,11 @@ pub fn walk_tree_pruned(
 struct Walk<'a> {
     root: &'a Path,
     options: WalkOptions,
-    /// The ignore matchers of the directories above the current one.
-    ignores: Vec<Gitignore>,
+    /// The ignore rules of the directories above the current one, outermost
+    /// first.
+    ignores: Vec<DirIgnores>,
+    /// The user's global git excludes.
+    global: Option<Gitignore>,
     prune: &'a dyn Fn(&WalkedEntry) -> bool,
     visit: &'a mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
     errors: Vec<String>,
@@ -142,12 +182,35 @@ impl Walk<'_> {
             }
         };
         entries.sort_by(|a, b| a.name.cmp(&b.name));
-        let pushed = self.options.honor_ignores
-            && push_dir_ignores(dir, &entries, &mut self.ignores, &mut self.errors);
-        let flow = self.entries(dir, depth, &entries);
-        if pushed {
-            self.ignores.pop();
+        if self.options.ignores == Ignores::Off {
+            return self.entries(dir, depth, &entries);
         }
+        let listed = |name: &str| {
+            entries
+                .iter()
+                .any(|entry| entry.kind == EntryKind::File && entry.name == name)
+        };
+        let dot_git =
+            entries
+                .iter()
+                .find(|entry| entry.name == ".git")
+                .map_or(DotGit::None, |entry| match entry.kind {
+                    EntryKind::Dir => DotGit::Dir,
+                    EntryKind::File => DotGit::File,
+                    EntryKind::Other => DotGit::Other,
+                });
+        let has_jj = entries.iter().any(|entry| entry.name == ".jj");
+        let here = dir_ignores(
+            dir,
+            dot_git,
+            has_jj,
+            &listed,
+            self.options.ignores,
+            &mut self.errors,
+        );
+        self.ignores.push(here);
+        let flow = self.entries(dir, depth, &entries);
+        self.ignores.pop();
         flow
     }
 
@@ -172,7 +235,15 @@ impl Walk<'_> {
                 continue;
             }
             let path = dir.join(&entry.name);
-            if self.options.honor_ignores && is_ignored(&self.ignores, &path, is_dir) {
+            if self.options.ignores != Ignores::Off
+                && is_ignored(
+                    &self.ignores,
+                    self.global.as_ref(),
+                    self.options.ignores.require_git(),
+                    &path,
+                    is_dir,
+                )
+            {
                 continue;
             }
             let walked = WalkedEntry {
@@ -193,71 +264,83 @@ impl Walk<'_> {
     }
 }
 
-/// The matchers that apply to `root` from outside the walk, least specific
-/// first, in git's order:
-///
-/// 1. the user's global excludes (`core.excludesFile`, else
-///    `$XDG_CONFIG_HOME/git/ignore`);
-/// 2. the `info/exclude` of the git repository that holds `root`, which is
-///    `root` itself or the nearest directory above it with a `.git`;
-/// 3. the [`IGNORE_FILES`] of each directory above `root`, from that
-///    repository's root down, or from the file system root when no
-///    repository holds `root`.
+/// The ignore rules of each directory above `root`, outermost first.
 ///
 /// `root` is canonical, so every directory above it is too, and the ignore
-/// files above it are read with no link followed.
-fn outer_ignores(root: &Path, errors: &mut Vec<String>) -> Vec<Gitignore> {
-    let mut ignores = Vec::new();
-    if let Some(global) = global_excludes(root, errors) {
-        ignores.push(global);
-    }
-    let repo = enclosing_repo(root);
-    if let Some(Repo {
-        root: repo_root,
-        exclude: Some(exclude),
-    }) = &repo
-        && let Some(matcher) = read_ignore(repo_root, exclude, errors)
-    {
-        ignores.push(matcher);
-    }
-    let top = repo.as_ref().map(|repo| repo.root.as_path());
-    let mut above: Vec<&Path> = root
-        .ancestors()
-        .skip(1)
-        .take_while(|dir| top.is_none_or(|top| dir.starts_with(top)))
-        .collect();
+/// files there are read with no link followed.
+fn outer_ignores(root: &Path, rules: Ignores, errors: &mut Vec<String>) -> Vec<DirIgnores> {
+    let mut above: Vec<&Path> = root.ancestors().skip(1).collect();
     above.reverse();
-    for dir in above {
-        if let Some(matcher) = read_dir_ignore_files(dir, errors) {
-            ignores.push(matcher);
-        }
-    }
-    ignores
+    above
+        .into_iter()
+        .map(|dir| {
+            let dot_git = match std::fs::symlink_metadata(dir.join(".git")) {
+                Ok(meta) if meta.is_dir() => DotGit::Dir,
+                Ok(meta) if meta.is_file() => DotGit::File,
+                Ok(_) => DotGit::Other,
+                Err(_) => DotGit::None,
+            };
+            let has_jj = std::fs::symlink_metadata(dir.join(".jj")).is_ok();
+            dir_ignores(dir, dot_git, has_jj, &|_| true, rules, errors)
+        })
+        .collect()
 }
 
-/// The [`IGNORE_FILES`] in `dir`, a directory above the walk, as one matcher.
-fn read_dir_ignore_files(dir: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
-    let mut builder = GitignoreBuilder::new(dir);
-    let mut any = false;
-    for name in IGNORE_FILES {
-        match read_resolved_text(&dir.join(name)) {
-            Ok(text) => {
-                for line in text.lines() {
-                    let _ = builder.add_line(None, line);
-                }
-                any = true;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => errors.push(format!("{}: {err}", dir.join(name).display())),
-        }
+/// What a directory's `.git` entry is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DotGit {
+    None,
+    Dir,
+    /// A `.git` file: a linked worktree or a submodule.
+    File,
+    /// A link or another kind; it is not followed.
+    Other,
+}
+
+/// The ignore rules one directory adds, by source.
+struct DirIgnores {
+    caliche: Option<Gitignore>,
+    ignore: Option<Gitignore>,
+    git: Option<Gitignore>,
+    /// The `info/exclude` of a repository rooted at this directory.
+    exclude: Option<Gitignore>,
+    /// This directory is a repository root, counted only for
+    /// [`Ignores::Tools`].
+    has_git: bool,
+}
+
+/// Read the ignore rules of `dir`. `listed` says which ignore file names to
+/// try; a missing file adds nothing.
+fn dir_ignores(
+    dir: &Path,
+    dot_git: DotGit,
+    has_jj: bool,
+    listed: &dyn Fn(&str) -> bool,
+    rules: Ignores,
+    errors: &mut Vec<String>,
+) -> DirIgnores {
+    let mut file = |name: &str| {
+        listed(name)
+            .then(|| read_ignore(dir, &dir.join(name), errors))
+            .flatten()
+    };
+    let caliche = rules.caliche().then(|| file(".caliche_ignore")).flatten();
+    let ignore = file(".ignore");
+    let git = file(".gitignore");
+    let git_dir = match dot_git {
+        DotGit::Dir => Some(dir.join(".git")),
+        DotGit::File => gitfile_common_dir(dir, &dir.join(".git")),
+        DotGit::None | DotGit::Other => None,
+    };
+    let exclude =
+        git_dir.and_then(|git_dir| read_ignore(dir, &git_dir.join("info").join("exclude"), errors));
+    DirIgnores {
+        caliche,
+        ignore,
+        git,
+        exclude,
+        has_git: rules.require_git() && (dot_git != DotGit::None || has_jj),
     }
-    if !any {
-        return None;
-    }
-    builder
-        .build()
-        .map_err(|err| errors.push(format!("{}: {err}", dir.display())))
-        .ok()
 }
 
 /// The user's global excludes as a matcher rooted at `root`, if the file
@@ -304,38 +387,6 @@ pub(crate) fn set_test_global_excludes(path: Option<PathBuf>) {
     TEST_GLOBAL_EXCLUDES.with(|slot| *slot.borrow_mut() = path);
 }
 
-/// The git repository that holds a walk root.
-struct Repo {
-    /// The repository's working tree root.
-    root: PathBuf,
-    /// Its `info/exclude`, when its git directory could be found.
-    exclude: Option<PathBuf>,
-}
-
-/// The repository whose working tree holds `root`: the nearest of `root`
-/// and the directories above it that has a `.git` entry.
-///
-/// A `.git` directory holds `info/exclude`. A `.git` file (a linked worktree
-/// or a submodule) names its git directory with `gitdir:`, and a `commondir`
-/// file there names the shared one that holds `info/exclude`.
-fn enclosing_repo(root: &Path) -> Option<Repo> {
-    root.ancestors().find_map(|dir| {
-        let dot_git = dir.join(".git");
-        let meta = std::fs::symlink_metadata(&dot_git).ok()?;
-        let git_dir = if meta.is_dir() {
-            Some(dot_git)
-        } else if meta.is_file() {
-            gitfile_common_dir(dir, &dot_git)
-        } else {
-            None
-        };
-        Some(Repo {
-            root: dir.to_path_buf(),
-            exclude: git_dir.map(|git_dir| git_dir.join("info").join("exclude")),
-        })
-    })
-}
-
 /// The canonical common git directory a `.git` file in `dir` points to.
 fn gitfile_common_dir(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
     let text = read_head(dot_git)?;
@@ -359,49 +410,17 @@ fn read_head(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// Read the ignore files `dir` lists into one matcher.
-fn push_dir_ignores(
-    dir: &Path,
-    entries: &[caliche_sandbox::DirEntryBeneath],
-    ignores: &mut Vec<Gitignore>,
-    errors: &mut Vec<String>,
-) -> bool {
-    let mut builder = GitignoreBuilder::new(dir);
-    let mut any = false;
-    for name in IGNORE_FILES {
-        if !entries
-            .iter()
-            .any(|entry| entry.kind == EntryKind::File && entry.name == name)
-        {
-            continue;
-        }
-        match read_resolved_text(&dir.join(name)) {
-            Ok(text) => {
-                for line in text.lines() {
-                    let _ = builder.add_line(None, line);
-                }
-                any = true;
-            }
-            Err(err) => errors.push(format!("{}: {err}", dir.join(name).display())),
-        }
-    }
-    if !any {
-        return false;
-    }
-    match builder.build() {
-        Ok(matcher) => {
-            ignores.push(matcher);
-            true
-        }
-        Err(err) => {
-            errors.push(format!("{}: {err}", dir.display()));
-            false
-        }
-    }
-}
-
+/// The ignore file `file` as a matcher rooted at `root`; `None` when it is
+/// missing. Read with no link followed; a link or a read error is reported.
 fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
-    let text = read_resolved_text(file).ok()?;
+    let text = match read_resolved_text(file) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            errors.push(format!("{}: {err}", file.display()));
+            return None;
+        }
+    };
     let mut builder = GitignoreBuilder::new(root);
     for line in text.lines() {
         let _ = builder.add_line(None, line);
@@ -412,16 +431,48 @@ fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Git
         .ok()
 }
 
-/// The deepest matcher that decides wins, as in git.
-fn is_ignored(ignores: &[Gitignore], path: &Path, is_dir: bool) -> bool {
-    for matcher in ignores.iter().rev() {
-        match matcher.matched(path, is_dir) {
-            Match::Ignore(_) => return true,
-            Match::Whitelist(_) => return false,
-            Match::None => {}
+/// Whether `path` is ignored, decided as the `ignore` crate decides: the
+/// first source with a match wins, in the order `.caliche_ignore`,
+/// `.ignore`, `.gitignore`, `info/exclude`, global excludes; within a
+/// source, the deepest directory wins. With `require_git`, the git sources
+/// count only inside a repository and only up to its root.
+fn is_ignored(
+    stack: &[DirIgnores],
+    global: Option<&Gitignore>,
+    require_git: bool,
+    path: &Path,
+    is_dir: bool,
+) -> bool {
+    let decide = |matcher: Option<&Gitignore>| match matcher?.matched(path, is_dir) {
+        Match::Ignore(_) => Some(true),
+        Match::Whitelist(_) => Some(false),
+        Match::None => None,
+    };
+    let any_git = !require_git || stack.iter().any(|dir| dir.has_git);
+    let mut found: [Option<bool>; 4] = [None; 4];
+    let mut saw_git = false;
+    for dir in stack.iter().rev() {
+        let git_counts = any_git && !saw_git;
+        let sources = [
+            (dir.caliche.as_ref(), true),
+            (dir.ignore.as_ref(), true),
+            (dir.git.as_ref(), git_counts),
+            (dir.exclude.as_ref(), git_counts),
+        ];
+        for (slot, (matcher, counts)) in found.iter_mut().zip(sources) {
+            if slot.is_none() && counts {
+                *slot = decide(matcher);
+            }
         }
+        saw_git = saw_git || dir.has_git;
     }
-    false
+    let global = if any_git { decide(global) } else { None };
+    found
+        .into_iter()
+        .chain([global])
+        .flatten()
+        .next()
+        .unwrap_or(false)
 }
 
 #[cfg(all(test, unix))]
@@ -462,7 +513,7 @@ mod tests {
                 &root,
                 WalkOptions {
                     include_hidden: true,
-                    honor_ignores: false,
+                    ignores: Ignores::Off,
                     max_depth: Some(1),
                 }
             ),
@@ -611,17 +662,33 @@ mod tests {
         );
     }
 
-    /// Ignore files above the repository root do not apply.
+    /// For the tools, git ignore files above the repository root do not
+    /// apply; for the indexer they do.
     #[test]
-    fn ignore_files_above_the_repo_root_do_not_apply() {
+    fn git_ignore_files_above_the_repo_root_apply_only_to_the_index_walk() {
         let tmp = tempfile::tempdir().expect("tmp");
         let top = tmp.path().canonicalize().expect("top");
         std::fs::create_dir_all(top.join("repo/.git")).expect("git dir");
-        write_all(&top, &[(".gitignore", "result\n"), ("repo/result", "r")]);
+        write_all(
+            &top,
+            &[
+                (".gitignore", "result\n"),
+                ("repo/result", "r"),
+                ("repo/ok.rs", "o"),
+            ],
+        );
+        let tools = WalkOptions {
+            ignores: Ignores::Tools,
+            ..WalkOptions::default()
+        };
 
         assert_eq!(
+            walk_names(&top.join("repo"), tools),
+            vec!["ok.rs", "result"]
+        );
+        assert_eq!(
             walk_names(&top.join("repo"), WalkOptions::default()),
-            vec!["result"]
+            vec!["ok.rs"]
         );
     }
 
@@ -719,3 +786,6 @@ mod tests {
         assert_eq!(entry_kind(&root.join("link")), Some(EntryKind::Other));
     }
 }
+
+#[cfg(all(test, unix))]
+mod parity_tests;

@@ -805,7 +805,7 @@ impl GrepTool {
         let walk_options = crate::agent::tools::tree_walk::WalkOptions {
             max_depth: (!options.recursive).then_some(1),
             include_hidden: options.include_hidden,
-            honor_ignores: true,
+            ignores: crate::agent::tools::tree_walk::Ignores::Tools,
         };
         let walk_errors =
             crate::agent::tools::tree_walk::walk_tree(dir_path, walk_options, &mut |entry| {

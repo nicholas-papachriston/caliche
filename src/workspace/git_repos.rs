@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use caliche_sandbox::EntryKind;
 
-use crate::agent::tools::tree_walk::{WalkOptions, WalkedEntry, walk_tree_pruned};
+use crate::agent::tools::tree_walk::{Ignores, WalkOptions, WalkedEntry, walk_tree_pruned};
 use crate::gitmodules::{is_safe_relative, parse_gitmodules};
 
 /// Maximum nested git worktrees to register under one workspace root.
@@ -165,7 +165,7 @@ pub fn discover_git_repos(root: &Path) -> Vec<PathBuf> {
     let options = WalkOptions {
         max_depth: None,
         include_hidden: false,
-        honor_ignores: false,
+        ignores: Ignores::Off,
     };
     walk_tree_pruned(&canonical_root, options, &skipped, &mut |entry| {
         if entry.kind != EntryKind::Dir || skipped(entry) {

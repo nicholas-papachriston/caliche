@@ -203,6 +203,7 @@ fn glob_walk(
 
     let options = crate::agent::tools::tree_walk::WalkOptions {
         include_hidden,
+        ignores: crate::agent::tools::tree_walk::Ignores::Tools,
         ..Default::default()
     };
     let walk_errors = crate::agent::tools::tree_walk::walk_tree(root, options, &mut |entry| {

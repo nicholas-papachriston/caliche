@@ -22,7 +22,10 @@ pub fn scan(root: &Path) -> Vec<PathBuf> {
     // of the workspace. Paths keep the caller's spelling of `root`.
     let _ = crate::agent::tools::tree_walk::walk_tree(
         &canonical,
-        crate::agent::tools::tree_walk::WalkOptions::default(),
+        crate::agent::tools::tree_walk::WalkOptions {
+            ignores: crate::agent::tools::tree_walk::Ignores::RepoMap,
+            ..Default::default()
+        },
         &mut |entry| {
             if entry.kind == caliche_sandbox::EntryKind::File {
                 let ext = entry
