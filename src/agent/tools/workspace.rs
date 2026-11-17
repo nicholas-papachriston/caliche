@@ -631,6 +631,41 @@ mod tests {
         );
     }
 
+    /// The top-level listing applies the tools' ignore rules: a
+    /// `.gitignore` above the repository root and `.caliche_ignore` hide
+    /// nothing from it.
+    #[cfg(feature = "tools-grep")]
+    #[test]
+    fn the_listing_applies_the_tools_ignore_rules() {
+        let dir = tempdir().expect("tempdir");
+        let repo = crate::agent::tools::tree_walk::tool_rules_fixture(dir.path());
+        let mut output = String::new();
+
+        append_top_level_with_walker(&mut output, &repo);
+
+        assert_eq!(output, "Files:\n  a.rs\n  above.rs\n  hidden.rs\n");
+    }
+
+    /// The entry point search applies the tools' ignore rules.
+    #[cfg(feature = "tools-grep")]
+    #[tokio::test]
+    async fn the_entry_point_search_applies_the_tools_ignore_rules() {
+        let dir = tempdir().expect("tempdir");
+        let repo = crate::agent::tools::tree_walk::tool_rules_fixture(dir.path());
+
+        let mut found = WorkspaceTool::find_code_entry_points(&repo).await;
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![
+                "Rust: a.rs (line 1)",
+                "Rust: above.rs (line 1)",
+                "Rust: hidden.rs (line 1)",
+            ]
+        );
+    }
+
     #[test]
     fn read_cargo_workspace_members_parses_named_entries() {
         let dir = tempdir().expect("tempdir");

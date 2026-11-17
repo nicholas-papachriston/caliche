@@ -1316,6 +1316,39 @@ mod tests {
             .collect()
     }
 
+    /// Grep applies the tools' ignore rules: a `.gitignore` above the
+    /// repository root and `.caliche_ignore` hide nothing from it.
+    #[tokio::test]
+    async fn grep_applies_the_tools_ignore_rules() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo = crate::agent::tools::tree_walk::tool_rules_fixture(dir.path());
+
+        let result = GrepTool
+            .execute(
+                json!({
+                    "pattern": "needle",
+                    "path": repo.to_string_lossy(),
+                    "mode": "files_with_matches",
+                }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
+        let mut names: Vec<String> = result
+            .content
+            .lines()
+            .filter_map(|line| line.strip_suffix(".rs"))
+            .map(|stem| format!("{}.rs", stem.rsplit('/').next().unwrap_or(stem)))
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec!["a.rs", "above.rs", "hidden.rs"],
+            "{}",
+            result.content
+        );
+    }
+
     #[tokio::test]
     async fn grep_files_mode_stops_at_char_budget() {
         let dir = many_matching_files();

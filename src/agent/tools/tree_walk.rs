@@ -475,6 +475,23 @@ fn is_ignored(
         .unwrap_or(false)
 }
 
+/// A repository with three files a tool walk lists and an index walk
+/// leaves out two of: `above.rs` is in a `.gitignore` above the repository
+/// root, and `hidden.rs` is in its `.caliche_ignore`. Each holds a `main`
+/// with `needle` in it. Returns the canonical repository path.
+#[cfg(test)]
+pub(crate) fn tool_rules_fixture(top: &Path) -> PathBuf {
+    let top = top.canonicalize().expect("top");
+    let repo = top.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+    std::fs::write(top.join(".gitignore"), "above.rs\n").expect("outer ignore");
+    std::fs::write(repo.join(".caliche_ignore"), "hidden.rs\n").expect("caliche ignore");
+    for name in ["a.rs", "above.rs", "hidden.rs"] {
+        std::fs::write(repo.join(name), "fn main() {} // needle\n").expect("file");
+    }
+    repo
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

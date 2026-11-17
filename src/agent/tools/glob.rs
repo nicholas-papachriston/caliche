@@ -410,6 +410,27 @@ mod tests {
         );
     }
 
+    /// Glob applies the tools' ignore rules: a `.gitignore` above the
+    /// repository root and `.caliche_ignore` hide nothing from it.
+    #[tokio::test]
+    async fn glob_applies_the_tools_ignore_rules() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo = crate::agent::tools::tree_walk::tool_rules_fixture(dir.path());
+
+        let result = GlobTool
+            .execute(
+                json!({ "path": repo.to_string_lossy(), "pattern": "*.rs" }),
+                &crate::agent::tools::ToolPermit::for_tests(),
+            )
+            .await;
+
+        assert!(
+            result.content.ends_with(":\na.rs\nabove.rs\nhidden.rs"),
+            "{}",
+            result.content
+        );
+    }
+
     #[tokio::test]
     async fn glob_has_no_banner_when_all_paths_fit() {
         let dir = TempDir::new().expect("tempdir");
