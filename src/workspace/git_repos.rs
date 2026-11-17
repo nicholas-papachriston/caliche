@@ -526,4 +526,20 @@ mod tests {
         assert!(repos.iter().all(|path| path != &outside_root));
         assert_eq!(repos.len(), 1);
     }
+
+    /// A skipped directory such as `node_modules` is not a repo, even when
+    /// it holds a `.git`.
+    #[test]
+    fn a_skipped_directory_is_not_discovered() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        init_git(&root);
+        init_git(&root.join("node_modules"));
+        init_git(&root.join("lib"));
+
+        assert_eq!(
+            discover_git_repos(&root),
+            vec![root.clone(), root.join("lib")]
+        );
+    }
 }
