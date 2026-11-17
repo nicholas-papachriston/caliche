@@ -900,6 +900,13 @@ async fn every_attempt_to_plant_a_git_dir_is_denied() {
             "make it through an alias",
             format!("mkdir \"$ALIAS/parent/{GIT_DIR_NAME}\""),
         ),
+        (
+            "move in a directory that holds one",
+            format!(
+                "mkdir \"$TMPDIR/zzx\" && printf 'gitdir: inner\\n' > \"$TMPDIR/zzx/{GIT_DIR_NAME}\" \
+                 && mv \"$TMPDIR/zzx\" parent/ws/x"
+            ),
+        ),
     ];
     let mut succeeded = Vec::new();
     for (name, attack) in &attacks {
@@ -918,6 +925,7 @@ async fn every_attempt_to_plant_a_git_dir_is_denied() {
             base.join(GIT_DIR_NAME),
             base.join("parent").join(GIT_DIR_NAME),
             root.join(GIT_DIR_NAME),
+            root.join("x").join(GIT_DIR_NAME),
         ]
         .iter()
         .any(|path| path.symlink_metadata().is_ok());
@@ -925,7 +933,11 @@ async fn every_attempt_to_plant_a_git_dir_is_denied() {
             succeeded.push(*name);
         }
     }
-    assert_eq!(succeeded, Vec::<&str>::new());
+    // Seatbelt denies writes by path, and a directory moved in from the
+    // private temp dir carries its `.git` with it: the profile cannot stop
+    // that one. The git tools check every such `.git` before git runs
+    // (caliche_sandbox README, "Agent git reads").
+    assert_eq!(succeeded, ["move in a directory that holds one"]);
 }
 
 include!("macos_parts/planted.rs");
