@@ -38,6 +38,9 @@ enum IndexPrepare {
 pub struct WorkspaceIndexer {
     rag_service: Arc<RagService>,
     config: WorkspaceIndexerConfig,
+    /// The roots and store directories of the repos this run's tree holds
+    /// below its own root, as this run's `index()` discovered them.
+    nested_stores: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl WorkspaceIndexer {
@@ -46,6 +49,7 @@ impl WorkspaceIndexer {
         Self {
             rag_service,
             config,
+            nested_stores: Vec::new(),
         }
     }
 
@@ -63,12 +67,24 @@ impl WorkspaceIndexer {
         let mut files_indexed = 0usize;
         let mut total_chunks = 0usize;
         let mut failures = Vec::new();
-        for repo in repos {
-            let repo_config = repo_config(&self.config, &repo);
+        let stores: Vec<(std::path::PathBuf, Option<std::path::PathBuf>)> = repos
+            .iter()
+            .map(|repo| match repo_config(&self.config, repo).persistence {
+                PersistenceConfig::Disk { path } => (repo.clone(), Some(path)),
+                _ => (repo.clone(), None),
+            })
+            .collect();
+        for repo in &repos {
+            let repo_config = repo_config(&self.config, repo);
             if let PersistenceConfig::Disk { path } = &repo_config.persistence {
-                self.record_root_marker_at(path, &repo);
+                self.record_root_marker_at(path, repo);
             }
-            let repo_indexer = Self::new(Arc::clone(&self.rag_service), repo_config);
+            let mut repo_indexer = Self::new(Arc::clone(&self.rag_service), repo_config);
+            repo_indexer.nested_stores = stores
+                .iter()
+                .filter(|(other, _)| other != repo && other.starts_with(repo))
+                .filter_map(|(other, store)| Some((other.clone(), store.clone()?)))
+                .collect();
             let result = repo_indexer.index_tree().await?;
             files_indexed = files_indexed.saturating_add(result.files_indexed);
             total_chunks = total_chunks.saturating_add(result.total_chunks);
@@ -251,6 +267,7 @@ impl WorkspaceIndexer {
             })
             .cloned()
             .collect();
+        let stale_paths = self.release_nested_entries(stale_paths, failures).await;
         let mut removed_stale = Vec::new();
         for (i, stale_path) in stale_paths.iter().enumerate() {
             if let Err(e) = self.rag_service.delete_document(stale_path).await {
@@ -264,6 +281,50 @@ impl WorkspaceIndexer {
             }
         }
         self.persist_manifest(manifest, &[], &removed_stale).await;
+    }
+
+    /// Drop each stale key under a nested repo from that repo's manifest
+    /// before its document is deleted.
+    ///
+    /// The federated backend deletes a document from every member, so a key
+    /// this run left behind (from a run before the nested repo was found)
+    /// would also delete the nested repo's copy, which its manifest still
+    /// lists as indexed. With the entry gone, the nested repo's run indexes
+    /// the file again if it still exists. A key whose entry cannot be
+    /// dropped is kept, and its document too.
+    async fn release_nested_entries(
+        &self,
+        stale_paths: Vec<String>,
+        failures: &mut Vec<String>,
+    ) -> Vec<String> {
+        let mut by_store: Vec<(&std::path::Path, Vec<String>)> = Vec::new();
+        let mut kept = Vec::new();
+        for path in stale_paths {
+            let owner = self
+                .nested_stores
+                .iter()
+                .filter(|(root, _)| std::path::Path::new(&path).starts_with(root))
+                .max_by_key(|(root, _)| root.as_os_str().len());
+            match owner {
+                Some((_, store)) => match by_store.iter_mut().find(|(dir, _)| *dir == store) {
+                    Some((_, paths)) => paths.push(path),
+                    None => by_store.push((store, vec![path])),
+                },
+                None => kept.push(path),
+            }
+        }
+        for (store, paths) in by_store {
+            match IndexManifest::default()
+                .save_delta(store, &[], &paths)
+                .await
+            {
+                Ok(()) => kept.extend(paths),
+                Err(error) => failures.extend(paths.iter().map(|path| {
+                    format!("{path}: failed to release from its nested repo manifest: {error}")
+                })),
+            }
+        }
+        kept
     }
 
     async fn ingest_changed_files(
@@ -912,6 +973,43 @@ mod tests {
             sorted_keys(&kept),
             vec![real.join("b.rs").display().to_string()]
         );
+    }
+
+    /// A nested repo that is hidden for one run and found again keeps its
+    /// document: the top run's leftover key for it does not delete the copy
+    /// the nested repo's manifest still lists.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_nested_repo_found_again_keeps_its_documents() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical").join("ws");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::create_dir_all(sub.join(".git")).expect("sub git dir");
+        std::fs::write(root.join("b.rs"), "fn b() {}").expect("b");
+        std::fs::write(sub.join("a.rs"), "fn a() {}").expect("a");
+        let store = dir.path().join("store");
+        let (top, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        top.index().await.expect("multi-repo run");
+        std::fs::rename(sub.join(".git"), dir.path().join("sub-git")).expect("hide sub git");
+        top.index().await.expect("single-repo run");
+        std::fs::rename(dir.path().join("sub-git"), sub.join(".git")).expect("restore sub git");
+
+        top.index().await.expect("multi-repo run again");
+        let PersistenceConfig::Disk { path: sub_store } =
+            repo_config(&top.config, &sub).persistence
+        else {
+            panic!("sub store is on disk");
+        };
+        let sub_keys = sorted_keys(&IndexManifest::load(&sub_store).await.expect("sub manifest"));
+
+        assert_eq!(top.rag_service.stats().await.expect("stats").1, 2);
+        assert_eq!(sub_keys, vec![sub.join("a.rs").display().to_string()]);
     }
 
     /// A workspace that gains a nested repo between two runs switches from
