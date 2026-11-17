@@ -303,13 +303,16 @@ pub fn recorded_workspace_roots(catalog_dir: &Path, workspace_root: &Path) -> Ve
     roots
 }
 
-/// Write the canonical worktree path into a store directory.
+/// Write the worktree path into a store directory.
+///
+/// `repo_root` is the canonical path discovery returned. It is recorded as
+/// given, not resolved again, so a worktree swapped for a link since then
+/// cannot record the link's target as this store's root.
 pub fn write_workspace_root_marker(store_dir: &Path, repo_root: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(store_dir)?;
-    let canonical = canonical_or_owned(repo_root);
     std::fs::write(
         store_dir.join("workspace_root"),
-        canonical.to_string_lossy().as_bytes(),
+        repo_root.to_string_lossy().as_bytes(),
     )
 }
 
