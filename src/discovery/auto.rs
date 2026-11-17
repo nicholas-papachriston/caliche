@@ -977,6 +977,32 @@ enum Listing {
     Follow,
 }
 
+/// Files `matcher` accepts under `dir`, a canonical directory below the
+/// workspace, up to `max_depth` levels down, in name order. Each directory
+/// is listed with no link followed; a link is neither entered nor matched.
+fn collect_confined_files<F>(dir: &Path, out: &mut Vec<PathBuf>, max_depth: usize, matcher: F)
+where
+    F: Fn(&Path) -> bool + Copy,
+{
+    if max_depth == 0 {
+        return;
+    }
+    let Ok(mut entries) = crate::agent::tools::common::path::list_resolved_dir(dir) else {
+        return;
+    };
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    for entry in entries {
+        let path = dir.join(&entry.name);
+        match entry.kind {
+            caliche_sandbox::EntryKind::Dir => {
+                collect_confined_files(&path, out, max_depth - 1, matcher);
+            }
+            caliche_sandbox::EntryKind::File if matcher(&path) => out.push(path),
+            _ => {}
+        }
+    }
+}
+
 /// Files `matcher` accepts under `base`, up to `max_depth` levels down (1 is
 /// `base`'s own entries).
 fn collect_files_recursive<F>(
@@ -992,17 +1018,7 @@ fn collect_files_recursive<F>(
         return;
     }
     if listing == Listing::Confined {
-        let options = crate::agent::tools::tree_walk::WalkOptions {
-            max_depth: Some(max_depth),
-            include_hidden: true,
-            honor_ignores: false,
-        };
-        let _ = crate::agent::tools::tree_walk::walk_tree(base, options, &mut |entry| {
-            if entry.kind == caliche_sandbox::EntryKind::File && matcher(&entry.path) {
-                out.push(entry.path.clone());
-            }
-            std::ops::ControlFlow::Continue(())
-        });
+        collect_confined_files(base, out, max_depth, matcher);
         return;
     }
     if !base.is_dir() {
@@ -1215,25 +1231,6 @@ pub fn read_file(path: &Path) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use std::fs;
-
-    /// A link to an outside directory, planted in a workspace command
-    /// folder, adds none of the outside files to the candidates.
-    #[cfg(unix)]
-    #[test]
-    fn a_linked_dir_below_the_workspace_adds_no_candidates() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let base = dir.path().canonicalize().expect("canonical");
-        let outside = tempfile::TempDir::new().expect("outside");
-        fs::write(outside.path().join("leak.md"), "# leak").expect("leak");
-        let commands = base.join(".caliche").join("commands");
-        fs::create_dir_all(&commands).expect("commands");
-        fs::write(commands.join("ok.md"), "# ok").expect("ok");
-        std::os::unix::fs::symlink(outside.path(), commands.join("linked")).expect("link");
-
-        let found = command_candidates(&base, Listing::Confined);
-
-        assert_eq!(found, vec![commands.join("ok.md")]);
-    }
 
     #[test]
     fn skill_candidates_exclude_markdown_rules() {
@@ -1551,6 +1548,27 @@ mod link_tests {
 
         assert_eq!(command_names(&snapshot), vec!["ok"]);
         assert!(!mentions_outside(&snapshot));
+    }
+
+    /// A directory below the workspace that is a link to an outside
+    /// directory is not listed: no file under it is scanned.
+    #[test]
+    fn a_linked_dir_below_the_workspace_is_not_scanned() {
+        let (_ws_dir, ws) = canonical_dir();
+        let (_out_dir, outside) = canonical_dir();
+        fs::write(outside.join("leak.md"), OUTSIDE).expect("outside file");
+        let commands = ws.join(".caliche/commands");
+        fs::create_dir_all(&commands).expect("commands dir");
+        fs::write(commands.join("ok.md"), "run the tests").expect("ok.md");
+        symlink(&outside, commands.join("linked")).expect("dir link");
+
+        let snapshot = discover_from(&ws, None, &only(false, true, false));
+
+        assert_eq!(command_names(&snapshot), vec!["ok"]);
+        assert_eq!(
+            snapshot.diagnostics.scanned_paths,
+            vec![commands.join("ok.md")]
+        );
     }
 
     /// HOME set to a link to the workspace (as `/var` is to `/private/var`
