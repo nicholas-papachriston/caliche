@@ -114,18 +114,6 @@ impl Default for ApplyOptions {
 }
 
 impl WorkspaceDeclaration {
-    /// Load a declaration, resolving relative paths against `path`'s parent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be read or parsed.
-    pub fn load_from_path(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("read workspace declaration {}", path.display()))?;
-        let source_dir = path.parent().unwrap_or(path).to_path_buf();
-        Self::load_from_str(&raw, &source_dir)
-    }
-
     /// Parse TOML with `source_dir` as the path base.
     ///
     /// # Errors
@@ -139,19 +127,24 @@ impl WorkspaceDeclaration {
         Ok(declaration)
     }
 
-    /// Load `.caliche/workspace.toml` under `root` if present.
+    /// Load `.caliche/workspace.toml` (or `workspace.toml`) under `root` if
+    /// present.
+    ///
+    /// The file is read below the canonical `root` with no link followed and
+    /// at most 1 MiB, so a link planted in the workspace cannot load an
+    /// outside file; such a file is skipped with a warning.
     ///
     /// # Errors
     ///
     /// Returns an error when the file exists but is invalid.
     pub fn discover(root: &Path) -> Result<Option<Self>> {
-        let path = root.join(DEFAULT_WORKSPACE_TOML);
-        if path.exists() {
-            return Self::load_from_path(&path).map(Some);
-        }
-        let fallback = root.join("workspace.toml");
-        if fallback.exists() {
-            return Self::load_from_path(&fallback).map(Some);
+        let base = canonical_or_owned(root);
+        for relative in [DEFAULT_WORKSPACE_TOML, "workspace.toml"] {
+            let path = base.join(relative);
+            if let Some(raw) = crate::discovery::auto::read_workspace_text(&base, &path) {
+                let source_dir = path.parent().unwrap_or(&base);
+                return Self::load_from_str(&raw, source_dir).map(Some);
+            }
         }
         Ok(None)
     }
@@ -372,6 +365,21 @@ fn clone_repo(url: &str, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A declaration that is a link to an outside file is not loaded.
+    #[cfg(unix)]
+    #[test]
+    fn discover_does_not_follow_a_linked_declaration() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let outside = tempfile::TempDir::new().expect("outside");
+        let target = outside.path().join("workspace.toml");
+        std::fs::write(&target, "").expect("outside declaration");
+        std::os::unix::fs::symlink(&target, dir.path().join("workspace.toml")).expect("link");
+
+        let found = WorkspaceDeclaration::discover(dir.path()).expect("discover");
+
+        assert!(found.is_none());
+    }
 
     fn write_git_repo(path: &Path) {
         std::fs::create_dir_all(path.join(".git")).expect("git dir");
