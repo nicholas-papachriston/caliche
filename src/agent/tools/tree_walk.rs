@@ -30,7 +30,10 @@ pub struct WalkOptions {
     pub max_depth: Option<usize>,
     /// Visit names that start with `.`.
     pub include_hidden: bool,
-    /// Apply [`IGNORE_FILES`] and the root's `.git/info/exclude`.
+    /// Apply the user's global git excludes (`core.excludesFile`, else
+    /// `$XDG_CONFIG_HOME/git/ignore`), the [`IGNORE_FILES`] of every
+    /// directory above the root, the root's `.git/info/exclude`, and the
+    /// [`IGNORE_FILES`] of every directory walked. A deeper file wins.
     pub honor_ignores: bool,
 }
 
@@ -103,10 +106,8 @@ pub fn walk_tree_pruned(
         errors: Vec::new(),
         unlisted: Vec::new(),
     };
-    if options.honor_ignores
-        && let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), &mut walk.errors)
-    {
-        walk.ignores.push(exclude);
+    if options.honor_ignores {
+        walk.ignores = outer_ignores(root, &mut walk.errors);
     }
     let _ = walk.dir(root, 1);
     WalkReport {
@@ -187,6 +188,51 @@ impl Walk<'_> {
         }
         ControlFlow::Continue(())
     }
+}
+
+/// The matchers that apply to `root` from outside the walk, least specific
+/// first: the user's global git excludes, the ignore files of each directory
+/// above `root` from the top down, then `root`'s `.git/info/exclude`.
+///
+/// `root` is canonical, so every directory above it is too, and each ignore
+/// file is read with no link followed.
+fn outer_ignores(root: &Path, errors: &mut Vec<String>) -> Vec<Gitignore> {
+    let mut ignores = Vec::new();
+    let (global, error) = GitignoreBuilder::new(root).build_global();
+    if let Some(error) = error {
+        errors.push(format!("global git excludes: {error}"));
+    }
+    if !global.is_empty() {
+        ignores.push(global);
+    }
+    let mut above: Vec<&Path> = root.ancestors().skip(1).collect();
+    above.reverse();
+    for dir in above {
+        let mut builder = GitignoreBuilder::new(dir);
+        let mut any = false;
+        for name in IGNORE_FILES {
+            match read_resolved_text(&dir.join(name)) {
+                Ok(text) => {
+                    for line in text.lines() {
+                        let _ = builder.add_line(None, line);
+                    }
+                    any = true;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => errors.push(format!("{}: {err}", dir.join(name).display())),
+            }
+        }
+        if any {
+            match builder.build() {
+                Ok(matcher) => ignores.push(matcher),
+                Err(err) => errors.push(format!("{}: {err}", dir.display())),
+            }
+        }
+    }
+    if let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), errors) {
+        ignores.push(exclude);
+    }
+    ignores
 }
 
 /// Read the ignore files `dir` lists into one matcher.
@@ -343,6 +389,40 @@ mod tests {
         });
 
         assert_eq!(report.unlisted, vec![root.join("sub")]);
+    }
+
+    /// The user's global git excludes file applies to every walk.
+    #[test]
+    #[serial_test::serial(env)]
+    fn a_walk_honors_the_global_git_excludes() {
+        let config = tempfile::tempdir().expect("config");
+        std::fs::create_dir_all(config.path().join("git")).expect("git config dir");
+        std::fs::write(config.path().join("git/ignore"), "globalsecret.toml\n").expect("excludes");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("HOME", config.path());
+        env.set("XDG_CONFIG_HOME", config.path());
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        std::fs::write(root.join("globalsecret.toml"), "s").expect("secret");
+        std::fs::write(root.join("ok.toml"), "o").expect("ok");
+
+        assert_eq!(walk_names(&root, WalkOptions::default()), vec!["ok.toml"]);
+    }
+
+    /// An ignore file in a directory above the root applies to the walk.
+    #[test]
+    fn a_walk_honors_ignore_files_above_the_root() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        std::fs::write(top.join(".gitignore"), "secret.env\n").expect("ignore");
+        let root = top.join("repo");
+        std::fs::create_dir_all(&root).expect("repo");
+        std::fs::write(root.join("secret.env"), "s").expect("secret");
+        std::fs::write(root.join("ok.rs"), "o").expect("ok");
+
+        assert_eq!(walk_names(&root, WalkOptions::default()), vec!["ok.rs"]);
     }
 
     /// A pruned directory is visited and not entered.
