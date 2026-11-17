@@ -5,8 +5,11 @@
 //! which reaches it one component at a time from the file system root and
 //! refuses a link. A directory swapped for a link while the walk runs is
 //! refused instead of listed, so the walk never leaves the tree it started
-//! in. Links are never followed or reported. Ignore files are read with the
-//! same no-link reads.
+//! in. Links are never followed or reported. Ignore files in the tree and
+//! in the directories above it are read with the same no-link reads. The
+//! user's global excludes file and a `.git` file's pointers are git
+//! configuration outside the tree: they are read with plain reads, and what
+//! they hold only adds ignore patterns.
 
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -191,48 +194,169 @@ impl Walk<'_> {
 }
 
 /// The matchers that apply to `root` from outside the walk, least specific
-/// first: the user's global git excludes, the ignore files of each directory
-/// above `root` from the top down, then `root`'s `.git/info/exclude`.
+/// first, in git's order:
 ///
-/// `root` is canonical, so every directory above it is too, and each ignore
-/// file is read with no link followed.
+/// 1. the user's global excludes (`core.excludesFile`, else
+///    `$XDG_CONFIG_HOME/git/ignore`);
+/// 2. the `info/exclude` of the git repository that holds `root`, which is
+///    `root` itself or the nearest directory above it with a `.git`;
+/// 3. the [`IGNORE_FILES`] of each directory above `root`, from that
+///    repository's root down, or from the file system root when no
+///    repository holds `root`.
+///
+/// `root` is canonical, so every directory above it is too, and the ignore
+/// files above it are read with no link followed.
 fn outer_ignores(root: &Path, errors: &mut Vec<String>) -> Vec<Gitignore> {
     let mut ignores = Vec::new();
-    let (global, error) = GitignoreBuilder::new(root).build_global();
-    if let Some(error) = error {
-        errors.push(format!("global git excludes: {error}"));
-    }
-    if !global.is_empty() {
+    if let Some(global) = global_excludes(root, errors) {
         ignores.push(global);
     }
-    let mut above: Vec<&Path> = root.ancestors().skip(1).collect();
+    let repo = enclosing_repo(root);
+    if let Some(Repo {
+        root: repo_root,
+        exclude: Some(exclude),
+    }) = &repo
+        && let Some(matcher) = read_ignore(repo_root, exclude, errors)
+    {
+        ignores.push(matcher);
+    }
+    let top = repo.as_ref().map(|repo| repo.root.as_path());
+    let mut above: Vec<&Path> = root
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| top.is_none_or(|top| dir.starts_with(top)))
+        .collect();
     above.reverse();
     for dir in above {
-        let mut builder = GitignoreBuilder::new(dir);
-        let mut any = false;
-        for name in IGNORE_FILES {
-            match read_resolved_text(&dir.join(name)) {
-                Ok(text) => {
-                    for line in text.lines() {
-                        let _ = builder.add_line(None, line);
-                    }
-                    any = true;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => errors.push(format!("{}: {err}", dir.join(name).display())),
-            }
+        if let Some(matcher) = read_dir_ignore_files(dir, errors) {
+            ignores.push(matcher);
         }
-        if any {
-            match builder.build() {
-                Ok(matcher) => ignores.push(matcher),
-                Err(err) => errors.push(format!("{}: {err}", dir.display())),
-            }
-        }
-    }
-    if let Some(exclude) = read_ignore(root, &root.join(".git/info/exclude"), errors) {
-        ignores.push(exclude);
     }
     ignores
+}
+
+/// The [`IGNORE_FILES`] in `dir`, a directory above the walk, as one matcher.
+fn read_dir_ignore_files(dir: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
+    let mut builder = GitignoreBuilder::new(dir);
+    let mut any = false;
+    for name in IGNORE_FILES {
+        match read_resolved_text(&dir.join(name)) {
+            Ok(text) => {
+                for line in text.lines() {
+                    let _ = builder.add_line(None, line);
+                }
+                any = true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => errors.push(format!("{}: {err}", dir.join(name).display())),
+        }
+    }
+    if !any {
+        return None;
+    }
+    builder
+        .build()
+        .map_err(|err| errors.push(format!("{}: {err}", dir.display())))
+        .ok()
+}
+
+/// The user's global excludes as a matcher rooted at `root`, if the file
+/// exists and holds a pattern.
+fn global_excludes(root: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
+    let path = global_excludes_path()?;
+    if !path.is_file() {
+        return None;
+    }
+    let mut builder = GitignoreBuilder::new(root);
+    if let Some(err) = builder.add(&path) {
+        errors.push(format!("{}: {err}", path.display()));
+    }
+    builder
+        .build()
+        .map_err(|err| errors.push(format!("{}: {err}", path.display())))
+        .ok()
+        .filter(|matcher| !matcher.is_empty())
+}
+
+/// Where git looks for the user's global excludes file.
+#[cfg(not(test))]
+fn global_excludes_path() -> Option<PathBuf> {
+    ignore::gitignore::gitconfig_excludes_path()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The global excludes file a test's walks use; none by default, so a
+    /// test neither reads nor depends on the developer's own git config.
+    static TEST_GLOBAL_EXCLUDES: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Where this test thread's walks look for the global excludes file.
+#[cfg(test)]
+fn global_excludes_path() -> Option<PathBuf> {
+    TEST_GLOBAL_EXCLUDES.with(|path| path.borrow().clone())
+}
+
+/// Use `path` as the global excludes file for walks on this test thread.
+#[cfg(test)]
+pub(crate) fn set_test_global_excludes(path: Option<PathBuf>) {
+    TEST_GLOBAL_EXCLUDES.with(|slot| *slot.borrow_mut() = path);
+}
+
+/// The git repository that holds a walk root.
+struct Repo {
+    /// The repository's working tree root.
+    root: PathBuf,
+    /// Its `info/exclude`, when its git directory could be found.
+    exclude: Option<PathBuf>,
+}
+
+/// The repository whose working tree holds `root`: the nearest of `root`
+/// and the directories above it that has a `.git` entry.
+///
+/// A `.git` directory holds `info/exclude`. A `.git` file (a linked worktree
+/// or a submodule) names its git directory with `gitdir:`, and a `commondir`
+/// file there names the shared one that holds `info/exclude`.
+fn enclosing_repo(root: &Path) -> Option<Repo> {
+    root.ancestors().find_map(|dir| {
+        let dot_git = dir.join(".git");
+        let meta = std::fs::symlink_metadata(&dot_git).ok()?;
+        let git_dir = if meta.is_dir() {
+            Some(dot_git)
+        } else if meta.is_file() {
+            gitfile_common_dir(dir, &dot_git)
+        } else {
+            None
+        };
+        Some(Repo {
+            root: dir.to_path_buf(),
+            exclude: git_dir.map(|git_dir| git_dir.join("info").join("exclude")),
+        })
+    })
+}
+
+/// The canonical common git directory a `.git` file in `dir` points to.
+fn gitfile_common_dir(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
+    let text = read_head(dot_git)?;
+    let git_dir = dir.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    let common = match read_head(&git_dir.join("commondir")) {
+        Some(text) => git_dir.join(text.lines().next()?.trim()),
+        None => git_dir,
+    };
+    std::fs::canonicalize(common).ok()
+}
+
+/// The first 4 KiB of a small git pointer file, as text.
+fn read_head(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(4096)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// Read the ignore files `dir` lists into one matcher.
@@ -391,38 +515,170 @@ mod tests {
         assert_eq!(report.unlisted, vec![root.join("sub")]);
     }
 
-    /// The user's global git excludes file applies to every walk.
-    #[test]
-    #[serial_test::serial(env)]
-    fn a_walk_honors_the_global_git_excludes() {
-        let config = tempfile::tempdir().expect("config");
-        std::fs::create_dir_all(config.path().join("git")).expect("git config dir");
-        std::fs::write(config.path().join("git/ignore"), "globalsecret.toml\n").expect("excludes");
-        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
-        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
-        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
-        env.set("HOME", config.path());
-        env.set("XDG_CONFIG_HOME", config.path());
-        let tmp = tempfile::tempdir().expect("tmp");
-        let root = tmp.path().canonicalize().expect("root");
-        std::fs::write(root.join("globalsecret.toml"), "s").expect("secret");
-        std::fs::write(root.join("ok.toml"), "o").expect("ok");
-
-        assert_eq!(walk_names(&root, WalkOptions::default()), vec!["ok.toml"]);
+    /// Write `files` (path, content) below `root`, creating parents.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn write_all(root: &Path, files: &[(&str, &str)]) {
+        for (path, content) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+            std::fs::write(path, content).expect("write");
+        }
     }
 
-    /// An ignore file in a directory above the root applies to the walk.
+    /// The user's global git excludes file applies to every walk.
+    #[test]
+    fn a_walk_honors_the_global_git_excludes() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        write_all(
+            &root,
+            &[
+                ("config/git/ignore", "globalsecret.toml\n"),
+                ("ws/globalsecret.toml", "s"),
+                ("ws/ok.toml", "o"),
+            ],
+        );
+        set_test_global_excludes(Some(root.join("config/git/ignore")));
+
+        let names = walk_names(&root.join("ws"), WalkOptions::default());
+        set_test_global_excludes(None);
+
+        assert_eq!(names, vec!["ok.toml"]);
+    }
+
+    /// The root's own `.git/info/exclude` applies.
+    #[test]
+    fn a_walk_honors_the_roots_info_exclude() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        write_all(
+            &root,
+            &[
+                (".git/info/exclude", "secret.env\n"),
+                ("secret.env", "s"),
+                ("ok.rs", "o"),
+            ],
+        );
+
+        assert_eq!(walk_names(&root, WalkOptions::default()), vec!["ok.rs"]);
+    }
+
+    /// A walk of a folder inside a repository applies that repository's
+    /// `info/exclude`, as git does.
+    #[test]
+    fn a_walk_honors_the_enclosing_repos_info_exclude() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path().canonicalize().expect("repo");
+        write_all(
+            &repo,
+            &[
+                (".git/info/exclude", "secret.env\n"),
+                ("app/secret.env", "s"),
+                ("app/ok.rs", "o"),
+            ],
+        );
+
+        assert_eq!(
+            walk_names(&repo.join("app"), WalkOptions::default()),
+            vec!["ok.rs"]
+        );
+    }
+
+    /// A linked worktree's `.git` file leads to the shared `info/exclude`.
+    #[test]
+    fn a_walk_of_a_linked_worktree_honors_the_shared_info_exclude() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        write_all(
+            &top,
+            &[
+                ("main/.git/info/exclude", "secret.env\n"),
+                ("main/.git/worktrees/wt/commondir", "../..\n"),
+                ("wt/secret.env", "s"),
+                ("wt/ok.rs", "o"),
+            ],
+        );
+        let gitdir = top.join("main/.git/worktrees/wt");
+        std::fs::write(
+            top.join("wt/.git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("gitfile");
+
+        assert_eq!(
+            walk_names(&top.join("wt"), WalkOptions::default()),
+            vec!["ok.rs"]
+        );
+    }
+
+    /// Ignore files above the repository root do not apply.
+    #[test]
+    fn ignore_files_above_the_repo_root_do_not_apply() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        std::fs::create_dir_all(top.join("repo/.git")).expect("git dir");
+        write_all(&top, &[(".gitignore", "result\n"), ("repo/result", "r")]);
+
+        assert_eq!(
+            walk_names(&top.join("repo"), WalkOptions::default()),
+            vec!["result"]
+        );
+    }
+
+    /// An ignore file in a directory above the root, inside the repository,
+    /// applies; a deeper one wins over a shallower one.
     #[test]
     fn a_walk_honors_ignore_files_above_the_root() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let top = tmp.path().canonicalize().expect("top");
-        std::fs::write(top.join(".gitignore"), "secret.env\n").expect("ignore");
-        let root = top.join("repo");
-        std::fs::create_dir_all(&root).expect("repo");
-        std::fs::write(root.join("secret.env"), "s").expect("secret");
-        std::fs::write(root.join("ok.rs"), "o").expect("ok");
+        let repo = tmp.path().canonicalize().expect("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        write_all(
+            &repo,
+            &[
+                (".gitignore", "*.env\n"),
+                ("pkg/.gitignore", "!keep.env\n"),
+                ("pkg/app/secret.env", "s"),
+                ("pkg/app/keep.env", "k"),
+                ("pkg/app/ok.rs", "o"),
+            ],
+        );
 
-        assert_eq!(walk_names(&root, WalkOptions::default()), vec!["ok.rs"]);
+        assert_eq!(
+            walk_names(&repo.join("pkg/app"), WalkOptions::default()),
+            vec!["keep.env", "ok.rs"]
+        );
+    }
+
+    /// An ignore file above the root that is a link is not read; the walk
+    /// reports it.
+    #[test]
+    fn a_linked_ignore_file_above_the_root_is_not_read() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path().canonicalize().expect("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        write_all(
+            &repo,
+            &[("real-ignore", "secret.env\n"), ("app/secret.env", "s")],
+        );
+        std::os::unix::fs::symlink(repo.join("real-ignore"), repo.join(".gitignore"))
+            .expect("ignore link");
+        let mut names = Vec::new();
+
+        let errors = walk_tree(&repo.join("app"), WalkOptions::default(), &mut |entry| {
+            names.push(entry.relative.to_string_lossy().into_owned());
+            ControlFlow::Continue(())
+        });
+
+        let link = repo.join(".gitignore");
+        assert_eq!(names, vec!["secret.env"]);
+        assert_eq!(
+            errors,
+            vec![format!(
+                "{}: refusing to follow symlink at '.gitignore' in '{}'",
+                link.display(),
+                link.display()
+            )]
+        );
     }
 
     /// A pruned directory is visited and not entered.

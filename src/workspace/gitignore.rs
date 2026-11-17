@@ -364,30 +364,23 @@ mod tests {
 
     /// Files the user's global git excludes list are not collected.
     #[test]
-    #[serial_test::serial(env)]
     fn collect_files_honors_the_global_git_excludes() {
-        let config = TempDir::new().expect("config");
-        write_file(config.path(), "git/ignore", "globalsecret.toml\n");
-        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
-        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
-        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
-        env.set("HOME", config.path());
-        env.set("XDG_CONFIG_HOME", config.path());
         let tmp = TempDir::new().expect("temp dir");
-        let root = tmp.path().canonicalize().expect("canonical");
+        let top = tmp.path().canonicalize().expect("canonical");
+        write_file(&top, "config/git/ignore", "globalsecret.toml\n");
+        let root = top.join("ws");
         write_file(&root, "globalsecret.toml", "secret");
         write_file(&root, "ok.toml", "ok");
+        crate::agent::tools::tree_walk::set_test_global_excludes(Some(
+            top.join("config/git/ignore"),
+        ));
 
         let collected = collect_files(&root, &root, None, &[], None, &[]);
+        let allowed = path_allowed(&root, &root.join("globalsecret.toml"), None, &[], &[]);
+        crate::agent::tools::tree_walk::set_test_global_excludes(None);
 
         assert_eq!(file_names(&collected.files), vec!["ok.toml"]);
-        assert!(!path_allowed(
-            &root,
-            &root.join("globalsecret.toml"),
-            None,
-            &[],
-            &[]
-        ));
+        assert!(!allowed);
     }
 
     /// A directory the walk cannot list is reported in the form of the root
