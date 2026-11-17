@@ -9,13 +9,19 @@
 //!
 //! The old walker read the global excludes from the user's git config; the
 //! reference here gets the same file as an explicit ignore, so neither side
-//! reads the environment. That reference differs from the old walker in
-//! two ways the fixture avoids:
-//! - for a file outside every repository with `require_git` set, where
-//!   `the_global_excludes_need_a_repo_when_git_is_required` covers it;
-//! - for a global pattern with a slash in it: the walk anchors it at the
-//!   walk root, the old walker at its working directory, and git at the
-//!   work tree. The fixture's global pattern has no slash.
+//! reads the environment. That reference stands in for the old walker
+//! only while the fixture's global patterns have no slash, and except for
+//! a file outside every repository with `require_git` set, which
+//! `the_global_excludes_need_a_repo_when_git_is_required` covers.
+//!
+//! The fixture leaves out, and other tests cover:
+//! - a global pattern with a slash: the walk anchors it at the walk root,
+//!   where git anchors it at the work tree
+//!   (`a_global_pattern_with_a_slash_is_anchored_at_the_walk_root`);
+//! - a `.git` or `.jj` that is a link, a FIFO or a device
+//!   (`a_linked_git_dir_keeps_the_git_rules`,
+//!   `a_dangling_vcs_link_makes_no_repository`,
+//!   `a_vcs_entry_of_any_kind_makes_a_repository`).
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
@@ -271,6 +277,33 @@ fn the_repo_map_walk_matches_the_old_walker() {
         ]
     );
     assert_eq!(differences(Ignores::RepoMap), owned(&[]));
+}
+
+/// A global pattern with a slash is anchored at the walk root: walking
+/// `repo/app`, `sub/x.txt` hides `app/sub/x.txt`. Git anchors it at the
+/// work tree instead, where it would hide `repo/sub/x.txt`; this is
+/// stricter, not a leak.
+#[test]
+fn a_global_pattern_with_a_slash_is_anchored_at_the_walk_root() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let top = tmp.path().canonicalize().expect("top");
+    for (path, text) in [
+        ("global-excludes", "sub/x.txt\n"),
+        ("repo/app/ok.rs", "o"),
+        ("repo/app/sub/x.txt", "x"),
+        ("repo/app/sub/y.txt", "y"),
+    ] {
+        let path = top.join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        std::fs::write(path, text).expect("write");
+    }
+    std::fs::create_dir_all(top.join("repo/.git")).expect("git dir");
+
+    let files: Vec<String> = walked(&top, &top.join("repo/app"), Ignores::Tools)
+        .into_iter()
+        .collect();
+
+    assert_eq!(files, vec!["ok.rs", "sub/y.txt"]);
 }
 
 /// With git required, the global excludes apply only inside a repository,

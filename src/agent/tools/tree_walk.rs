@@ -314,8 +314,10 @@ impl Vcs {
 }
 
 /// Where `path`, a link or another kind of entry, leads, if anything is
-/// there: the target, and whether it is a directory or a regular file
-/// (`None` for a FIFO, a device or a socket).
+/// there: the target, and `Some(Dir)` for a directory, `Some(File)` for
+/// any other entry the no-link describe reads (a FIFO or a device among
+/// them; its pointer read then refuses it as not a regular file), or
+/// `None` when the describe fails.
 #[cfg_attr(
     tool_file_lint,
     expect(
