@@ -1082,3 +1082,90 @@ fn nested_alternates_and_commondir_are_refused() {
         )
     );
 }
+
+/// Make `path` hold `text` followed by zeros up to `len` bytes.
+#[expect(clippy::expect_used, reason = "test helper panics with context")]
+fn grow(path: &Path, text: &str, len: u64) {
+    std::fs::write(path, text).expect("write");
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_len(len))
+        .expect("grow");
+}
+
+/// A `.git` file, `HEAD` or `commondir` in the workspace over 1 MiB (a
+/// command in the sandbox can move one in) is refused before more than
+/// 1 MiB of it is read.
+#[test]
+fn oversized_git_files_in_the_workspace_are_refused() {
+    let (_ws_dir, ws) = canonical_dir();
+    let over = (1 << 20) + 1;
+    std::fs::create_dir_all(ws.join("x")).expect("x");
+    grow(&ws.join("x/.git"), "gitdir: inner\n", over);
+    write_loose_git_dir(&ws.join("y/.git")).expect("y");
+    grow(&ws.join("y/.git/HEAD"), "ref: refs/heads/main\n", over);
+    write_loose_git_dir(&ws.join("z/.git")).expect("z");
+    grow(&ws.join("z/.git/commondir"), ".\n", over);
+
+    let outcomes: Vec<Result<CheckedRepository, String>> = ["x", "y", "z"]
+        .iter()
+        .map(|name| outcome(&ws, &ws.join(name)))
+        .collect();
+
+    let refused = |path: PathBuf| Err(format!("{} is larger than 1048576 bytes", path.display()));
+    assert_eq!(
+        outcomes,
+        [
+            refused(ws.join("x").join(".git")),
+            refused(ws.join("y").join(".git").join("HEAD")),
+            refused(ws.join("z").join(".git").join("commondir")),
+        ]
+    );
+}
+
+/// The host git file reader takes a file of exactly its limit and refuses
+/// one byte more.
+#[test]
+fn the_git_file_limit_is_exact() {
+    let (_dir, dir) = canonical_dir();
+    let read = |len: usize| {
+        let path = dir.join(format!("f{len}"));
+        std::fs::write(&path, vec![b'a'; len]).expect("write");
+        caliche_policy::read_git_file(&path, 8)
+            .map(|bytes| bytes.len())
+            .map_err(|err| err.to_string())
+    };
+
+    assert_eq!(
+        (read(8), read(9)),
+        (
+            Ok(8),
+            Err(format!(
+                "{} is larger than 8 bytes",
+                dir.join("f9").display()
+            ))
+        )
+    );
+}
+
+/// A git dir whose `HEAD` is over 1 MiB is not a git dir to discovery.
+#[test]
+fn a_git_dir_with_an_oversized_head_is_not_a_git_dir() {
+    let (_dir, dir) = canonical_dir();
+    write_loose_git_dir(&dir.join("small")).expect("small");
+    write_loose_git_dir(&dir.join("large")).expect("large");
+    grow(
+        &dir.join("large/HEAD"),
+        "ref: refs/heads/main\n",
+        (1 << 20) + 1,
+    );
+
+    assert_eq!(
+        (
+            caliche_policy::is_git_dir(&dir.join("small")),
+            caliche_policy::is_git_dir(&dir.join("large"))
+        ),
+        (true, false)
+    );
+}

@@ -140,18 +140,18 @@ pub fn is_git_dir(dir: &Path) -> bool {
         && valid_head(&dir.join(HEAD_FILE))
 }
 
-/// What a git metadata file read on the host says when the path is not a
+/// What a host read of a git dir file or gitfile says when the path is not a
 /// regular file (a FIFO, a socket, a device or a directory).
 pub const NOT_A_REGULAR_GIT_FILE: &str = "is not a regular file";
 
 /// Largest index [`read_git_file`] reads for its callers that read one.
 pub const MAX_GIT_INDEX_BYTES: u64 = 1 << 30;
 
-/// Largest text git metadata file [`read_git_text`] reads: `config`,
+/// Largest git dir text file or gitfile [`read_git_text`] reads: `config`,
 /// `HEAD`, `commondir`, a gitfile or a worktree record.
 pub const MAX_GIT_TEXT_BYTES: u64 = 1 << 20;
 
-/// Read a git metadata file (an index, `config`, `HEAD`, `commondir`, a
+/// Read a git dir file or gitfile (an index, `config`, `HEAD`, `commondir`, a
 /// gitfile or a worktree record) on the host, up to `max_bytes`. The open
 /// never waits: on Unix it passes `O_NONBLOCK`, so a FIFO planted at the
 /// path cannot stall the caller. Anything but a regular file is then
@@ -183,11 +183,28 @@ pub fn read_git_file(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     if !file.metadata()?.is_file() {
         return refuse(NOT_A_REGULAR_GIT_FILE.to_owned());
     }
+    read_bounded(file, path, max_bytes)
+}
+
+/// Read `reader`, the file at `path`, to its end, refusing it once it
+/// holds more than `max_bytes`. At most `max_bytes` plus one byte is read,
+/// however the file's size changes while it is read. Every host read of a
+/// git dir file or gitfile goes through this limit.
+///
+/// # Errors
+///
+/// The read error, or [`std::io::ErrorKind::InvalidData`] naming `path`
+/// when it holds more than `max_bytes`.
+pub fn read_bounded(reader: impl Read, path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     let mut data = Vec::new();
-    file.take(max_bytes.saturating_add(1))
+    reader
+        .take(max_bytes.saturating_add(1))
         .read_to_end(&mut data)?;
     if u64::try_from(data.len()).unwrap_or(u64::MAX) > max_bytes {
-        return refuse(format!("is larger than {max_bytes} bytes"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is larger than {max_bytes} bytes", path.display()),
+        ));
     }
     Ok(data)
 }

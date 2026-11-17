@@ -16,7 +16,7 @@ use caliche_policy::{
     COMMONDIR_FILE, GIT_DIR_NAME, HEAD_FILE, OBJECTS_DIR, REFS_DIR, common_dir_path, gitfile_path,
 };
 use std::ffi::OsString;
-use std::io::{self, Read as _};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// The file in a linked worktree's git dir that names the worktree's `.git`.
@@ -441,10 +441,16 @@ fn changed_at(path: &Path) -> io::Result<std::time::SystemTime> {
     }
 }
 
+/// The text of `file` below `workspace`, following no link and holding at
+/// most [`caliche_policy::MAX_GIT_TEXT_BYTES`]: a command in the sandbox
+/// can put a `.git` file of any size in the workspace.
 fn read_beneath(workspace: &Path, file: &Path) -> io::Result<String> {
-    let mut text = String::new();
-    open_file_beneath(workspace, file)?.read_to_string(&mut text)?;
-    Ok(text)
+    let bytes = caliche_policy::read_bounded(
+        open_file_beneath(workspace, file)?,
+        file,
+        caliche_policy::MAX_GIT_TEXT_BYTES,
+    )?;
+    String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
 fn canonical(path: &Path) -> io::Result<PathBuf> {

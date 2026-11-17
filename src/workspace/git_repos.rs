@@ -65,10 +65,11 @@ pub(crate) fn uses_declared_submodules(root: &Path) -> bool {
 }
 
 /// The `.gitmodules` text at `root`, read with no link followed below the
-/// canonical root and at most 1 MiB. A sandboxed command can write this
-/// file, so a link, a FIFO or an oversized file is skipped with a warning.
-/// Links in the root's own path (such as `/var` on macOS) are resolved
-/// first, as the user chose that path.
+/// canonical root and at most `MAX_DISCOVERED_FILE_BYTES` (1 MiB). A
+/// sandboxed command can write this file, so a link, a FIFO or an
+/// oversized file is skipped with a warning. Links in `root`'s own path
+/// (such as `/var` on macOS) are resolved first. For a nested repository
+/// that path is resolved again here, after discovery checked it.
 fn read_gitmodules(root: &Path) -> Option<String> {
     let root = canonical_or_owned(root);
     crate::discovery::auto::read_workspace_text(&root, &root.join(".gitmodules"))
