@@ -18,7 +18,7 @@ use caliche_sandbox::EntryKind;
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::agent::tools::common::path::{list_resolved_dir, read_resolved_text};
+use crate::agent::tools::common::path::{list_resolved_dir, read_resolved_text, resolved_metadata};
 
 /// Directory names a walk never enters: version control metadata.
 pub const VCS_DIRS: [&str; 4] = [".git", ".hg", ".svn", ".jj"];
@@ -266,21 +266,21 @@ impl Walk<'_> {
 
 /// The ignore rules of each directory above `root`, outermost first.
 ///
-/// `root` is canonical, so every directory above it is too, and the ignore
-/// files there are read with no link followed.
+/// `root` is canonical, so every directory above it is too. The ignore
+/// files there are read, and their `.git` and `.jj` entries described, with
+/// no link followed; a link there counts as absent.
 fn outer_ignores(root: &Path, rules: Ignores, errors: &mut Vec<String>) -> Vec<DirIgnores> {
     let mut above: Vec<&Path> = root.ancestors().skip(1).collect();
     above.reverse();
     above
         .into_iter()
         .map(|dir| {
-            let dot_git = match std::fs::symlink_metadata(dir.join(".git")) {
+            let dot_git = match resolved_metadata(&dir.join(".git")) {
                 Ok(meta) if meta.is_dir() => DotGit::Dir,
-                Ok(meta) if meta.is_file() => DotGit::File,
-                Ok(_) => DotGit::Other,
+                Ok(_) => DotGit::File,
                 Err(_) => DotGit::None,
             };
-            let has_jj = std::fs::symlink_metadata(dir.join(".jj")).is_ok();
+            let has_jj = resolved_metadata(&dir.join(".jj")).is_ok();
             dir_ignores(dir, dot_git, has_jj, &|_| true, rules, errors)
         })
         .collect()
@@ -345,6 +345,13 @@ fn dir_ignores(
 
 /// The user's global excludes as a matcher rooted at `root`, if the file
 /// exists and holds a pattern.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "git configuration outside the workspace, often a dotfiles link; it only adds ignore patterns"
+    )
+)]
 fn global_excludes(root: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
     let path = global_excludes_path()?;
     if !path.is_file() {
@@ -388,6 +395,13 @@ pub(crate) fn set_test_global_excludes(path: Option<PathBuf>) {
 }
 
 /// The canonical common git directory a `.git` file in `dir` points to.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "a git directory pointer, resolved as git resolves it; it only locates info/exclude, read with no link followed"
+    )
+)]
 fn gitfile_common_dir(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
     let text = read_head(dot_git)?;
     let git_dir = dir.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
@@ -399,6 +413,13 @@ fn gitfile_common_dir(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
 }
 
 /// The first 4 KiB of a small git pointer file, as text.
+#[cfg_attr(
+    tool_file_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "a git directory pointer, capped at 4 KiB; it only locates info/exclude"
+    )
+)]
 fn read_head(path: &Path) -> Option<String> {
     use std::io::Read as _;
     let mut text = String::new();
