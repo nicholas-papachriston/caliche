@@ -48,9 +48,10 @@ fn repos_from_gitmodules(root: &Path) -> Option<Vec<PathBuf>> {
     if !uses_declared_submodules(root) {
         return None;
     }
-    let mut repos = vec![canonical_or_owned(root)];
-    for path in gitmodules_worktrees(root) {
-        append_declared_repo(&mut repos, path);
+    let base = canonical_or_owned(root);
+    let mut repos = vec![base.clone()];
+    for path in gitmodules_worktrees(&base, &base) {
+        append_declared_repo(&base, &mut repos, path);
     }
     Some(repos)
 }
@@ -58,32 +59,33 @@ fn repos_from_gitmodules(root: &Path) -> Option<Vec<PathBuf>> {
 /// True when `.gitmodules` lists at least one safe relative submodule path.
 #[must_use]
 pub(crate) fn uses_declared_submodules(root: &Path) -> bool {
-    let Some(contents) = read_gitmodules(root) else {
+    let base = canonical_or_owned(root);
+    let Some(contents) = read_gitmodules(&base, &base) else {
         return false;
     };
     !parse_gitmodules(&contents).is_empty()
 }
 
-/// The `.gitmodules` text at `root`, read with no link followed below the
-/// canonical root and at most `MAX_DISCOVERED_FILE_BYTES` (1 MiB). A
-/// sandboxed command can write this file, so a link, a FIFO or an
-/// oversized file is skipped with a warning. Links in `root`'s own path
-/// (such as `/var` on macOS) are resolved first. For a nested repository
-/// that path is resolved again here, after discovery checked it.
-fn read_gitmodules(root: &Path) -> Option<String> {
-    let root = canonical_or_owned(root);
-    crate::discovery::auto::read_workspace_text(&root, &root.join(".gitmodules"))
+/// The `.gitmodules` text of the repository at `root`, opened from the
+/// canonical top root `base` with no link followed on the way and read up
+/// to `MAX_DISCOVERED_FILE_BYTES` (1 MiB). A sandboxed command can write
+/// these files and swap a nested repository for a link after discovery
+/// checked it, so a link anywhere below `base`, a FIFO or an oversized file
+/// is skipped with a warning. Links above `base` (such as `/var` on macOS)
+/// were resolved once, when `base` was made canonical.
+fn read_gitmodules(base: &Path, root: &Path) -> Option<String> {
+    crate::discovery::auto::read_workspace_text(base, &root.join(".gitmodules"))
 }
 
-fn append_declared_repo(repos: &mut Vec<PathBuf>, path: PathBuf) {
+fn append_declared_repo(base: &Path, repos: &mut Vec<PathBuf>, path: PathBuf) {
     let before = repos.len();
-    let children = gitmodules_worktrees(&path);
+    let children = gitmodules_worktrees(base, &path);
     push_unique(repos, path);
     if repos.len() == before {
         return;
     }
     for child in children {
-        append_declared_repo(repos, child);
+        append_declared_repo(base, repos, child);
     }
 }
 
@@ -100,8 +102,8 @@ fn skip_discovery_dir(name: &str) -> bool {
     matches!(name, "node_modules" | "target" | "dist" | "vendor")
 }
 
-fn gitmodules_worktrees(root: &Path) -> Vec<PathBuf> {
-    let Some(contents) = read_gitmodules(root) else {
+fn gitmodules_worktrees(base: &Path, root: &Path) -> Vec<PathBuf> {
+    let Some(contents) = read_gitmodules(base, root) else {
         return Vec::new();
     };
     parse_gitmodules(&contents)
@@ -173,7 +175,7 @@ pub fn discover_git_repos(root: &Path) -> Vec<PathBuf> {
         push_unique(&mut repos, canonical_or_owned(path));
     }
 
-    for path in gitmodules_worktrees(root) {
+    for path in gitmodules_worktrees(&canonical_root, &canonical_root) {
         push_unique(&mut repos, path);
     }
     repos
@@ -255,6 +257,39 @@ mod tests {
             .expect("discovery must not wait on a FIFO");
 
         assert_eq!(repos, vec![root.clone(), root.join("child")]);
+    }
+
+    /// A nested repository swapped for a link after discovery checked it:
+    /// its `.gitmodules` is not read through the link, so the outside
+    /// repository's submodules are not listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_nested_repository_swapped_for_a_link_is_not_read() {
+        let dir = TempDir::new().expect("temp");
+        let base = dir.path().join("ws");
+        fs::create_dir_all(&base).expect("ws");
+        let base = base.canonicalize().expect("canonical");
+        init_git(&base);
+        fs::create_dir_all(dir.path().join("outside")).expect("outside");
+        let outside = dir
+            .path()
+            .join("outside")
+            .canonicalize()
+            .expect("canonical");
+        init_git(&outside);
+        init_git(&outside.join("inner"));
+        fs::write(
+            outside.join(".gitmodules"),
+            "[submodule \"inner\"]\n\tpath = inner\n",
+        )
+        .expect("outside gitmodules");
+        let sub = base.join("sub");
+        std::os::unix::fs::symlink(&outside, &sub).expect("link");
+
+        let mut repos = Vec::new();
+        super::append_declared_repo(&base, &mut repos, sub.clone());
+
+        assert_eq!(repos, vec![sub]);
     }
 
     /// A root with `listed` and `extra` repos whose `.gitmodules` text names
