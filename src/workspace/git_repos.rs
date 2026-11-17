@@ -1,9 +1,11 @@
 //! Nested git worktree discovery for per-repo embedding stores.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use ignore::WalkBuilder;
+use caliche_sandbox::EntryKind;
 
+use crate::agent::tools::tree_walk::{WalkOptions, WalkedEntry, walk_tree_pruned};
 use crate::gitmodules::{is_safe_relative, parse_gitmodules};
 
 /// Maximum nested git worktrees to register under one workspace root.
@@ -153,26 +155,24 @@ pub fn discover_git_repos(root: &Path) -> Vec<PathBuf> {
     }
     let mut repos = vec![canonical_root.clone()];
 
-    let mut walker = WalkBuilder::new(root);
-    walker
-        .standard_filters(false)
-        .hidden(true)
-        .require_git(false)
-        .filter_entry(|entry| {
-            if entry.depth() == 0 {
-                return true;
-            }
-            entry
-                .file_name()
-                .to_str()
-                .is_none_or(|name| !skip_discovery_dir(name))
-        });
-    let dirs = walker
-        .build()
-        .flatten()
-        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_dir()))
-        .map(ignore::DirEntry::into_path);
-    append_walked_repos(&canonical_root, &mut repos, dirs);
+    let skipped = |entry: &WalkedEntry| {
+        entry
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(skip_discovery_dir)
+    };
+    let options = WalkOptions {
+        max_depth: None,
+        include_hidden: false,
+        honor_ignores: false,
+    };
+    walk_tree_pruned(&canonical_root, options, &skipped, &mut |entry| {
+        if entry.kind != EntryKind::Dir || skipped(entry) {
+            return ControlFlow::Continue(());
+        }
+        append_walked_repo(&canonical_root, &mut repos, &entry.path)
+    });
 
     for path in gitmodules_worktrees(&canonical_root, &canonical_root) {
         push_unique(&mut repos, path);
@@ -180,25 +180,18 @@ pub fn discover_git_repos(root: &Path) -> Vec<PathBuf> {
     repos
 }
 
-/// Append the git worktrees among the walked directories `dirs`, up to
-/// `MAX_NESTED_REPOS` in all. A directory listed by the walk can be a link
-/// by the time it is checked, so each is kept only when it resolves
-/// strictly inside the top root `base`.
-fn append_walked_repos(
-    base: &Path,
-    repos: &mut Vec<PathBuf>,
-    dirs: impl IntoIterator<Item = PathBuf>,
-) {
-    for path in dirs {
-        // Stop the walk early once the cap is reached; the cap is a bound on
-        // work, not a filter.
-        if repos.len() >= MAX_NESTED_REPOS {
-            break;
-        }
-        if let Some(repo) = confined_git_root(base, &path) {
-            push_unique(repos, repo);
-        }
+/// Append `dir`, a directory the no-link walk listed, when it is a git
+/// worktree. The walk stops once `MAX_NESTED_REPOS` are found; the cap is a
+/// bound on work, not a filter. `dir` can be a link by the time it is
+/// checked, so it is kept only when it resolves inside the top root `base`.
+fn append_walked_repo(base: &Path, repos: &mut Vec<PathBuf>, dir: &Path) -> ControlFlow<()> {
+    if repos.len() >= MAX_NESTED_REPOS {
+        return ControlFlow::Break(());
     }
+    if let Some(repo) = confined_git_root(base, dir) {
+        push_unique(repos, repo);
+    }
+    ControlFlow::Continue(())
 }
 
 /// True when `path` belongs to `root` and not to a nested git worktree.
@@ -356,7 +349,9 @@ mod tests {
         std::os::unix::fs::symlink(&outside, base.join("sub")).expect("link");
 
         let mut repos = vec![base.clone()];
-        super::append_walked_repos(&base, &mut repos, [base.join("sub"), base.join("kept")]);
+        for dir in [base.join("sub"), base.join("kept")] {
+            let _ = super::append_walked_repo(&base, &mut repos, &dir);
+        }
 
         assert_eq!(repos, vec![base.clone(), base.join("kept")]);
     }
