@@ -880,6 +880,40 @@ mod tests {
         );
     }
 
+    /// A file deleted between two runs that both name the workspace
+    /// through a link leaves the index: the keys are canonical.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_file_is_purged_when_a_link_names_the_workspace() {
+        let dir = TempDir::new().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical").join("real");
+        std::fs::create_dir_all(real.join(".git")).expect("git dir");
+        std::fs::write(real.join("a.rs"), "fn a() {}").expect("a");
+        std::fs::write(real.join("b.rs"), "fn b() {}").expect("b");
+        let named = dir.path().join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let store = dir.path().join("store");
+        let run = || {
+            indexer(
+                &named,
+                PersistenceConfig::Disk {
+                    path: store.clone(),
+                },
+            )
+            .0
+        };
+        run().index().await.expect("first index");
+        std::fs::remove_file(real.join("a.rs")).expect("delete a");
+
+        run().index().await.expect("second index");
+        let kept = IndexManifest::load(&store).await.expect("manifest");
+
+        assert_eq!(
+            sorted_keys(&kept),
+            vec![real.join("b.rs").display().to_string()]
+        );
+    }
+
     /// A workspace that gains a nested repo between two runs switches from
     /// single- to multi-repo mode; the top store keeps one key form and
     /// drops the files that now belong to the nested repo.
