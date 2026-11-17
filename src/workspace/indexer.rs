@@ -947,6 +947,33 @@ mod tests {
         );
     }
 
+    /// Keys an older run wrote under the root as configured are purged when
+    /// the run walks the canonical root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_key_in_the_configured_root_form_is_purged() {
+        let dir = TempDir::new().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical").join("real");
+        std::fs::create_dir_all(&real).expect("real");
+        let named = dir.path().join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let (indexer, _) = indexer(&named, PersistenceConfig::InMemory);
+        let mut manifest = IndexManifest::new();
+        let record = crate::workspace::manifest::IndexedFileRecord {
+            mtime: 1,
+            size: 1,
+            checksum: "c".to_string(),
+        };
+        manifest.merge_from_indexed([(named.join("gone.rs").display().to_string(), record)]);
+        let mut failures = Vec::new();
+
+        indexer
+            .purge_stale_entries(&real, &[], &[], &mut manifest, &mut failures)
+            .await;
+
+        assert_eq!(sorted_keys(&manifest), Vec::<String>::new());
+    }
+
     /// A nested repo's store is also that repo's own workspace store. Indexing
     /// the parent workspace leaves the notes the nested repo's own runs
     /// indexed from its memory directory.
