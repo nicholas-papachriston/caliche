@@ -1424,7 +1424,18 @@ mod store {
             .map_or(true, |status| status.success())
     }
 
-    #[cfg(not(unix))]
+    /// Whether `pid` still runs. A pid that cannot be opened for access
+    /// reasons counts as alive, so the row is left alone.
+    #[cfg(windows)]
+    #[expect(
+        clippy::unused_async,
+        reason = "same signature as the async unix probe"
+    )]
+    async fn pid_alive(pid: i64) -> bool {
+        u32::try_from(pid).is_ok_and(|pid| pid != 0 && caliche_sandbox::process::pid_running(pid))
+    }
+
+    #[cfg(not(any(unix, windows)))]
     #[expect(
         clippy::unused_async,
         reason = "same signature as the async unix probe"

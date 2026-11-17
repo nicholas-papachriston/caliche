@@ -26,6 +26,7 @@ mod nested_git;
 pub mod ops;
 pub mod paths;
 pub mod policy;
+pub mod process;
 pub mod traits;
 
 #[cfg(feature = "code-mode")]
