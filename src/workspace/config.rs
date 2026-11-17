@@ -212,6 +212,11 @@ pub struct WorkspaceIndexerConfig {
     /// Provider/model/chunking fingerprint for persisted workspace embeddings.
     /// A mismatch clears the persisted vector index before re-indexing.
     pub index_fingerprint: Option<String>,
+    /// The top workspace root, set on a nested repository's config. Indexed
+    /// files are then opened beneath it, one component at a time with no
+    /// link followed, instead of beneath `root_path`, so a nested repository
+    /// swapped for a link after discovery cannot redirect the reads.
+    pub(crate) read_root: Option<PathBuf>,
 }
 
 impl WorkspaceIndexerConfig {
@@ -236,6 +241,7 @@ impl WorkspaceIndexerConfig {
             #[cfg(feature = "tools-rag")]
             rag_search_options: None,
             index_fingerprint: None,
+            read_root: None,
         }
     }
 

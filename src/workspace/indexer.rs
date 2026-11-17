@@ -64,12 +64,9 @@ impl WorkspaceIndexer {
         let mut total_chunks = 0usize;
         let mut failures = Vec::new();
         for repo in repos {
-            let mut repo_config = self.config.clone();
-            repo_config.root_path = repo.clone();
-            if matches!(self.config.persistence, PersistenceConfig::Disk { .. }) {
-                let store_dir = store_dir_for_repo(&self.config, &repo);
-                self.record_root_marker_at(&store_dir, &repo);
-                repo_config.persistence = PersistenceConfig::Disk { path: store_dir };
+            let repo_config = nested_repo_config(&self.config, &repo);
+            if let PersistenceConfig::Disk { path } = &repo_config.persistence {
+                self.record_root_marker_at(path, &repo);
             }
             let repo_indexer = Self::new(Arc::clone(&self.rag_service), repo_config);
             let result = repo_indexer.index_tree().await?;
@@ -378,10 +375,32 @@ impl WorkspaceIndexer {
     }
 }
 
+/// The config for `repo`, a git worktree that discovery found under
+/// `top`'s root: its own root and store, with reads kept beneath `top`'s root.
+fn nested_repo_config(
+    top: &WorkspaceIndexerConfig,
+    repo: &std::path::Path,
+) -> WorkspaceIndexerConfig {
+    let mut config = top.clone();
+    config.root_path = repo.to_path_buf();
+    config.read_root = Some(
+        top.read_root
+            .clone()
+            .unwrap_or_else(|| top.root_path.clone()),
+    );
+    if matches!(top.persistence, PersistenceConfig::Disk { .. }) {
+        config.persistence = PersistenceConfig::Disk {
+            path: store_dir_for_repo(top, repo),
+        };
+    }
+    config
+}
+
 /// Read `path`, a file the index walk or the file watcher found, without
 /// following a link.
 ///
-/// A file in the workspace is opened below the canonical workspace root and
+/// A file in the workspace is opened below the canonical top workspace root
+/// (`read_root` for a nested repository, else `root_path`) and
 /// a file in the shared memory directory below that directory, one
 /// component at a time, so a link in the project cannot pull a file from
 /// outside into the index. `path` may name the root in its configured or
@@ -397,7 +416,10 @@ pub(crate) async fn read_index_file(
         DEFAULT_MAX_FILE_SIZE
     };
     let bases = [
-        config.root_path.clone(),
+        config
+            .read_root
+            .clone()
+            .unwrap_or_else(|| config.root_path.clone()),
         crate::workspace::config::workspace_memory_markdown_dir(&config.root_path),
     ];
     let path = path.to_path_buf();
@@ -697,6 +719,24 @@ mod link_tests {
 
         assert_eq!(named, "fn ok() {}");
         assert_eq!(resolved, "fn ok() {}");
+    }
+
+    /// A nested repository swapped for a link after discovery listed it: a
+    /// read of one of its files is refused, not taken from the link's target.
+    #[tokio::test]
+    async fn an_indexed_read_in_a_swapped_nested_repo_is_refused() {
+        let (outside, ws, top) = workspace();
+        let sub = ws.path().canonicalize().expect("canonical").join("sub");
+        let config = super::nested_repo_config(&top, &sub);
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+
+        let read = read_index_file(&config, &sub.join("secret.rs")).await;
+
+        let err = read.expect_err("a swapped nested repo must not be read");
+        assert!(
+            err.to_string().starts_with("Failed to read file: "),
+            "{err}"
+        );
     }
 
     #[tokio::test]
