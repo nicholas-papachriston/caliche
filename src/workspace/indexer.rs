@@ -196,9 +196,14 @@ impl WorkspaceIndexer {
         .map_err(|e| anyhow::anyhow!("Workspace walk task failed: {}", e))
     }
 
-    /// Remove the manifest entries this run did not find. An entry below a
-    /// directory in `unlisted`, which the walk could not list, is kept: not
-    /// seen is not gone, so a partial walk never becomes a purge.
+    /// Remove the manifest entries this run did not find.
+    ///
+    /// Only entries this run could have found are candidates: those below
+    /// its root and, for the top repo, its memory directory. A nested repo's
+    /// store is also that repo's own workspace store, so the entries its own
+    /// runs wrote (its memory notes) are not this run's to purge. An entry
+    /// below a directory in `unlisted`, which the walk could not list, is
+    /// kept too: not seen is not gone.
     async fn purge_stale_entries(
         &self,
         paths: &[std::path::PathBuf],
@@ -210,10 +215,20 @@ impl WorkspaceIndexer {
             .iter()
             .filter_map(|path| path.to_str().map(str::to_string))
             .collect();
+        let root = &self.config.root_path;
+        let memory = self
+            .config
+            .read_root
+            .is_none()
+            .then(|| crate::workspace::config::workspace_memory_markdown_dir(root));
         let stale_paths: Vec<String> = manifest
             .indexed
             .keys()
             .filter(|path| !current_paths.contains(*path))
+            .filter(|path| {
+                let path = std::path::Path::new(path);
+                path.starts_with(root) || memory.as_ref().is_some_and(|dir| path.starts_with(dir))
+            })
             .filter(|path| {
                 !unlisted
                     .iter()
@@ -762,22 +777,96 @@ mod tests {
             size: 1,
             checksum: "c".to_string(),
         };
+        let key = |path: &str| dir.path().join(path).display().to_string();
         manifest.merge_from_indexed([
-            ("/ws/sub/kept.rs".to_string(), record()),
-            ("/ws/gone.rs".to_string(), record()),
+            (key("sub/kept.rs"), record()),
+            (key("gone.rs"), record()),
+            ("/elsewhere/other.rs".to_string(), record()),
         ]);
         let mut failures = Vec::new();
 
         indexer
-            .purge_stale_entries(
-                &[],
-                &[std::path::PathBuf::from("/ws/sub")],
-                &mut manifest,
-                &mut failures,
-            )
+            .purge_stale_entries(&[], &[dir.path().join("sub")], &mut manifest, &mut failures)
             .await;
 
-        assert_eq!(sorted_keys(&manifest), vec!["/ws/sub/kept.rs".to_string()]);
+        let mut expected = vec!["/elsewhere/other.rs".to_string(), key("sub/kept.rs")];
+        expected.sort();
+        assert_eq!(sorted_keys(&manifest), expected);
+    }
+
+    /// A single-repo workspace named through a link records its canonical
+    /// root, the form the catalog compares against.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_single_repo_marker_records_the_canonical_root() {
+        let dir = TempDir::new().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical").join("real");
+        std::fs::create_dir_all(real.join(".git")).expect("git dir");
+        std::fs::write(real.join("a.rs"), "fn a() {}").expect("a");
+        let named = dir.path().join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let store = dir.path().join("store");
+        let (indexer, _) = indexer(
+            &named,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+
+        indexer.index().await.expect("index");
+
+        assert_eq!(
+            std::fs::read_to_string(store.join("workspace_root")).expect("marker"),
+            real.display().to_string()
+        );
+    }
+
+    /// A nested repo's store is also that repo's own workspace store. Indexing
+    /// the parent workspace leaves the notes the nested repo's own runs
+    /// indexed from its memory directory.
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn indexing_the_parent_keeps_a_nested_repos_own_memory_notes() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        let sub = root.join("sub");
+        for repo in [&root, &sub] {
+            std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        }
+        std::fs::write(sub.join("a.rs"), "fn a() {}").expect("a");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&sub);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        std::fs::write(memory.join("note.md"), "a note").expect("note");
+        let store = crate::workspace::config::workspace_shared_storage_dir(&sub);
+        let (own, _) = indexer(
+            &sub,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        own.index().await.expect("own index");
+        let (parent, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: crate::workspace::config::workspace_shared_storage_dir(&root),
+            },
+        );
+        assert_eq!(store_dir_for_repo(&parent.config, &sub), store);
+
+        parent.index().await.expect("parent index");
+        let kept = IndexManifest::load(&store).await.expect("manifest");
+
+        let mut expected = vec![
+            sub.join("a.rs").display().to_string(),
+            memory.join("note.md").display().to_string(),
+        ];
+        expected.sort();
+        assert_eq!(sorted_keys(&kept), expected);
     }
 
     /// The top memory directory cannot be listed (here it is a file): the
@@ -922,66 +1011,6 @@ mod link_tests {
                 .starts_with(&format!("{READ_FAILED}refusing to follow symlink at 'sub'")),
             "{err}"
         );
-    }
-
-    /// The store of a nested repository is named by its path beneath the
-    /// workspace: swapping the repository for a link to another workspace
-    /// does not change it.
-    #[test]
-    fn a_swapped_nested_repo_keeps_its_own_store() {
-        let (outside, ws, _) = workspace();
-        let top = WorkspaceIndexerConfig::new(ws.path().to_path_buf()).persistence(
-            PersistenceConfig::Disk {
-                path: ws.path().join("catalog").join("top"),
-            },
-        );
-        let sub = ws.path().join("sub");
-        std::fs::create_dir(&sub).expect("sub");
-        let before = crate::workspace::config::store_dir_for_repo(&top, &sub);
-        std::fs::remove_dir(&sub).expect("move away");
-        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
-
-        let after = crate::workspace::config::store_dir_for_repo(&top, &sub);
-
-        assert_eq!(after, before);
-    }
-
-    /// A store's root marker records the worktree path discovery returned,
-    /// not the target of a link swapped in since.
-    #[test]
-    fn a_root_marker_records_the_discovered_path() {
-        let (outside, ws, _) = workspace();
-        let sub = ws.path().canonicalize().expect("canonical").join("sub");
-        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
-        let store = ws.path().join("store");
-
-        crate::workspace::federated::write_workspace_root_marker(&store, &sub).expect("marker");
-
-        assert_eq!(
-            std::fs::read_to_string(store.join("workspace_root")).expect("read"),
-            sub.display().to_string()
-        );
-    }
-
-    /// A repo outside the workspace names its store by its path as given:
-    /// swapping that path for a link does not change the store.
-    #[test]
-    fn a_repo_outside_the_workspace_keeps_its_store_after_a_swap() {
-        let (outside, ws, _) = workspace();
-        let top = WorkspaceIndexerConfig::new(ws.path().to_path_buf()).persistence(
-            PersistenceConfig::Disk {
-                path: ws.path().join("catalog").join("top"),
-            },
-        );
-        let other = outside.path().join("other");
-        std::fs::create_dir(&other).expect("other");
-        let before = crate::workspace::config::store_dir_for_repo(&top, &other);
-        std::fs::remove_dir(&other).expect("move away");
-        std::os::unix::fs::symlink(ws.path(), &other).expect("swap");
-
-        let after = crate::workspace::config::store_dir_for_repo(&top, &other);
-
-        assert_eq!(after, before);
     }
 
     /// A nested repository indexes no memory of its own: a file in its

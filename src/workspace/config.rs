@@ -400,4 +400,53 @@ mod tests {
             PathBuf::from("/tmp/catalog/abc123")
         );
     }
+
+    /// A workspace with a file in it, a directory outside it, and a disk
+    /// config for the workspace.
+    #[cfg(unix)]
+    fn swap_setup() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceIndexerConfig) {
+        let outside = tempfile::tempdir().expect("outside dir");
+        let ws = tempfile::tempdir().expect("workspace");
+        let top = WorkspaceIndexerConfig::new(ws.path().to_path_buf()).persistence(
+            PersistenceConfig::Disk {
+                path: ws.path().join("catalog").join("top"),
+            },
+        );
+        (outside, ws, top)
+    }
+
+    /// The store of a nested repository is named by its path beneath the
+    /// workspace: swapping the repository for a link to another workspace
+    /// does not change it.
+    #[cfg(unix)]
+    #[test]
+    fn a_swapped_nested_repo_keeps_its_own_store() {
+        let (outside, ws, top) = swap_setup();
+        let sub = ws.path().join("sub");
+        std::fs::create_dir(&sub).expect("sub");
+        let before = store_dir_for_repo(&top, &sub);
+        std::fs::remove_dir(&sub).expect("move away");
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+
+        let after = store_dir_for_repo(&top, &sub);
+
+        assert_eq!(after, before);
+    }
+
+    /// A repo outside the workspace names its store by its path as given:
+    /// swapping that path for a link does not change the store.
+    #[cfg(unix)]
+    #[test]
+    fn a_repo_outside_the_workspace_keeps_its_store_after_a_swap() {
+        let (outside, ws, top) = swap_setup();
+        let other = outside.path().join("other");
+        std::fs::create_dir(&other).expect("other");
+        let before = store_dir_for_repo(&top, &other);
+        std::fs::remove_dir(&other).expect("move away");
+        std::os::unix::fs::symlink(ws.path(), &other).expect("swap");
+
+        let after = store_dir_for_repo(&top, &other);
+
+        assert_eq!(after, before);
+    }
 }

@@ -408,4 +408,23 @@ mod tests {
         assert!(left.list(None, None).await.expect("left list").is_empty());
         assert_eq!(right.list(None, None).await.expect("right list").len(), 1);
     }
+
+    /// A store's root marker records the worktree path discovery returned,
+    /// not the target of a link swapped in since.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_marker_records_the_discovered_path() {
+        let outside = tempfile::tempdir().expect("outside dir");
+        let ws = tempfile::tempdir().expect("workspace");
+        let sub = ws.path().canonicalize().expect("canonical").join("sub");
+        std::os::unix::fs::symlink(outside.path(), &sub).expect("swap");
+        let store = ws.path().join("store");
+
+        super::write_workspace_root_marker(&store, &sub).expect("marker");
+
+        assert_eq!(
+            std::fs::read_to_string(store.join("workspace_root")).expect("read"),
+            sub.display().to_string()
+        );
+    }
 }
