@@ -1012,6 +1012,53 @@ mod tests {
         assert_eq!(sub_keys, vec![sub.join("a.rs").display().to_string()]);
     }
 
+    /// When the nested repo's manifest cannot drop a leftover key, the top
+    /// run keeps the key and its document.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_leftover_key_the_nested_manifest_cannot_release_is_kept() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical").join("ws");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::create_dir_all(sub.join(".git")).expect("sub git dir");
+        std::fs::write(root.join("b.rs"), "fn b() {}").expect("b");
+        std::fs::write(sub.join("a.rs"), "fn a() {}").expect("a");
+        let store = dir.path().join("store");
+        let (top, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        std::fs::rename(sub.join(".git"), dir.path().join("sub-git")).expect("hide sub git");
+        top.index().await.expect("single-repo run");
+        std::fs::rename(dir.path().join("sub-git"), sub.join(".git")).expect("restore sub git");
+        let PersistenceConfig::Disk { path: sub_store } =
+            repo_config(&top.config, &sub).persistence
+        else {
+            panic!("sub store is on disk");
+        };
+        if sub_store.exists() {
+            std::fs::remove_dir_all(&sub_store).expect("clear sub store");
+        }
+        std::fs::create_dir_all(sub_store.parent().expect("parent")).expect("store parent");
+        std::fs::write(&sub_store, "not a directory").expect("block sub store");
+
+        let result = top.index().await;
+        let top_keys = sorted_keys(&IndexManifest::load(&store).await.expect("top manifest"));
+
+        assert!(result.is_err(), "the nested run cannot open its store");
+        assert_eq!(top.rag_service.stats().await.expect("stats").1, 2);
+        assert_eq!(
+            top_keys,
+            vec![
+                root.join("b.rs").display().to_string(),
+                sub.join("a.rs").display().to_string(),
+            ]
+        );
+    }
+
     /// A workspace that gains a nested repo between two runs switches from
     /// single- to multi-repo mode; the top store keeps one key form and
     /// drops the files that now belong to the nested repo.
