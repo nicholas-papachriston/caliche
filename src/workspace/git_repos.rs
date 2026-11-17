@@ -113,7 +113,7 @@ fn gitmodules_worktrees(base: &Path, root: &Path) -> Vec<PathBuf> {
 }
 
 /// Live git root for the submodule path `relative` under `root`, kept only
-/// when it resolves strictly inside the top root `base`.
+/// when it resolves inside the top root `base`.
 fn contained_git_root(base: &Path, root: &Path, relative: &str) -> Option<PathBuf> {
     if !is_safe_relative(relative) {
         return None;
@@ -121,8 +121,8 @@ fn contained_git_root(base: &Path, root: &Path, relative: &str) -> Option<PathBu
     confined_git_root(base, &root.join(relative))
 }
 
-/// The canonical form of `candidate` when it is a git worktree strictly
-/// inside the canonical top root `base`.
+/// The canonical form of `candidate` when it is a git worktree inside the
+/// canonical top root `base` (`base` itself is deduplicated by the caller).
 ///
 /// A sandboxed command can swap a nested directory for a link at any time,
 /// so the check is made on the resolved path that is returned, never on an
@@ -132,7 +132,7 @@ fn confined_git_root(base: &Path, candidate: &Path) -> Option<PathBuf> {
         return None;
     }
     let canonical = std::fs::canonicalize(candidate).ok()?;
-    if canonical == base || !canonical.starts_with(base) {
+    if !canonical.starts_with(base) {
         return None;
     }
     Some(canonical)
@@ -190,6 +190,8 @@ fn append_walked_repos(
     dirs: impl IntoIterator<Item = PathBuf>,
 ) {
     for path in dirs {
+        // Stop the walk early once the cap is reached; the cap is a bound on
+        // work, not a filter.
         if repos.len() >= MAX_NESTED_REPOS {
             break;
         }
