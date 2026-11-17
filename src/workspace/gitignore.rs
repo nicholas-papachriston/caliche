@@ -18,19 +18,17 @@ use crate::agent::tools::tree_walk::{WalkOptions, WalkedEntry, walk_tree_pruned}
 /// The files a walk collected, and the directories it could not list.
 #[derive(Debug, Default)]
 pub struct CollectedFiles {
-    /// Files that pass the filters, named below the key root.
+    /// Files that pass the filters, named below the walked root.
     pub files: Vec<PathBuf>,
     /// Directories the walk tried to list and could not (a link swapped in,
-    /// a permission or I/O error), named below the key root. Nothing below
-    /// them was seen.
+    /// a permission or I/O error). Nothing below them was seen.
     pub unlisted: Vec<PathBuf>,
 }
 
-/// Collect file paths under `walk_root` respecting ignore files.
+/// Collect file paths under `root` respecting ignore files.
 ///
-/// - `root`: the form of the walked directory the returned paths start with
-/// - `walk_root`: the canonical directory to walk; it is listed as given,
-///   never resolved again, so a root that is now a link is refused
+/// - `root`: the canonical directory to walk; it is listed as given, never
+///   resolved again, so a root that is now a link is refused
 /// - `max_file_size`: skip files larger than this (bytes); `None` = no limit
 /// - `extensions`: allowed extensions (e.g. `["rs", "py"]`); empty = allow all
 /// - `max_files`: stop after collecting this many files; `None` = no limit
@@ -40,20 +38,19 @@ pub struct CollectedFiles {
 /// `spawn_blocking` if used in async context.
 pub fn collect_files(
     root: &Path,
-    walk_root: &Path,
     max_file_size: Option<u64>,
     extensions: &[String],
     max_files: Option<usize>,
     exclude_patterns: &[String],
 ) -> CollectedFiles {
-    let extra = extra_excludes(walk_root, exclude_patterns);
+    let extra = extra_excludes(root, exclude_patterns);
     let ext_set: std::collections::HashSet<String> =
         extensions.iter().map(|s| s.to_lowercase()).collect();
     let prune = |entry: &WalkedEntry| {
         super::git_repos::is_git_root(&entry.path) || is_excluded(extra.as_ref(), entry)
     };
     let mut files = Vec::new();
-    let report = walk_tree_pruned(walk_root, WalkOptions::default(), &prune, &mut |entry| {
+    let report = walk_tree_pruned(root, WalkOptions::default(), &prune, &mut |entry| {
         if max_files.is_some_and(|limit| files.len() >= limit) {
             return ControlFlow::Break(());
         }
@@ -62,20 +59,14 @@ pub fn collect_files(
             && (ext_set.is_empty() || extension_allowed(&entry.path, &ext_set))
             && !is_excluded(extra.as_ref(), entry)
         {
-            files.push(root.join(&entry.relative));
+            files.push(entry.path.clone());
         }
         ControlFlow::Continue(())
     });
-    let unlisted = report
-        .unlisted
-        .iter()
-        .map(|dir| match dir.strip_prefix(walk_root) {
-            Ok(below) if below.as_os_str().is_empty() => root.to_path_buf(),
-            Ok(below) => root.join(below),
-            Err(_) => dir.clone(),
-        })
-        .collect();
-    CollectedFiles { files, unlisted }
+    CollectedFiles {
+        files,
+        unlisted: report.unlisted,
+    }
 }
 
 /// True when an extra exclude pattern matches `entry`. A walk checks each
@@ -233,7 +224,6 @@ mod tests {
         let root = dir.path().canonicalize().expect("canonical");
         let paths = collect_files(
             &root,
-            &root,
             None,
             &["rs".to_string()],
             None,
@@ -290,7 +280,7 @@ mod tests {
         write_file(dir.path(), "child/nested.rs", "fn nested() {}");
 
         let root = dir.path().canonicalize().expect("canonical");
-        let paths = collect_files(&root, &root, None, &["rs".to_string()], None, &[]);
+        let paths = collect_files(&root, None, &["rs".to_string()], None, &[]);
         let names: Vec<String> = paths
             .files
             .iter()
@@ -320,7 +310,7 @@ mod tests {
         let excludes = vec!["nested/".to_string()];
         let skip = root.join("nested/inner/skip.rs");
 
-        let collected = collect_files(&root, &root, None, &exts, None, &excludes);
+        let collected = collect_files(&root, None, &exts, None, &excludes);
 
         assert_eq!(file_names(&collected.files), vec!["keep.rs"]);
         assert!(!path_allowed(&root, &skip, None, &exts, &excludes));
@@ -343,7 +333,7 @@ mod tests {
         write_file(&root, "big.rs", "12345");
         let exts = vec!["rs".to_string()];
 
-        let collected = collect_files(&root, &root, Some(4), &exts, None, &[]);
+        let collected = collect_files(&root, Some(4), &exts, None, &[]);
 
         assert_eq!(file_names(&collected.files), vec!["small.rs"]);
         assert!(!path_allowed(
@@ -375,32 +365,12 @@ mod tests {
             top.join("config/git/ignore"),
         ));
 
-        let collected = collect_files(&root, &root, None, &[], None, &[]);
+        let collected = collect_files(&root, None, &[], None, &[]);
         let allowed = path_allowed(&root, &root.join("globalsecret.toml"), None, &[], &[]);
         crate::agent::tools::tree_walk::set_test_global_excludes(None);
 
         assert_eq!(file_names(&collected.files), vec!["ok.toml"]);
         assert!(!allowed);
-    }
-
-    /// A directory the walk cannot list is reported in the form of the root
-    /// the caller named, so its entries match the manifest keys.
-    #[cfg(unix)]
-    #[test]
-    fn an_unlisted_directory_is_named_below_the_given_root() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = TempDir::new().expect("temp dir");
-        let real = tmp.path().canonicalize().expect("canonical").join("real");
-        write_file(&real, "locked/a.rs", "fn a() {}");
-        let named = tmp.path().canonicalize().expect("canonical").join("named");
-        std::os::unix::fs::symlink(&real, &named).expect("root link");
-        let locked = real.join("locked");
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("lock");
-
-        let collected = collect_files(&named, &real, None, &[], None, &[]);
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock");
-
-        assert_eq!(collected.unlisted, vec![named.join("locked")]);
     }
 
     /// A memory note that is a link, or over the size limit, is not allowed.
@@ -444,5 +414,25 @@ mod tests {
             &exts,
             &[]
         ));
+    }
+
+    /// A memory path, outside the root, is checked against the extra
+    /// excludes as a path of its own; it does not stop the check.
+    #[test]
+    #[serial_test::serial(env)]
+    fn a_memory_path_passes_the_index_filters_with_excludes_set() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let tmp = TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical");
+        let note = super::super::config::workspace_memory_markdown_dir(&root).join("note.md");
+
+        let allowed =
+            matches_index_filters(&root, &note, &["md".to_string()], &["nested/".to_string()]);
+
+        assert!(allowed);
     }
 }

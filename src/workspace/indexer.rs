@@ -97,10 +97,11 @@ impl WorkspaceIndexer {
     /// Index one worktree using this indexer's root and persistence path.
     async fn index_tree(&self) -> anyhow::Result<WorkspaceIndexResult> {
         let root = &self.config.root_path;
+        let walk_root = self.walk_root();
         let gitignore::CollectedFiles {
             files: mut paths,
             mut unlisted,
-        } = self.collect_index_paths().await?;
+        } = self.collect_index_paths(&walk_root).await?;
         if self.config.read_root.is_none() {
             match crate::workspace::list_workspace_memory_markdown_files(root).await {
                 Ok(mut memory_files) => paths.append(&mut memory_files),
@@ -122,7 +123,7 @@ impl WorkspaceIndexer {
             .iter()
             .map(|dir| format!("{}: {UNLISTED_KEPT}", dir.display()))
             .collect();
-        self.purge_stale_entries(&paths, &unlisted, &mut manifest, &mut failures)
+        self.purge_stale_entries(&walk_root, &paths, &unlisted, &mut manifest, &mut failures)
             .await;
 
         if paths.is_empty() {
@@ -169,22 +170,31 @@ impl WorkspaceIndexer {
         })
     }
 
-    /// Walk this worktree. The top root is resolved once; a nested root is
-    /// already the canonical path discovery returned and is walked as is,
-    /// so one swapped for a link is refused and reported as unlisted.
-    async fn collect_index_paths(&self) -> anyhow::Result<gitignore::CollectedFiles> {
-        let root_clone = self.config.root_path.clone();
-        let walk_root = if self.config.read_root.is_some() {
-            root_clone.clone()
+    /// The directory this run walks, and the form every key it writes
+    /// starts with. The top root is resolved once; a nested root is already
+    /// the canonical path discovery returned and is walked as is, so one
+    /// swapped for a link is refused and reported as unlisted. Keying by one
+    /// form means a workspace named through a link, by its real path, or in
+    /// single- or multi-repo mode writes the same keys.
+    fn walk_root(&self) -> std::path::PathBuf {
+        if self.config.read_root.is_some() {
+            self.config.root_path.clone()
         } else {
-            git_repos::canonical_or_owned(&root_clone)
-        };
+            git_repos::canonical_or_owned(&self.config.root_path)
+        }
+    }
+
+    /// Collect this worktree's files below `walk_root`.
+    async fn collect_index_paths(
+        &self,
+        walk_root: &std::path::Path,
+    ) -> anyhow::Result<gitignore::CollectedFiles> {
+        let walk_root = walk_root.to_path_buf();
         let max_size = self.config.max_file_size;
         let exts_clone = self.config.resolved_extensions();
         let excludes = self.config.exclude_patterns.clone();
         tokio::task::spawn_blocking(move || {
             gitignore::collect_files(
-                &root_clone,
                 &walk_root,
                 Some(max_size as u64),
                 &exts_clone,
@@ -199,13 +209,16 @@ impl WorkspaceIndexer {
     /// Remove the manifest entries this run did not find.
     ///
     /// Only entries this run could have found are candidates: those below
-    /// its root and, for the top repo, its memory directory. A nested repo's
+    /// `walk_root` (the form this run keys by) or the root as configured (the
+    /// form older runs keyed by) and, for the top repo, its memory
+    /// directory. A nested repo's
     /// store is also that repo's own workspace store, so the entries its own
     /// runs wrote (its memory notes) are not this run's to purge. An entry
     /// below a directory in `unlisted`, which the walk could not list, is
     /// kept too: not seen is not gone.
     async fn purge_stale_entries(
         &self,
+        walk_root: &std::path::Path,
         paths: &[std::path::PathBuf],
         unlisted: &[std::path::PathBuf],
         manifest: &mut IndexManifest,
@@ -227,7 +240,9 @@ impl WorkspaceIndexer {
             .filter(|path| !current_paths.contains(*path))
             .filter(|path| {
                 let path = std::path::Path::new(path);
-                path.starts_with(root) || memory.as_ref().is_some_and(|dir| path.starts_with(dir))
+                path.starts_with(walk_root)
+                    || path.starts_with(root)
+                    || memory.as_ref().is_some_and(|dir| path.starts_with(dir))
             })
             .filter(|path| {
                 !unlisted
@@ -786,7 +801,13 @@ mod tests {
         let mut failures = Vec::new();
 
         indexer
-            .purge_stale_entries(&[], &[dir.path().join("sub")], &mut manifest, &mut failures)
+            .purge_stale_entries(
+                dir.path(),
+                &[],
+                &[dir.path().join("sub")],
+                &mut manifest,
+                &mut failures,
+            )
             .await;
 
         let mut expected = vec!["/elsewhere/other.rs".to_string(), key("sub/kept.rs")];
@@ -818,6 +839,111 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(store.join("workspace_root")).expect("marker"),
             real.display().to_string()
+        );
+    }
+
+    /// A workspace named through a link and by its real path shares one
+    /// store and one key form: a file deleted between the two runs is
+    /// purged.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_file_is_purged_whichever_root_form_names_the_workspace() {
+        let dir = TempDir::new().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical").join("real");
+        std::fs::create_dir_all(real.join(".git")).expect("git dir");
+        std::fs::write(real.join("a.rs"), "fn a() {}").expect("a");
+        std::fs::write(real.join("b.rs"), "fn b() {}").expect("b");
+        let named = dir.path().join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let store = dir.path().join("store");
+        let (by_name, _) = indexer(
+            &named,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        by_name.index().await.expect("index by name");
+        std::fs::remove_file(real.join("a.rs")).expect("delete a");
+
+        let (by_path, _) = indexer(
+            &real,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        by_path.index().await.expect("index by path");
+        let kept = IndexManifest::load(&store).await.expect("manifest");
+
+        assert_eq!(
+            sorted_keys(&kept),
+            vec![real.join("b.rs").display().to_string()]
+        );
+    }
+
+    /// A workspace that gains a nested repo between two runs switches from
+    /// single- to multi-repo mode; the top store keeps one key form and
+    /// drops the files that now belong to the nested repo.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn switching_to_multi_repo_mode_keeps_one_key_form() {
+        let dir = TempDir::new().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical").join("real");
+        std::fs::create_dir_all(real.join(".git")).expect("git dir");
+        std::fs::create_dir_all(real.join("sub")).expect("sub");
+        std::fs::write(real.join("b.rs"), "fn b() {}").expect("b");
+        std::fs::write(real.join("sub/a.rs"), "fn a() {}").expect("a");
+        let named = dir.path().join("named");
+        std::os::unix::fs::symlink(&real, &named).expect("root link");
+        let store = dir.path().join("store");
+        let (top, _) = indexer(
+            &named,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        top.index().await.expect("single-repo index");
+        std::fs::create_dir_all(real.join("sub/.git")).expect("sub git dir");
+
+        top.index().await.expect("multi-repo index");
+        let kept = IndexManifest::load(&store).await.expect("manifest");
+
+        assert_eq!(
+            sorted_keys(&kept),
+            vec![real.join("b.rs").display().to_string()]
+        );
+    }
+
+    /// A memory note deleted since the last run of the top repo is purged.
+    #[tokio::test]
+    #[serial_test::serial(env)]
+    async fn a_deleted_memory_note_is_purged() {
+        let catalog = TempDir::new().expect("catalog");
+        #[expect(unsafe_code, reason = "takes the process env guard; see SAFETY")]
+        // SAFETY: this test is serial and starts no thread that writes the environment while the guard lives.
+        let mut env = unsafe { caliche_test_env::EnvGuard::acquire() };
+        env.set("CALICHE_EMBED_PATH", catalog.path());
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical");
+        std::fs::write(root.join("a.rs"), "fn a() {}").expect("a");
+        let memory = crate::workspace::config::workspace_memory_markdown_dir(&root);
+        std::fs::create_dir_all(&memory).expect("memory dir");
+        std::fs::write(memory.join("note.md"), "a note").expect("note");
+        let store = dir.path().join("store");
+        let (indexer, _) = indexer(
+            &root,
+            PersistenceConfig::Disk {
+                path: store.clone(),
+            },
+        );
+        indexer.index().await.expect("first index");
+        std::fs::remove_file(memory.join("note.md")).expect("delete note");
+
+        indexer.index().await.expect("second index");
+        let kept = IndexManifest::load(&store).await.expect("manifest");
+
+        assert_eq!(
+            sorted_keys(&kept),
+            vec![root.join("a.rs").display().to_string()]
         );
     }
 
