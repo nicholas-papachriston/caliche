@@ -9,9 +9,13 @@
 //!
 //! The old walker read the global excludes from the user's git config; the
 //! reference here gets the same file as an explicit ignore, so neither side
-//! reads the environment. The two differ only for a file outside every
-//! repository with `require_git` set, which the fixture does not hold;
-//! `the_global_excludes_need_a_repo_when_git_is_required` covers that case.
+//! reads the environment. That reference differs from the old walker in
+//! two ways the fixture avoids:
+//! - for a file outside every repository with `require_git` set, where
+//!   `the_global_excludes_need_a_repo_when_git_is_required` covers it;
+//! - for a global pattern with a slash in it: the walk anchors it at the
+//!   walk root, the old walker at its working directory, and git at the
+//!   work tree. The fixture's global pattern has no slash.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
