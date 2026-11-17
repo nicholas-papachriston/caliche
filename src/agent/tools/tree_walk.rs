@@ -281,8 +281,8 @@ fn outer_ignores(root: &Path, rules: Ignores, errors: &mut Vec<String>) -> Vec<D
 
 /// What a directory's `.git` and `.jj` entries make it.
 struct Vcs {
-    /// It is a repository root: its `.git` or `.jj` resolves to a directory
-    /// or a regular file, as the `ignore` crate counts one.
+    /// It is a repository root: its `.git` or `.jj` exists after a link is
+    /// followed, of any type, as the `ignore` crate counts one.
     is_repo: bool,
     /// The git directory whose `info/exclude` applies here.
     git_dir: Option<PathBuf>,
@@ -291,20 +291,20 @@ struct Vcs {
 impl Vcs {
     /// Read the `.git` and `.jj` entries of `dir`, of the given kinds.
     ///
-    /// A `.git` directory is the git directory, and a `.git` file points to
-    /// one. A link is followed as git follows it, and counts only when it
-    /// leads to a directory or a regular file: a dangling link, or one to a
-    /// FIFO or a device, makes no repository.
+    /// A link is followed as git follows it. Any entry that exists after
+    /// that makes a repository; a dangling link makes none. A `.git`
+    /// directory is the git directory, and a `.git` regular file points to
+    /// one; a FIFO or a device names no git directory.
     fn of(dir: &Path, git: Option<EntryKind>, jj: Option<EntryKind>) -> Self {
         let entry = |name: &str, kind: Option<EntryKind>| match kind? {
             EntryKind::Other => follow_link(&dir.join(name)),
-            kind => Some((dir.join(name), kind)),
+            kind => Some((dir.join(name), Some(kind))),
         };
         let git = entry(".git", git);
         let git_dir = match &git {
-            Some((path, EntryKind::Dir)) => Some(path.clone()),
-            Some((path, _)) => gitfile_common_dir(dir, path),
-            None => None,
+            Some((path, Some(EntryKind::Dir))) => Some(path.clone()),
+            Some((path, Some(_))) => gitfile_common_dir(dir, path),
+            Some((_, None)) | None => None,
         };
         Self {
             is_repo: git.is_some() || entry(".jj", jj).is_some(),
@@ -313,8 +313,9 @@ impl Vcs {
     }
 }
 
-/// Where the link `path` leads, if it reaches a directory or a regular
-/// file.
+/// Where `path`, a link or another kind of entry, leads, if anything is
+/// there: the target, and whether it is a directory or a regular file
+/// (`None` for a FIFO, a device or a socket).
 #[cfg_attr(
     tool_file_lint,
     expect(
@@ -322,14 +323,15 @@ impl Vcs {
         reason = "a .git or .jj link, followed as git follows it; the target is then described with no link followed"
     )
 )]
-fn follow_link(path: &Path) -> Option<(PathBuf, EntryKind)> {
+fn follow_link(path: &Path) -> Option<(PathBuf, Option<EntryKind>)> {
     let target = std::fs::canonicalize(path).ok()?;
-    let meta = resolved_metadata(&target).ok()?;
-    let kind = if meta.is_dir() {
-        EntryKind::Dir
-    } else {
-        EntryKind::File
-    };
+    let kind = resolved_metadata(&target).ok().map(|meta| {
+        if meta.is_dir() {
+            EntryKind::Dir
+        } else {
+            EntryKind::File
+        }
+    });
     Some((target, kind))
 }
 
@@ -469,7 +471,14 @@ fn read_head(path: &Path) -> Option<String> {
 fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
     let text = match read_resolved_text(file) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return None;
+        }
         Err(err) => {
             errors.push(format!("{}: {err}", file.display()));
             return None;
@@ -888,6 +897,49 @@ mod tests {
         std::os::unix::fs::symlink("nowhere", repo.join("e/.jj")).expect("jj link");
 
         assert_eq!(walk_files(&repo, Ignores::Tools), vec!["d/ok.rs"]);
+    }
+
+    /// A `.git` or `.jj` of any kind makes a repository, as git and the old
+    /// walker count one: a FIFO, a link to a device, or a `.git` file that
+    /// points at one. The repository's `.gitignore` then applies, both at
+    /// the walk root and above it, and the walk reports no error.
+    #[test]
+    fn a_vcs_entry_of_any_kind_makes_a_repository() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        let cases = ["fifo-git", "null-git", "null-jj", "gitdir-null"];
+        for case in cases {
+            write_all(
+                &top.join(case),
+                &[
+                    (".gitignore", "sec.txt\n"),
+                    ("sec.txt", "s"),
+                    ("deep/sec.txt", "s"),
+                    ("deep/ok.rs", "o"),
+                ],
+            );
+        }
+        let status = crate::policy::program_command("mkfifo")
+            .arg(top.join("fifo-git/.git"))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success());
+        std::os::unix::fs::symlink("/dev/null", top.join("null-git/.git")).expect("git link");
+        std::os::unix::fs::symlink("/dev/null", top.join("null-jj/.jj")).expect("jj link");
+        std::fs::write(top.join("gitdir-null/.git"), "gitdir: /dev/null\n").expect("gitfile");
+
+        let walked: Vec<(Vec<String>, Vec<String>)> = cases
+            .iter()
+            .map(|case| {
+                (
+                    walk_files(&top.join(case), Ignores::Tools),
+                    walk_files(&top.join(case).join("deep"), Ignores::Tools),
+                )
+            })
+            .collect();
+
+        let expected = (vec!["deep/ok.rs".to_owned()], vec!["ok.rs".to_owned()]);
+        assert_eq!(walked, vec![expected; 4]);
     }
 
     /// A pruned directory is visited and not entered.
