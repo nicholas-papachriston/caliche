@@ -29,15 +29,6 @@ pub const GIT_WORK_TREE_VAR: &str = "GIT_WORK_TREE";
 /// See [`GIT_DIR_VAR`].
 pub const GIT_CEILING_DIRECTORIES_VAR: &str = "GIT_CEILING_DIRECTORIES";
 
-/// Inherited variables that would point `git` at other repository files.
-pub const GIT_REDIRECT_VARS: [&str; 5] = [
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_NAMESPACE",
-];
-
 /// A work tree and the git dir and common dir it uses, all checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedRepository {
@@ -55,7 +46,7 @@ impl CheckedRepository {
     /// given in the form an external program reads (no `\\?\` prefix on
     /// Windows, see [`external_tool_path`]).
     #[must_use]
-    pub fn git_env(&self) -> ([(&'static str, OsString); 3], [&'static str; 5]) {
+    pub fn git_env(&self) -> ([(&'static str, OsString); 3], [&'static str; 11]) {
         let plain = |path: &Path| external_tool_path(path).into_os_string();
         let ceiling = plain(self.work_tree.parent().unwrap_or(&self.work_tree));
         (
@@ -64,11 +55,12 @@ impl CheckedRepository {
                 (GIT_WORK_TREE_VAR, plain(&self.work_tree)),
                 (GIT_CEILING_DIRECTORIES_VAR, ceiling),
             ],
-            GIT_REDIRECT_VARS,
+            caliche_policy::GIT_REPOSITORY_VARS,
         )
     }
 
-    /// Apply [`Self::git_env`] to `command`.
+    /// Apply [`Self::git_env`] to `command`: remove first, then set, since
+    /// the removed names include `GIT_DIR` and `GIT_WORK_TREE`.
     pub fn pin(&self, command: &mut std::process::Command) {
         let (set, remove) = self.git_env();
         for name in remove {

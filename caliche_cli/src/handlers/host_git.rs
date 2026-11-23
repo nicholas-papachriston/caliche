@@ -74,11 +74,25 @@ impl HostGit {
         if own.is_none() || own != Path::new(&git_dir).canonicalize().ok() {
             anyhow::bail!(foreign_git_dir(dir, &git_dir, &top));
         }
-        let modules = PathBuf::from(git_dir).join(MODULES_DIR);
-        let staged = git
+        let holds = |top: &Path| match (dir.canonicalize(), top.canonicalize()) {
+            (Ok(dir), Ok(top)) => dir.starts_with(top),
+            _ => false,
+        };
+        if !holds(&top) {
+            anyhow::bail!(outside_work_tree(dir, &top));
+        }
+        git.check_submodules(&top, &git_dir).await?;
+        Ok(git)
+    }
+
+    /// Refuse a staged submodule of the work tree `top` whose `.git` is
+    /// not a gitfile into `git_dir`'s modules, as [`check_submodule`] does.
+    async fn check_submodules(&self, top: &Path, git_dir: &str) -> Result<()> {
+        let modules = Path::new(git_dir).join(MODULES_DIR);
+        let staged = self
             .command()
             .args(["ls-files", "--stage", "-z"])
-            .current_dir(&top)
+            .current_dir(top)
             .output()
             .await
             .context("list submodules")?;
@@ -94,10 +108,10 @@ impl HostGit {
                 continue;
             };
             if meta.split(' ').next() == Some(format!("{GITLINK_MODE:o}").as_str()) {
-                check_submodule(&top, &modules, path)?;
+                check_submodule(top, &modules, path)?;
             }
         }
-        Ok(git)
+        Ok(())
     }
 
     /// `git -c core.fsmonitor=false -c safe.bareRepository=explicit` in the
@@ -190,6 +204,14 @@ fn not_a_gitfile(path: &str, dot_git: &Path, modules: &Path) -> String {
         "submodule {path}: {} is not a gitfile; only a gitfile into {} is accepted (run `git submodule absorbgitdirs`); refusing to run git",
         dot_git.display(),
         modules.display()
+    )
+}
+
+fn outside_work_tree(dir: &Path, top: &Path) -> String {
+    format!(
+        "{} is not inside the work tree {} that git uses for it; refusing to run git",
+        dir.display(),
+        top.display()
     )
 }
 
@@ -399,6 +421,32 @@ mod tests {
         );
     }
 
+    /// A broken submodule is refused when the command runs in another
+    /// directory of the superproject, since the submodules are listed
+    /// from the top of the work tree.
+    #[tokio::test]
+    async fn a_broken_submodule_is_refused_from_a_subdirectory() {
+        let (_dir, top, _marker) = superproject();
+        let (git_top, git_dir) = reported_top_and_git_dir(&top);
+        std::fs::create_dir(top.join("docs")).expect("docs");
+        std::fs::remove_file(top.join("sub").join(GIT_DIR_NAME)).expect("gitfile");
+        std::fs::create_dir(top.join("sub").join(GIT_DIR_NAME)).expect("git dir");
+
+        let err = HostGit::open(&top.join("docs"))
+            .await
+            .err()
+            .expect("refused");
+
+        assert_eq!(
+            err.to_string(),
+            not_a_gitfile(
+                "sub",
+                &git_top.join("sub").join(GIT_DIR_NAME),
+                &git_dir.join(MODULES_DIR)
+            ),
+        );
+    }
+
     /// A bare repository with two commits that change `f`, cloned from a
     /// work repository under `root`, with `diff.external` set to a script
     /// that creates the returned marker.
@@ -463,6 +511,12 @@ mod tests {
     /// config turned off, so a developer's config cannot decide the result.
     /// True in the parent, which then returns.
     fn rerun_without_git_config(test: &str) -> bool {
+        rerun_with_env(test, &[])
+    }
+
+    /// [`rerun_without_git_config`], with `env` also set in the child, as
+    /// if inherited from whatever started it.
+    fn rerun_with_env(test: &str, env: &[(&str, &Path)]) -> bool {
         if std::env::var_os(ISOLATED).is_some() {
             return false;
         }
@@ -470,6 +524,7 @@ mod tests {
             caliche::policy::program_command(std::env::current_exe().expect("test binary"));
         let output = clear_git_config(&mut command)
             .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .envs(env.iter().copied())
             .env(ISOLATED, "1")
             .output()
             .expect("re-run test");
@@ -639,6 +694,202 @@ mod tests {
         assert_eq!(
             err.to_string(),
             git_refusal::invalid_git_entry(&root.join(GIT_DIR_NAME))
+        );
+    }
+
+    /// Set in the child of [`rerun_with_env`]: the directory that holds
+    /// the repositories `own` and `other` of [`own_and_other`].
+    const REPOSITORIES: &str = "CALICHE_HOST_GIT_TEST_REPOSITORIES";
+
+    /// Two repositories in one temp dir, `own` and `other`, each with a
+    /// commit `base` holding `base.txt` and a staged `new.txt`.
+    fn own_and_other() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = temp_root(&dir);
+        for name in ["own", "other"] {
+            let repo = root.join(name);
+            std::fs::create_dir(&repo).expect("repo");
+            git(&repo, &["init", "-q"]);
+            std::fs::write(repo.join("base.txt"), name).expect("base");
+            git(&repo, &["add", "base.txt"]);
+            git(&repo, &["commit", "-q", "-m", "base"]);
+            std::fs::write(repo.join("new.txt"), name).expect("new");
+            git(&repo, &["add", "new.txt"]);
+        }
+        (dir, root)
+    }
+
+    /// In the child: commit what `own` has staged through [`HostGit`], as
+    /// `/commit` does.
+    async fn commit_in_own() {
+        let root = PathBuf::from(std::env::var_os(REPOSITORIES).expect("repositories"));
+        let git = HostGit::open(&root.join("own")).await.expect("open");
+        let status = git
+            .command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["commit", "-q", "-m", "from own"])
+            .status()
+            .await
+            .expect("commit");
+        assert!(status.success());
+    }
+
+    /// The subjects of `repo`'s commits, newest first, and the files of
+    /// its last commit.
+    fn history(repo: &Path) -> (String, String) {
+        (
+            git_reports(repo, &["log", "--format=%s"]),
+            git_reports(repo, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        )
+    }
+
+    /// A git hook or `git rebase --exec` exports `GIT_DIR` and
+    /// `GIT_WORK_TREE` to what it starts. A commit run from `own` still
+    /// lands in `own`, and `other` is untouched.
+    #[tokio::test]
+    async fn a_commit_stays_in_its_repository_under_an_inherited_git_dir() {
+        let test = "handlers::host_git::tests::a_commit_stays_in_its_repository_under_an_inherited_git_dir";
+        if std::env::var_os(ISOLATED).is_some() {
+            commit_in_own().await;
+            return;
+        }
+        let (_dir, root) = own_and_other();
+        let other = root.join("other");
+        rerun_with_env(
+            test,
+            &[
+                (REPOSITORIES, &root),
+                ("GIT_DIR", &other.join(GIT_DIR_NAME)),
+                ("GIT_WORK_TREE", &other),
+            ],
+        );
+
+        assert_eq!(
+            history(&root.join("own")),
+            ("from own\nbase".to_owned(), "base.txt\nnew.txt".to_owned())
+        );
+        assert_eq!(history(&other), ("base".to_owned(), "base.txt".to_owned()));
+    }
+
+    /// `git commit` exports `GIT_INDEX_FILE` to its hooks. A commit run
+    /// from `own` under one that names no file still commits `own`'s
+    /// index, not an empty one that deletes every file.
+    #[tokio::test]
+    async fn a_commit_uses_its_own_index_under_an_inherited_index_file() {
+        let test =
+            "handlers::host_git::tests::a_commit_uses_its_own_index_under_an_inherited_index_file";
+        if std::env::var_os(ISOLATED).is_some() {
+            commit_in_own().await;
+            return;
+        }
+        let (_dir, root) = own_and_other();
+        let index = root.join("elsewhere-index");
+        rerun_with_env(test, &[(REPOSITORIES, &root), ("GIT_INDEX_FILE", &index)]);
+
+        assert_eq!(
+            history(&root.join("own")),
+            ("from own\nbase".to_owned(), "base.txt\nnew.txt".to_owned())
+        );
+        assert!(!index.exists());
+    }
+
+    /// `GIT_COMMON_DIR` names the repository whose objects, refs and config
+    /// git uses. A commit run from `own` under one naming `other` still
+    /// lands in `own`.
+    #[tokio::test]
+    async fn a_commit_stays_in_its_repository_under_an_inherited_common_dir() {
+        let test = "handlers::host_git::tests::a_commit_stays_in_its_repository_under_an_inherited_common_dir";
+        if std::env::var_os(ISOLATED).is_some() {
+            commit_in_own().await;
+            return;
+        }
+        let (_dir, root) = own_and_other();
+        let other = root.join("other");
+        rerun_with_env(
+            test,
+            &[
+                (REPOSITORIES, &root),
+                ("GIT_COMMON_DIR", &other.join(GIT_DIR_NAME)),
+            ],
+        );
+
+        assert_eq!(
+            history(&root.join("own")),
+            ("from own\nbase".to_owned(), "base.txt\nnew.txt".to_owned())
+        );
+        assert_eq!(history(&other), ("base".to_owned(), "base.txt".to_owned()));
+    }
+
+    /// A repository whose `core.worktree` names another directory, whose
+    /// `.git` file points back to it, makes git use a work tree that does
+    /// not hold the directory the command runs in. That is refused.
+    #[tokio::test]
+    async fn open_refuses_a_work_tree_that_does_not_hold_the_directory() {
+        if rerun_without_git_config(
+            "handlers::host_git::tests::open_refuses_a_work_tree_that_does_not_hold_the_directory",
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = temp_root(&dir);
+        let repo = root.join("repo");
+        let tree = root.join("tree");
+        std::fs::create_dir(&repo).expect("repo");
+        std::fs::create_dir(&tree).expect("tree");
+        git(&repo, &["init", "-q"]);
+        let git_dir = repo.join(GIT_DIR_NAME);
+        std::fs::write(
+            tree.join(GIT_DIR_NAME),
+            format!("{GITFILE_PREFIX} {}\n", git_dir.display()),
+        )
+        .expect("gitfile");
+        git(
+            &repo,
+            &["config", "core.worktree", tree.to_str().expect("utf-8")],
+        );
+
+        let err = HostGit::open(&repo).await.err().expect("refused");
+
+        assert_eq!(err.to_string(), outside_work_tree(&repo, &tree));
+    }
+
+    /// `GIT_CEILING_DIRECTORIES` fences off a repository above the working
+    /// directory, such as one at the home directory. Under an inherited
+    /// one, a directory below the fence that is in no repository of its
+    /// own stays outside any repository: git reports no work tree there.
+    #[tokio::test]
+    async fn an_inherited_ceiling_keeps_git_out_of_the_repository_above() {
+        let test =
+            "handlers::host_git::tests::an_inherited_ceiling_keeps_git_out_of_the_repository_above";
+        if std::env::var_os(ISOLATED).is_some() {
+            let root = PathBuf::from(std::env::var_os(REPOSITORIES).expect("repositories"));
+            let git = HostGit::open(&root.join("outer/proj/sub"))
+                .await
+                .expect("open");
+            assert_eq!(
+                git.text(&["rev-parse", "--show-toplevel"])
+                    .await
+                    .expect("rev-parse"),
+                None
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = temp_root(&dir);
+        let outer = root.join("outer");
+        std::fs::create_dir_all(outer.join("proj/sub")).expect("dirs");
+        git(&outer, &["init", "-q"]);
+        assert_eq!(
+            PathBuf::from(git_reports(
+                &outer.join("proj/sub"),
+                &["rev-parse", "--show-toplevel"]
+            )),
+            outer
+        );
+
+        rerun_with_env(
+            test,
+            &[(REPOSITORIES, &root), ("GIT_CEILING_DIRECTORIES", &outer)],
         );
     }
 }

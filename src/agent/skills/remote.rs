@@ -788,6 +788,68 @@ mod tests {
         ));
     }
 
+    /// The output of `git args` in `repo`, trimmed.
+    fn git_output(repo: &Path, args: &[&str]) -> String {
+        let output = crate::policy::program_command("git")
+            .args(["-C"])
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_owned()
+    }
+
+    /// Set in the child of [`a_clone_leaves_an_inherited_index_file_alone`]:
+    /// the directory holding the `source` to clone and the `other`
+    /// repository whose index the variable names.
+    const CLONE_ROOT: &str = "CALICHE_CLONE_TEST_ROOT";
+
+    /// A git hook exports `GIT_INDEX_FILE` to what it starts. A skill
+    /// clone run under one writes its own checkout's index, and the
+    /// index the variable names keeps what was staged there.
+    #[test]
+    fn a_clone_leaves_an_inherited_index_file_alone() {
+        if let Some(root) = std::env::var_os(CLONE_ROOT) {
+            let root = PathBuf::from(root);
+            let dest = root.join("dest");
+            clone_repo(&root.join("source").display().to_string(), &dest).expect("clone");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("root");
+        let root = dir.path().canonicalize().expect("canonical");
+        let source = root.join("source");
+        fs::create_dir(&source).expect("source");
+        fs::write(source.join("skill.txt"), "skill").expect("skill");
+        git_commit(&source, "add skill");
+        let other = root.join("other");
+        fs::create_dir(&other).expect("other");
+        fs::write(other.join("base.txt"), "base").expect("base");
+        git_commit(&other, "base");
+        fs::write(other.join("new.txt"), "new").expect("new");
+        git_output(&other, &["add", "new.txt"]);
+        let index = other.join(".git").join("index");
+
+        crate::testing::planted_credential::rerun_in_child(
+            "agent::skills::remote::tests::a_clone_leaves_an_inherited_index_file_alone",
+            &[
+                (CLONE_ROOT, root.as_os_str()),
+                ("GIT_INDEX_FILE", index.as_os_str()),
+            ],
+            None,
+        );
+
+        assert_eq!(git_output(&other, &["ls-files"]), "base.txt\nnew.txt");
+        assert_eq!(
+            git_output(&other, &["diff", "--cached", "--name-only"]),
+            "new.txt"
+        );
+        assert_eq!(git_output(&root.join("dest"), &["ls-files"]), "skill.txt");
+    }
+
     fn git_commit(repo: &Path, message: &str) {
         let init = crate::policy::program_command("git")
             .args(["init"])

@@ -114,8 +114,8 @@ pub use git_discovery::{
 };
 pub use git_runner::{
     GIT_CONFIG_SYSTEM_VAR, GIT_DIFF_SAFETY_FLAGS, GIT_HOSTILE_VARS, GIT_PROGRAM_OVERRIDES,
-    GIT_STATUS_SAFETY_FLAGS, git_command, porcelain_status_args, program_command,
-    refused_program_keys, refused_program_keys_in_listing,
+    GIT_REPOSITORY_VARS, GIT_STATUS_SAFETY_FLAGS, git_command, porcelain_status_args,
+    program_command, refused_program_keys, refused_program_keys_in_listing,
 };
 pub use ids::{ActionBinding, ActionId, ActionKind, BindingRecheck, PendingId};
 pub use parse::{parse_effect, parse_mode_overlay, parse_preset};

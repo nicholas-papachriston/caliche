@@ -778,6 +778,38 @@ fn the_pin_overrides_inherited_repository_variables() {
     assert_eq!(reported, vec![Some(ws.join(".git")), Some(ws.join(".git"))]);
 }
 
+/// A pinned command uses the checked git dir even when it runs inside
+/// another repository, so the pin, not discovery from the working
+/// directory, decides which repository git uses.
+#[test]
+fn a_pinned_command_uses_the_checked_repository_from_a_nested_one() {
+    let (_ws_dir, ws) = canonical_dir();
+    let nested = ws.join("nested");
+    std::fs::create_dir(&nested).expect("nested");
+    for dir in [&ws, &nested] {
+        let init = caliche_policy::program_command("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .expect("git init");
+        assert!(init.success());
+    }
+    let checked = check_repository(&ws, &ws).expect("checked");
+    let mut command = caliche_policy::program_command("git");
+    command.current_dir(&nested);
+    checked.pin(&mut command);
+
+    let output = command
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .expect("git rev-parse");
+
+    let reported = PathBuf::from(String::from_utf8(output.stdout).expect("utf-8").trim())
+        .canonicalize()
+        .ok();
+    assert_eq!(reported, Some(ws.join(".git")));
+}
+
 /// Set in the child run of [`inherited_config_and_programs_do_not_reach_git`].
 const CHILD_MARKER_DIR: &str = "CALICHE_GIT_RUNNER_CHILD_MARKERS";
 
