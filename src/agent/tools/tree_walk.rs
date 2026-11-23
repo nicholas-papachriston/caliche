@@ -985,3 +985,6 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod parity_tests;
+
+#[cfg(all(test, unix))]
+mod rule_tests;
