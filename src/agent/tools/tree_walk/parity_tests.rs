@@ -390,15 +390,43 @@ fn git_repo(top: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
         .status()
         .expect("git init");
     assert!(status.success());
+    // git init turns folding on where the file system folds case; these
+    // cases compare syntax only, so the walks read it off as git is run.
+    let status = oracle_git()
+        .args(["config", "core.ignorecase", "false"])
+        .current_dir(&repo)
+        .status()
+        .expect("git config");
+    assert!(status.success());
     let global = top.join("global");
     std::fs::write(&global, "").expect("global");
     (repo, global)
 }
 
-/// Each walk's difference from git in one case: the case, the walk, the
-/// files only git lists and the files only the walk lists. Rows where the
-/// two agree are left out.
-pub(super) type GitDifference = (String, &'static str, Vec<String>, Vec<String>);
+/// One walk's difference from git in one case. Rows where the two agree
+/// are left out.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct GitDifference {
+    case: String,
+    walk: &'static str,
+    /// Files git lists and the walk hides.
+    only_git_lists: Vec<String>,
+    /// Files the walk lists and git hides.
+    only_walk_lists: Vec<String>,
+}
+
+/// One walk's difference from a reference in one case, where the reference
+/// hides a file when git or the `ignore` crate's reader hides it. Rows
+/// where the two agree are left out.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ReferenceDifference {
+    pub(super) case: String,
+    pub(super) walk: &'static str,
+    /// Files the walk lists and a reference hides.
+    pub(super) leaks: Vec<String>,
+    /// Files the walk hides and no reference hides.
+    pub(super) over: Vec<String>,
+}
 
 fn git_differences(case: &str, repo: &Path, global: &Path) -> Vec<GitDifference> {
     let git = git_listed(repo, global);
@@ -406,14 +434,14 @@ fn git_differences(case: &str, repo: &Path, global: &Path) -> Vec<GitDifference>
         .into_iter()
         .map(|(name, ignores)| {
             let walk = walk_listed(repo, global, ignores);
-            (
-                case.to_owned(),
-                name,
-                git.difference(&walk).cloned().collect::<Vec<_>>(),
-                walk.difference(&git).cloned().collect::<Vec<_>>(),
-            )
+            GitDifference {
+                case: case.to_owned(),
+                walk: name,
+                only_git_lists: git.difference(&walk).cloned().collect(),
+                only_walk_lists: walk.difference(&git).cloned().collect(),
+            }
         })
-        .filter(|(_, _, git, walk)| !git.is_empty() || !walk.is_empty())
+        .filter(|row| !row.only_git_lists.is_empty() || !row.only_walk_lists.is_empty())
         .collect()
 }
 
@@ -427,8 +455,9 @@ fn git_differences(case: &str, repo: &Path, global: &Path) -> Vec<GitDifference>
 /// file that mixes a pattern that does not parse, a comment and a negation
 /// that are not UTF-8, and a CRLF line; braces, which git reads literally;
 /// a backslash in a class; and POSIX classes such as `[:alpha:]`.
-pub(super) const ENCODINGS: [(&str, &[u8], &[&str]); 34] = [
+pub(super) const ENCODINGS: [(&str, &[u8], &[&str]); 35] = [
     ("bom", b"\xEF\xBB\xBF*.secret\n", &[]),
+    ("bom-brace", b"\xEF\xBB\xBFa{b}\n", &["a{b}", "ab"]),
     ("bad-after", b"*.secret\n# caf\xE9\n", &[]),
     ("bad-before", b"# caf\xE9\n*.secret\n", &[]),
     ("crlf", b"*.secret\r\n", &[]),
@@ -521,7 +550,7 @@ fn encoding_differences() -> Vec<GitDifference> {
 /// and negations, alone, re-including files below `d/**` or below
 /// directories, and with a class, an escape, braces, trailing whitespace,
 /// a CRLF or a NUL.
-pub(super) const SYNTAX: [(&str, &[u8], &[&str]); 100] = [
+pub(super) const SYNTAX: [(&str, &[u8], &[&str]); 110] = [
     ("star-ext", b"*.c\n", &["x.c", "d/x.c", "x.cc"]),
     ("star-mid", b"a*b\n", &["ab", "axb", "axyb", "a/b"]),
     ("star-under-dir", b"d/*\n", &["d/x", "d/e/y", "f/d/x"]),
@@ -592,7 +621,32 @@ pub(super) const SYNTAX: [(&str, &[u8], &[&str]); 100] = [
         &["x1y", "x-y", "xay"],
     ),
     ("posix-neg-alpha", b"x[![:alpha:]]y\n", &["xay", "x1y"]),
-    ("posix-unknown", b"x[[:foo:]]y\n", &["xfy", "xoy"]),
+    ("posix-unknown", b"x[[:foo:]]y\n", &["xfy", "xoy", "xf]y"]),
+    ("esc-at-end", b"x\\\n", &["x\\", "x"]),
+    ("comment-line", b"#x\n", &["#x"]),
+    (
+        "posix-first-close",
+        b"[[:a]b:]\n",
+        &["ab:]", "[b:]", "bb:]"],
+    ),
+    (
+        "posix-name-unclosed",
+        b"a[[:b]x\n",
+        &["a[x", "a:x", "abx", "acx"],
+    ),
+    ("posix-empty-name", b"x[[:]y\n", &["x[y", "x:y", "x]y"]),
+    (
+        "posix-space-git",
+        b"a[[:space:]]b\n",
+        &["a\x0bb", "a\x0cb", "a b"],
+    ),
+    ("qmark-no-slash", b"/a?b\n", &["a/b", "axb"]),
+    ("glued-dstar", b"a**/b\n", &["ab/b", "a/x/b"]),
+    (
+        "dstar-esc-slash",
+        b"a/**\\/b\n",
+        &["a/x/y/b", "a/z/b", "a/b"],
+    ),
     ("esc-star", b"a\\*b\n", &["a*b", "axb"]),
     ("esc-qmark", b"a\\?b\n", &["a?b", "axb"]),
     ("esc-bracket", b"a\\[b\n", &["a[b", "ab"]),
@@ -715,6 +769,11 @@ pub(super) const SYNTAX: [(&str, &[u8], &[&str]); 100] = [
         &["secret.env", "secret.env\t"],
     ),
     ("negation-crlf", b"a*\r\n!ab\r\n", &["ab", "ab\r"]),
+    (
+        "negation-esc-space-crlf",
+        b"a*\r\n!a\\ \r\n",
+        &["a ", "a\\"],
+    ),
     ("negation-nul", b"a*\n!ab\0c\n", &["ab", "abc"]),
     (
         "negation-brace-tab",
@@ -728,18 +787,13 @@ pub(super) const SYNTAX: [(&str, &[u8], &[&str]); 100] = [
     ),
 ];
 
-/// A walk against its references for `.ignore` or `.caliche_ignore`
-/// holding one case: (case, walk, files a reference hides that the walk
-/// lists, files the walk hides that no reference hides).
-type CalicheDifference = (String, &'static str, Vec<String>, Vec<String>);
-
 /// The walks against their references for every case in [`ENCODINGS`] in
 /// `.ignore` (Tools and Index) and `.caliche_ignore` (Index). git never
 /// reads these files, so a file is hidden by the references when git
 /// hides it with the same content as a `.gitignore`, or when the `ignore`
 /// crate's own reader of the file hides it.
 #[expect(clippy::expect_used, reason = "test helper panics with context")]
-fn caliche_only_differences() -> Vec<CalicheDifference> {
+fn caliche_only_differences() -> Vec<ReferenceDifference> {
     let sources = [
         (".ignore", "tools", Ignores::Tools),
         (".ignore", "index", Ignores::Index),
@@ -783,7 +837,12 @@ fn caliche_only_differences() -> Vec<CalicheDifference> {
                 .cloned()
                 .collect();
             if !leaks.is_empty() || !over.is_empty() {
-                rows.push((format!("{source} {encoding}"), walk, leaks, over));
+                rows.push(ReferenceDifference {
+                    case: format!("{source} {encoding}"),
+                    walk,
+                    leaks,
+                    over,
+                });
             }
         }
     }
@@ -791,1266 +850,72 @@ fn caliche_only_differences() -> Vec<CalicheDifference> {
 }
 
 /// The walks hide every file a reference hides in `.ignore` and
-/// `.caliche_ignore`, for every case in [`ENCODINGS`] and [`SYNTAX`].
-///
-/// Known differences: in every row the walk lists a file a reference
-/// hides, for the reasons listed at
-/// [`the_walks_read_ignore_file_encodings_as_git_does`]: a byte order mark,
-/// a line that is not UTF-8, a NUL, trailing whitespace git keeps, braces,
-/// a backslash in a class, POSIX classes, `***`, a non-ASCII range, an
-/// unclosed class, and a negation the two readings do not agree on.
+/// `.caliche_ignore`, for every case in [`ENCODINGS`] and [`SYNTAX`], and
+/// hide no file that no reference hides.
 ///
 /// Limit: the crate half of the reference is the same `ignore` crate
 /// builder the walks use, so this test cannot find a file the walks hide
 /// that no reference hides; git is the independent half.
 #[test]
 fn the_walks_read_caliche_ignore_files_as_their_references_do() {
-    assert_eq!(
-        caliche_only_differences(),
-        literal_rows(&[
-            (".ignore bom", "tools", &["a.secret"], &[]),
-            (".ignore bad-after", "tools", &["a.secret"], &[]),
-            (".ignore bad-before", "tools", &["a.secret"], &[]),
-            (".ignore bom-crlf", "tools", &["a.secret"], &[]),
-            (".ignore bad-crlf", "tools", &["a.secret"], &[]),
-            (".ignore nul", "tools", &["a.secret"], &[]),
-            (".ignore tab", "tools", &["a.secret\t"], &[]),
-            (".ignore bad-negation", "tools", &["caf\u{FFFD}.txt"], &[]),
-            (".ignore tab-only", "tools", &["\t"], &[]),
-            (".ignore esc-space-space", "tools", &["sp "], &[]),
-            (".ignore nbsp", "tools", &["a.secret\u{a0}"], &[]),
-            (".ignore negated-tab", "tools", &["a.secret"], &[]),
-            (".ignore esc-tab", "tools", &["a.secret\t"], &[]),
-            (".ignore tab-space", "tools", &["a.secret\t"], &[]),
-            (".ignore esc-space-tab", "tools", &["sp \t"], &[]),
-            (".ignore dbl-bs-space", "tools", &["a.secret\\"], &[]),
-            (".ignore ideo-space", "tools", &["a.secret\u{3000}"], &[]),
-            (".ignore formfeed", "tools", &["a.secret\u{c}"], &[]),
-            (".ignore cr-cr", "tools", &["a.secret\r"], &[]),
-            (".ignore dbl-bs-tab", "tools", &["a.secret\\\t"], &[]),
-            (".ignore braces", "tools", &["a{b}.secret"], &[]),
-            (".ignore braces-comma", "tools", &["x{y,z}"], &[]),
-            (".ignore brace-tab", "tools", &["q{\t"], &[]),
-            (".ignore esc-in-class", "tools", &["a]b"], &[]),
-            (".ignore posix", "tools", &["axb"], &[]),
-            (".ignore posix-neg", "tools", &["axb"], &[]),
-            (".ignore posix-space", "tools", &["a b"], &[]),
-            (".ignore posix-bad", "tools", &["axb"], &[]),
-            (
-                ".ignore mixed",
-                "tools",
-                &["a.secret", "caf\u{FFFD}.txt"],
-                &[]
-            ),
-            (".ignore class-esc-close", "tools", &["]x"], &[]),
-            (".ignore class-esc-dash", "tools", &["-x"], &[]),
-            (".ignore class-esc-range", "tools", &["ax", "bx"], &[]),
-            (".ignore posix-alnum", "tools", &["xay", "x1y"], &[]),
-            (".ignore posix-alpha", "tools", &["xay"], &[]),
-            (".ignore posix-blank", "tools", &["x y", "x\ty"], &[]),
-            (".ignore posix-cntrl", "tools", &["x\u{1}y"], &[]),
-            (".ignore posix-digit", "tools", &["x1y"], &[]),
-            (".ignore posix-graph", "tools", &["x-y", "xay"], &[]),
-            (".ignore posix-lower", "tools", &["xay"], &[]),
-            (".ignore posix-print", "tools", &["x y", "xay"], &[]),
-            (".ignore posix-punct", "tools", &["x-y"], &[]),
-            (".ignore posix-space-xy", "tools", &["x y", "x\ty"], &[]),
-            (".ignore posix-upper", "tools", &["xAy"], &[]),
-            (".ignore posix-xdigit", "tools", &["xfy"], &[]),
-            (".ignore posix-two", "tools", &["x1y", "x-y"], &[]),
-            (".ignore posix-neg-alpha", "tools", &["x1y"], &[]),
-            (".ignore braces-empty", "tools", &["x{}"], &[]),
-            (".ignore negation-brace", "tools", &["a.c"], &[]),
-            (".ignore negation-unclosed", "tools", &["a[b.c"], &[]),
-            (".ignore dstar-triple", "tools", &["a/b", "a/x/y/b"], &[]),
-            (".ignore posix-alpha-upper", "tools", &["xAy", "xZy"], &[]),
-            (".ignore posix-alnum-upper", "tools", &["xAy", "x9y"], &[]),
-            (
-                ".ignore posix-xdigit-upper",
-                "tools",
-                &["xAy", "xFy", "xby"],
-                &[]
-            ),
-            (".ignore posix-upper-all", "tools", &["xAy", "xZy"], &[]),
-            (".ignore posix-lower-all", "tools", &["xay", "xzy"], &[]),
-            (".ignore range-to-posix", "tools", &["xa]y"], &[]),
-            (".ignore range-nonascii", "tools", &["école", "àa"], &[]),
-            (".ignore posix-dash-end", "tools", &["axb", "a-b"], &[]),
-            (".ignore negation-brace-alt", "tools", &["xy"], &[]),
-            (".ignore negation-brace-comma", "tools", &["xy"], &[]),
-            (
-                ".ignore negation-after-tab",
-                "tools",
-                &["secret.env\t"],
-                &[]
-            ),
-            (".ignore negation-brace-tab", "tools", &["ab"], &[]),
-            (".ignore bom", "index", &["a.secret"], &[]),
-            (".ignore bad-after", "index", &["a.secret"], &[]),
-            (".ignore bad-before", "index", &["a.secret"], &[]),
-            (".ignore bom-crlf", "index", &["a.secret"], &[]),
-            (".ignore bad-crlf", "index", &["a.secret"], &[]),
-            (".ignore nul", "index", &["a.secret"], &[]),
-            (".ignore tab", "index", &["a.secret\t"], &[]),
-            (".ignore bad-negation", "index", &["caf\u{FFFD}.txt"], &[]),
-            (".ignore tab-only", "index", &["\t"], &[]),
-            (".ignore esc-space-space", "index", &["sp "], &[]),
-            (".ignore nbsp", "index", &["a.secret\u{a0}"], &[]),
-            (".ignore negated-tab", "index", &["a.secret"], &[]),
-            (".ignore esc-tab", "index", &["a.secret\t"], &[]),
-            (".ignore tab-space", "index", &["a.secret\t"], &[]),
-            (".ignore esc-space-tab", "index", &["sp \t"], &[]),
-            (".ignore dbl-bs-space", "index", &["a.secret\\"], &[]),
-            (".ignore ideo-space", "index", &["a.secret\u{3000}"], &[]),
-            (".ignore formfeed", "index", &["a.secret\u{c}"], &[]),
-            (".ignore cr-cr", "index", &["a.secret\r"], &[]),
-            (".ignore dbl-bs-tab", "index", &["a.secret\\\t"], &[]),
-            (".ignore braces", "index", &["a{b}.secret"], &[]),
-            (".ignore braces-comma", "index", &["x{y,z}"], &[]),
-            (".ignore brace-tab", "index", &["q{\t"], &[]),
-            (".ignore esc-in-class", "index", &["a]b"], &[]),
-            (".ignore posix", "index", &["axb"], &[]),
-            (".ignore posix-neg", "index", &["axb"], &[]),
-            (".ignore posix-space", "index", &["a b"], &[]),
-            (".ignore posix-bad", "index", &["axb"], &[]),
-            (
-                ".ignore mixed",
-                "index",
-                &["a.secret", "caf\u{FFFD}.txt"],
-                &[]
-            ),
-            (".ignore class-esc-close", "index", &["]x"], &[]),
-            (".ignore class-esc-dash", "index", &["-x"], &[]),
-            (".ignore class-esc-range", "index", &["ax", "bx"], &[]),
-            (".ignore posix-alnum", "index", &["xay", "x1y"], &[]),
-            (".ignore posix-alpha", "index", &["xay"], &[]),
-            (".ignore posix-blank", "index", &["x y", "x\ty"], &[]),
-            (".ignore posix-cntrl", "index", &["x\u{1}y"], &[]),
-            (".ignore posix-digit", "index", &["x1y"], &[]),
-            (".ignore posix-graph", "index", &["x-y", "xay"], &[]),
-            (".ignore posix-lower", "index", &["xay"], &[]),
-            (".ignore posix-print", "index", &["x y", "xay"], &[]),
-            (".ignore posix-punct", "index", &["x-y"], &[]),
-            (".ignore posix-space-xy", "index", &["x y", "x\ty"], &[]),
-            (".ignore posix-upper", "index", &["xAy"], &[]),
-            (".ignore posix-xdigit", "index", &["xfy"], &[]),
-            (".ignore posix-two", "index", &["x1y", "x-y"], &[]),
-            (".ignore posix-neg-alpha", "index", &["x1y"], &[]),
-            (".ignore braces-empty", "index", &["x{}"], &[]),
-            (".ignore negation-brace", "index", &["a.c"], &[]),
-            (".ignore negation-unclosed", "index", &["a[b.c"], &[]),
-            (".ignore dstar-triple", "index", &["a/b", "a/x/y/b"], &[]),
-            (".ignore posix-alpha-upper", "index", &["xAy", "xZy"], &[]),
-            (".ignore posix-alnum-upper", "index", &["xAy", "x9y"], &[]),
-            (
-                ".ignore posix-xdigit-upper",
-                "index",
-                &["xAy", "xFy", "xby"],
-                &[]
-            ),
-            (".ignore posix-upper-all", "index", &["xAy", "xZy"], &[]),
-            (".ignore posix-lower-all", "index", &["xay", "xzy"], &[]),
-            (".ignore range-to-posix", "index", &["xa]y"], &[]),
-            (".ignore range-nonascii", "index", &["école", "àa"], &[]),
-            (".ignore posix-dash-end", "index", &["axb", "a-b"], &[]),
-            (".ignore negation-brace-alt", "index", &["xy"], &[]),
-            (".ignore negation-brace-comma", "index", &["xy"], &[]),
-            (
-                ".ignore negation-after-tab",
-                "index",
-                &["secret.env\t"],
-                &[]
-            ),
-            (".ignore negation-brace-tab", "index", &["ab"], &[]),
-            (".caliche_ignore bom", "index", &["a.secret"], &[]),
-            (".caliche_ignore bad-after", "index", &["a.secret"], &[]),
-            (".caliche_ignore bad-before", "index", &["a.secret"], &[]),
-            (".caliche_ignore bom-crlf", "index", &["a.secret"], &[]),
-            (".caliche_ignore bad-crlf", "index", &["a.secret"], &[]),
-            (".caliche_ignore nul", "index", &["a.secret"], &[]),
-            (".caliche_ignore tab", "index", &["a.secret\t"], &[]),
-            (
-                ".caliche_ignore bad-negation",
-                "index",
-                &["caf\u{FFFD}.txt"],
-                &[]
-            ),
-            (".caliche_ignore tab-only", "index", &["\t"], &[]),
-            (".caliche_ignore esc-space-space", "index", &["sp "], &[]),
-            (".caliche_ignore nbsp", "index", &["a.secret\u{a0}"], &[]),
-            (".caliche_ignore negated-tab", "index", &["a.secret"], &[]),
-            (".caliche_ignore esc-tab", "index", &["a.secret\t"], &[]),
-            (".caliche_ignore tab-space", "index", &["a.secret\t"], &[]),
-            (".caliche_ignore esc-space-tab", "index", &["sp \t"], &[]),
-            (
-                ".caliche_ignore dbl-bs-space",
-                "index",
-                &["a.secret\\"],
-                &[]
-            ),
-            (
-                ".caliche_ignore ideo-space",
-                "index",
-                &["a.secret\u{3000}"],
-                &[]
-            ),
-            (".caliche_ignore formfeed", "index", &["a.secret\u{c}"], &[]),
-            (".caliche_ignore cr-cr", "index", &["a.secret\r"], &[]),
-            (
-                ".caliche_ignore dbl-bs-tab",
-                "index",
-                &["a.secret\\\t"],
-                &[]
-            ),
-            (".caliche_ignore braces", "index", &["a{b}.secret"], &[]),
-            (".caliche_ignore braces-comma", "index", &["x{y,z}"], &[]),
-            (".caliche_ignore brace-tab", "index", &["q{\t"], &[]),
-            (".caliche_ignore esc-in-class", "index", &["a]b"], &[]),
-            (".caliche_ignore posix", "index", &["axb"], &[]),
-            (".caliche_ignore posix-neg", "index", &["axb"], &[]),
-            (".caliche_ignore posix-space", "index", &["a b"], &[]),
-            (".caliche_ignore posix-bad", "index", &["axb"], &[]),
-            (
-                ".caliche_ignore mixed",
-                "index",
-                &["a.secret", "caf\u{FFFD}.txt"],
-                &[]
-            ),
-            (".caliche_ignore class-esc-close", "index", &["]x"], &[]),
-            (".caliche_ignore class-esc-dash", "index", &["-x"], &[]),
-            (
-                ".caliche_ignore class-esc-range",
-                "index",
-                &["ax", "bx"],
-                &[]
-            ),
-            (".caliche_ignore posix-alnum", "index", &["xay", "x1y"], &[]),
-            (".caliche_ignore posix-alpha", "index", &["xay"], &[]),
-            (
-                ".caliche_ignore posix-blank",
-                "index",
-                &["x y", "x\ty"],
-                &[]
-            ),
-            (".caliche_ignore posix-cntrl", "index", &["x\u{1}y"], &[]),
-            (".caliche_ignore posix-digit", "index", &["x1y"], &[]),
-            (".caliche_ignore posix-graph", "index", &["x-y", "xay"], &[]),
-            (".caliche_ignore posix-lower", "index", &["xay"], &[]),
-            (".caliche_ignore posix-print", "index", &["x y", "xay"], &[]),
-            (".caliche_ignore posix-punct", "index", &["x-y"], &[]),
-            (
-                ".caliche_ignore posix-space-xy",
-                "index",
-                &["x y", "x\ty"],
-                &[]
-            ),
-            (".caliche_ignore posix-upper", "index", &["xAy"], &[]),
-            (".caliche_ignore posix-xdigit", "index", &["xfy"], &[]),
-            (".caliche_ignore posix-two", "index", &["x1y", "x-y"], &[]),
-            (".caliche_ignore posix-neg-alpha", "index", &["x1y"], &[]),
-            (".caliche_ignore braces-empty", "index", &["x{}"], &[]),
-            (".caliche_ignore negation-brace", "index", &["a.c"], &[]),
-            (
-                ".caliche_ignore negation-unclosed",
-                "index",
-                &["a[b.c"],
-                &[]
-            ),
-            (
-                ".caliche_ignore dstar-triple",
-                "index",
-                &["a/b", "a/x/y/b"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-alpha-upper",
-                "index",
-                &["xAy", "xZy"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-alnum-upper",
-                "index",
-                &["xAy", "x9y"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-xdigit-upper",
-                "index",
-                &["xAy", "xFy", "xby"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-upper-all",
-                "index",
-                &["xAy", "xZy"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-lower-all",
-                "index",
-                &["xay", "xzy"],
-                &[]
-            ),
-            (".caliche_ignore range-to-posix", "index", &["xa]y"], &[]),
-            (
-                ".caliche_ignore range-nonascii",
-                "index",
-                &["école", "àa"],
-                &[]
-            ),
-            (
-                ".caliche_ignore posix-dash-end",
-                "index",
-                &["axb", "a-b"],
-                &[]
-            ),
-            (".caliche_ignore negation-brace-alt", "index", &["xy"], &[]),
-            (
-                ".caliche_ignore negation-brace-comma",
-                "index",
-                &["xy"],
-                &[]
-            ),
-            (
-                ".caliche_ignore negation-after-tab",
-                "index",
-                &["secret.env\t"],
-                &[]
-            ),
-            (".caliche_ignore negation-brace-tab", "index", &["ab"], &[]),
-        ])
-    );
+    assert_eq!(caliche_only_differences(), reference_rows(&[]));
 }
 
+/// The cases where the walks hide files git lists in a git ignore
+/// source, because the `ignore` crate's reading of the same file hides
+/// them, and those files. Each holds in every git source and both walks.
+const GIT_SOURCE_OVER_HIDES: [(&str, &[&str]); 27] = [
+    ("bom-brace", &["ab"]),
+    ("tab", &["a.secret"]),
+    ("nbsp", &["a.secret"]),
+    ("tab-space", &["a.secret"]),
+    ("ideo-space", &["a.secret"]),
+    ("formfeed", &["a.secret"]),
+    ("cr-cr", &["a.secret"]),
+    ("braces", &["ab.secret"]),
+    ("braces-comma", &["xy"]),
+    ("class-esc-dash", &["bx"]),
+    ("class-slash", &["a/b"]),
+    ("class-unclosed", &["a[bc"]),
+    ("posix-unknown", &["xf]y"]),
+    ("braces-empty", &["x"]),
+    ("negation-posix-space", &["a b.c"]),
+    ("negation-posix-dash", &["a-b.c", "a1b.c"]),
+    ("negation-brace", &["{a}.c"]),
+    ("class-esc-dash-mid", &["a\\b"]),
+    ("negation-posix-space-2", &["a .env"]),
+    ("negation-posix-dash-end", &["a-.env", "ab.env"]),
+    ("negation-brace-alt", &["x{y}"]),
+    ("negation-brace-comma", &["x{y,z}"]),
+    ("negation-esc-close", &["a]"]),
+    ("negation-after-tab", &["secret.env"]),
+    ("negation-nul", &["ab"]),
+    ("negation-brace-tab", &["a{b}\t"]),
+    ("negation-posix-alpha", &["ab"]),
+];
+
 /// The walks list what git lists for every case in [`ENCODINGS`] and
-/// [`SYNTAX`], in every git ignore source.
-///
-/// Known differences, each row as the files only git lists and the files
-/// only the walk lists:
-/// - a byte order mark hides the first pattern of `info/exclude` and
-///   `.gitignore`, and a line that is not UTF-8 drops the whole of either
-///   file, the negation case's `*.txt` with it; in the global excludes it
-///   drops every later pattern;
-/// - a NUL does not end the pattern, so `*.secret` never matches;
-/// - trailing whitespace other than unescaped spaces is trimmed, where git
-///   keeps it: a tab, a form feed, a carriage return left by CRLF, a
-///   no-break space or an ideographic space. The pattern then hides
-///   `a.secret` in place of the file whose name ends in that character,
-///   and a negation un-hides `a.secret`. A pattern of only a tab is
-///   dropped, and one whose trailing whitespace starts with an escaped
-///   character is left ending in a backslash and matches nothing, and
-///   a tab after an escaped backslash hides the name without the tab;
-/// - the crate keeps the trailing space after an escaped backslash, which
-///   git drops, so the pattern matches nothing.
-/// - braces are read as alternatives, where git reads them literally: the
-///   walk lists `a{b}.secret`, `x{y,z}` and `x{}` and hides `ab.secret`,
-///   `xy` and `x`, and `q{` with a trailing tab does not parse;
-/// - a class does not read a backslash as an escape, and POSIX classes
-///   such as `[:alpha:]` are not supported, so classes with either hide
-///   other files than git's;
-/// - the walk hides `a/b` for `a[/]b` and `a[bc` for an unclosed `a[bc`,
-///   which git lists, and a negation with an unclosed class un-hides a
-///   file;
-/// - `***` is read as `**`, where git reads it as `*`, so `a/***/b` hides
-///   `a/b` and `a/x/y/b`;
-/// - a range is compared by character, where git compares bytes, so
-///   `[à-z]` does not parse and `[à-z]*` hides nothing;
-/// - a POSIX class is not supported in any position, also with upper-case
-///   names or as the end of a range (`x[a-[:alpha:]]y`);
-/// - a negation with braces, a class git reads otherwise, or trailing
-///   whitespace un-hides other files than git's.
+/// [`SYNTAX`], in every git ignore source, except the files of
+/// [`GIT_SOURCE_OVER_HIDES`], which they hide. They list no file git
+/// hides.
 #[test]
 fn the_walks_read_ignore_file_encodings_as_git_does() {
-    assert_eq!(
-        encoding_differences(),
-        literal_rows(&[
-            ("global bad-before", "tools", &[], &["a.secret"]),
-            ("global bad-before", "index", &[], &["a.secret"]),
-            ("global bad-crlf", "tools", &[], &["a.secret"]),
-            ("global bad-crlf", "index", &[], &["a.secret"]),
-            ("global nul", "tools", &[], &["a.secret"]),
-            ("global nul", "index", &[], &["a.secret"]),
-            ("global tab", "tools", &["a.secret"], &["a.secret\t"]),
-            ("global tab", "index", &["a.secret"], &["a.secret\t"]),
-            ("global tab-only", "tools", &[], &["\t"]),
-            ("global tab-only", "index", &[], &["\t"]),
-            ("global esc-space-space", "tools", &[], &["sp "]),
-            ("global esc-space-space", "index", &[], &["sp "]),
-            ("global nbsp", "tools", &["a.secret"], &["a.secret\u{a0}"]),
-            ("global nbsp", "index", &["a.secret"], &["a.secret\u{a0}"]),
-            ("global negated-tab", "tools", &[], &["a.secret"]),
-            ("global negated-tab", "index", &[], &["a.secret"]),
-            ("global esc-tab", "tools", &[], &["a.secret\t"]),
-            ("global esc-tab", "index", &[], &["a.secret\t"]),
-            ("global tab-space", "tools", &["a.secret"], &["a.secret\t"]),
-            ("global tab-space", "index", &["a.secret"], &["a.secret\t"]),
-            ("global esc-space-tab", "tools", &[], &["sp \t"]),
-            ("global esc-space-tab", "index", &[], &["sp \t"]),
-            ("global dbl-bs-space", "tools", &[], &["a.secret\\"]),
-            ("global dbl-bs-space", "index", &[], &["a.secret\\"]),
-            (
-                "global ideo-space",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                "global ideo-space",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                "global formfeed",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            (
-                "global formfeed",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            ("global cr-cr", "tools", &["a.secret"], &["a.secret\r"]),
-            ("global cr-cr", "index", &["a.secret"], &["a.secret\r"]),
-            ("global dbl-bs-tab", "tools", &[], &["a.secret\\\t"]),
-            ("global dbl-bs-tab", "index", &[], &["a.secret\\\t"]),
-            ("global braces", "tools", &["ab.secret"], &["a{b}.secret"]),
-            ("global braces", "index", &["ab.secret"], &["a{b}.secret"]),
-            ("global braces-comma", "tools", &["xy"], &["x{y,z}"]),
-            ("global braces-comma", "index", &["xy"], &["x{y,z}"]),
-            ("global brace-tab", "tools", &[], &["q{\t"]),
-            ("global brace-tab", "index", &[], &["q{\t"]),
-            ("global esc-in-class", "tools", &[], &["a]b"]),
-            ("global esc-in-class", "index", &[], &["a]b"]),
-            ("global posix", "tools", &[], &["axb"]),
-            ("global posix", "index", &[], &["axb"]),
-            ("global posix-neg", "tools", &[], &["axb"]),
-            ("global posix-neg", "index", &[], &["axb"]),
-            ("global posix-space", "tools", &[], &["a b"]),
-            ("global posix-space", "index", &[], &["a b"]),
-            ("global posix-bad", "tools", &[], &["axb"]),
-            ("global posix-bad", "index", &[], &["axb"]),
-            ("global mixed", "tools", &[], &["a.secret"]),
-            ("global mixed", "index", &[], &["a.secret"]),
-            ("global class-esc-close", "tools", &[], &["]x"]),
-            ("global class-esc-close", "index", &[], &["]x"]),
-            ("global class-esc-dash", "tools", &["bx"], &["-x"]),
-            ("global class-esc-dash", "index", &["bx"], &["-x"]),
-            ("global class-esc-range", "tools", &[], &["ax", "bx"]),
-            ("global class-esc-range", "index", &[], &["ax", "bx"]),
-            ("global class-slash", "tools", &["a/b"], &[]),
-            ("global class-slash", "index", &["a/b"], &[]),
-            ("global class-unclosed", "tools", &["a[bc"], &[]),
-            ("global class-unclosed", "index", &["a[bc"], &[]),
-            ("global posix-alnum", "tools", &[], &["x1y", "xay"]),
-            ("global posix-alnum", "index", &[], &["x1y", "xay"]),
-            ("global posix-alpha", "tools", &[], &["xay"]),
-            ("global posix-alpha", "index", &[], &["xay"]),
-            ("global posix-blank", "tools", &[], &["x\ty", "x y"]),
-            ("global posix-blank", "index", &[], &["x\ty", "x y"]),
-            ("global posix-cntrl", "tools", &[], &["x\u{1}y"]),
-            ("global posix-cntrl", "index", &[], &["x\u{1}y"]),
-            ("global posix-digit", "tools", &[], &["x1y"]),
-            ("global posix-digit", "index", &[], &["x1y"]),
-            ("global posix-graph", "tools", &[], &["x-y", "xay"]),
-            ("global posix-graph", "index", &[], &["x-y", "xay"]),
-            ("global posix-lower", "tools", &[], &["xay"]),
-            ("global posix-lower", "index", &[], &["xay"]),
-            ("global posix-print", "tools", &[], &["x y", "xay"]),
-            ("global posix-print", "index", &[], &["x y", "xay"]),
-            ("global posix-punct", "tools", &[], &["x-y"]),
-            ("global posix-punct", "index", &[], &["x-y"]),
-            ("global posix-space-xy", "tools", &[], &["x\ty", "x y"]),
-            ("global posix-space-xy", "index", &[], &["x\ty", "x y"]),
-            ("global posix-upper", "tools", &[], &["xAy"]),
-            ("global posix-upper", "index", &[], &["xAy"]),
-            ("global posix-xdigit", "tools", &[], &["xfy"]),
-            ("global posix-xdigit", "index", &[], &["xfy"]),
-            ("global posix-two", "tools", &[], &["x-y", "x1y"]),
-            ("global posix-two", "index", &[], &["x-y", "x1y"]),
-            ("global posix-neg-alpha", "tools", &[], &["x1y"]),
-            ("global posix-neg-alpha", "index", &[], &["x1y"]),
-            ("global braces-empty", "tools", &["x"], &["x{}"]),
-            ("global braces-empty", "index", &["x"], &["x{}"]),
-            ("global negation-posix-space", "tools", &["a b.c"], &[]),
-            ("global negation-posix-space", "index", &["a b.c"], &[]),
-            (
-                "global negation-posix-dash",
-                "tools",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            (
-                "global negation-posix-dash",
-                "index",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            ("global negation-brace", "tools", &["{a}.c"], &["a.c"]),
-            ("global negation-brace", "index", &["{a}.c"], &["a.c"]),
-            ("global negation-unclosed", "tools", &[], &["a[b.c"]),
-            ("global negation-unclosed", "index", &[], &["a[b.c"]),
-            ("global dstar-triple", "tools", &[], &["a/b", "a/x/y/b"]),
-            ("global dstar-triple", "index", &[], &["a/b", "a/x/y/b"]),
-            ("global posix-alpha-upper", "tools", &[], &["xAy", "xZy"]),
-            ("global posix-alpha-upper", "index", &[], &["xAy", "xZy"]),
-            ("global posix-alnum-upper", "tools", &[], &["x9y", "xAy"]),
-            ("global posix-alnum-upper", "index", &[], &["x9y", "xAy"]),
-            (
-                "global posix-xdigit-upper",
-                "tools",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            (
-                "global posix-xdigit-upper",
-                "index",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            ("global posix-upper-all", "tools", &[], &["xAy", "xZy"]),
-            ("global posix-upper-all", "index", &[], &["xAy", "xZy"]),
-            ("global posix-lower-all", "tools", &[], &["xay", "xzy"]),
-            ("global posix-lower-all", "index", &[], &["xay", "xzy"]),
-            ("global range-to-posix", "tools", &[], &["xa]y"]),
-            ("global range-to-posix", "index", &[], &["xa]y"]),
-            ("global range-nonascii", "tools", &[], &["àa", "école"]),
-            ("global range-nonascii", "index", &[], &["àa", "école"]),
-            ("global posix-dash-end", "tools", &[], &["a-b", "axb"]),
-            ("global posix-dash-end", "index", &[], &["a-b", "axb"]),
-            ("global class-esc-dash-mid", "tools", &["a\\b"], &[]),
-            ("global class-esc-dash-mid", "index", &["a\\b"], &[]),
-            ("global negation-posix-space-2", "tools", &["a .env"], &[]),
-            ("global negation-posix-space-2", "index", &["a .env"], &[]),
-            (
-                "global negation-posix-dash-end",
-                "tools",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            (
-                "global negation-posix-dash-end",
-                "index",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            ("global negation-brace-alt", "tools", &["x{y}"], &["xy"]),
-            ("global negation-brace-alt", "index", &["x{y}"], &["xy"]),
-            ("global negation-brace-comma", "tools", &["x{y,z}"], &["xy"]),
-            ("global negation-brace-comma", "index", &["x{y,z}"], &["xy"]),
-            ("global negation-esc-close", "tools", &["a]"], &[]),
-            ("global negation-esc-close", "index", &["a]"], &[]),
-            (
-                "global negation-after-tab",
-                "tools",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            (
-                "global negation-after-tab",
-                "index",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            ("global negation-nul", "tools", &["ab"], &[]),
-            ("global negation-nul", "index", &["ab"], &[]),
-            ("global negation-brace-tab", "tools", &["a{b}\t"], &["ab"]),
-            ("global negation-brace-tab", "index", &["a{b}\t"], &["ab"]),
-            ("global negation-posix-alpha", "tools", &["ab"], &[]),
-            ("global negation-posix-alpha", "index", &["ab"], &[]),
-            ("info/exclude bom", "tools", &[], &["a.secret"]),
-            ("info/exclude bom", "index", &[], &["a.secret"]),
-            ("info/exclude bad-after", "tools", &[], &["a.secret"]),
-            ("info/exclude bad-after", "index", &[], &["a.secret"]),
-            ("info/exclude bad-before", "tools", &[], &["a.secret"]),
-            ("info/exclude bad-before", "index", &[], &["a.secret"]),
-            ("info/exclude bom-crlf", "tools", &[], &["a.secret"]),
-            ("info/exclude bom-crlf", "index", &[], &["a.secret"]),
-            ("info/exclude bad-crlf", "tools", &[], &["a.secret"]),
-            ("info/exclude bad-crlf", "index", &[], &["a.secret"]),
-            ("info/exclude nul", "tools", &[], &["a.secret"]),
-            ("info/exclude nul", "index", &[], &["a.secret"]),
-            ("info/exclude tab", "tools", &["a.secret"], &["a.secret\t"]),
-            ("info/exclude tab", "index", &["a.secret"], &["a.secret\t"]),
-            (
-                "info/exclude bad-negation",
-                "tools",
-                &[],
-                &["caf\u{FFFD}.txt"]
-            ),
-            (
-                "info/exclude bad-negation",
-                "index",
-                &[],
-                &["caf\u{FFFD}.txt"]
-            ),
-            ("info/exclude tab-only", "tools", &[], &["\t"]),
-            ("info/exclude tab-only", "index", &[], &["\t"]),
-            ("info/exclude esc-space-space", "tools", &[], &["sp "]),
-            ("info/exclude esc-space-space", "index", &[], &["sp "]),
-            (
-                "info/exclude nbsp",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{a0}"]
-            ),
-            (
-                "info/exclude nbsp",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{a0}"]
-            ),
-            ("info/exclude negated-tab", "tools", &[], &["a.secret"]),
-            ("info/exclude negated-tab", "index", &[], &["a.secret"]),
-            ("info/exclude esc-tab", "tools", &[], &["a.secret\t"]),
-            ("info/exclude esc-tab", "index", &[], &["a.secret\t"]),
-            (
-                "info/exclude tab-space",
-                "tools",
-                &["a.secret"],
-                &["a.secret\t"]
-            ),
-            (
-                "info/exclude tab-space",
-                "index",
-                &["a.secret"],
-                &["a.secret\t"]
-            ),
-            ("info/exclude esc-space-tab", "tools", &[], &["sp \t"]),
-            ("info/exclude esc-space-tab", "index", &[], &["sp \t"]),
-            ("info/exclude dbl-bs-space", "tools", &[], &["a.secret\\"]),
-            ("info/exclude dbl-bs-space", "index", &[], &["a.secret\\"]),
-            (
-                "info/exclude ideo-space",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                "info/exclude ideo-space",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                "info/exclude formfeed",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            (
-                "info/exclude formfeed",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            (
-                "info/exclude cr-cr",
-                "tools",
-                &["a.secret"],
-                &["a.secret\r"]
-            ),
-            (
-                "info/exclude cr-cr",
-                "index",
-                &["a.secret"],
-                &["a.secret\r"]
-            ),
-            ("info/exclude dbl-bs-tab", "tools", &[], &["a.secret\\\t"]),
-            ("info/exclude dbl-bs-tab", "index", &[], &["a.secret\\\t"]),
-            (
-                "info/exclude braces",
-                "tools",
-                &["ab.secret"],
-                &["a{b}.secret"]
-            ),
-            (
-                "info/exclude braces",
-                "index",
-                &["ab.secret"],
-                &["a{b}.secret"]
-            ),
-            ("info/exclude braces-comma", "tools", &["xy"], &["x{y,z}"]),
-            ("info/exclude braces-comma", "index", &["xy"], &["x{y,z}"]),
-            ("info/exclude brace-tab", "tools", &[], &["q{\t"]),
-            ("info/exclude brace-tab", "index", &[], &["q{\t"]),
-            ("info/exclude esc-in-class", "tools", &[], &["a]b"]),
-            ("info/exclude esc-in-class", "index", &[], &["a]b"]),
-            ("info/exclude posix", "tools", &[], &["axb"]),
-            ("info/exclude posix", "index", &[], &["axb"]),
-            ("info/exclude posix-neg", "tools", &[], &["axb"]),
-            ("info/exclude posix-neg", "index", &[], &["axb"]),
-            ("info/exclude posix-space", "tools", &[], &["a b"]),
-            ("info/exclude posix-space", "index", &[], &["a b"]),
-            ("info/exclude posix-bad", "tools", &[], &["axb"]),
-            ("info/exclude posix-bad", "index", &[], &["axb"]),
-            (
-                "info/exclude mixed",
-                "tools",
-                &[],
-                &["a.secret", "caf\u{FFFD}.txt"]
-            ),
-            (
-                "info/exclude mixed",
-                "index",
-                &[],
-                &["a.secret", "caf\u{FFFD}.txt"]
-            ),
-            ("info/exclude class-esc-close", "tools", &[], &["]x"]),
-            ("info/exclude class-esc-close", "index", &[], &["]x"]),
-            ("info/exclude class-esc-dash", "tools", &["bx"], &["-x"]),
-            ("info/exclude class-esc-dash", "index", &["bx"], &["-x"]),
-            ("info/exclude class-esc-range", "tools", &[], &["ax", "bx"]),
-            ("info/exclude class-esc-range", "index", &[], &["ax", "bx"]),
-            ("info/exclude class-slash", "tools", &["a/b"], &[]),
-            ("info/exclude class-slash", "index", &["a/b"], &[]),
-            ("info/exclude class-unclosed", "tools", &["a[bc"], &[]),
-            ("info/exclude class-unclosed", "index", &["a[bc"], &[]),
-            ("info/exclude posix-alnum", "tools", &[], &["x1y", "xay"]),
-            ("info/exclude posix-alnum", "index", &[], &["x1y", "xay"]),
-            ("info/exclude posix-alpha", "tools", &[], &["xay"]),
-            ("info/exclude posix-alpha", "index", &[], &["xay"]),
-            ("info/exclude posix-blank", "tools", &[], &["x\ty", "x y"]),
-            ("info/exclude posix-blank", "index", &[], &["x\ty", "x y"]),
-            ("info/exclude posix-cntrl", "tools", &[], &["x\u{1}y"]),
-            ("info/exclude posix-cntrl", "index", &[], &["x\u{1}y"]),
-            ("info/exclude posix-digit", "tools", &[], &["x1y"]),
-            ("info/exclude posix-digit", "index", &[], &["x1y"]),
-            ("info/exclude posix-graph", "tools", &[], &["x-y", "xay"]),
-            ("info/exclude posix-graph", "index", &[], &["x-y", "xay"]),
-            ("info/exclude posix-lower", "tools", &[], &["xay"]),
-            ("info/exclude posix-lower", "index", &[], &["xay"]),
-            ("info/exclude posix-print", "tools", &[], &["x y", "xay"]),
-            ("info/exclude posix-print", "index", &[], &["x y", "xay"]),
-            ("info/exclude posix-punct", "tools", &[], &["x-y"]),
-            ("info/exclude posix-punct", "index", &[], &["x-y"]),
-            (
-                "info/exclude posix-space-xy",
-                "tools",
-                &[],
-                &["x\ty", "x y"]
-            ),
-            (
-                "info/exclude posix-space-xy",
-                "index",
-                &[],
-                &["x\ty", "x y"]
-            ),
-            ("info/exclude posix-upper", "tools", &[], &["xAy"]),
-            ("info/exclude posix-upper", "index", &[], &["xAy"]),
-            ("info/exclude posix-xdigit", "tools", &[], &["xfy"]),
-            ("info/exclude posix-xdigit", "index", &[], &["xfy"]),
-            ("info/exclude posix-two", "tools", &[], &["x-y", "x1y"]),
-            ("info/exclude posix-two", "index", &[], &["x-y", "x1y"]),
-            ("info/exclude posix-neg-alpha", "tools", &[], &["x1y"]),
-            ("info/exclude posix-neg-alpha", "index", &[], &["x1y"]),
-            ("info/exclude braces-empty", "tools", &["x"], &["x{}"]),
-            ("info/exclude braces-empty", "index", &["x"], &["x{}"]),
-            (
-                "info/exclude negation-posix-space",
-                "tools",
-                &["a b.c"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-space",
-                "index",
-                &["a b.c"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-dash",
-                "tools",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-dash",
-                "index",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            ("info/exclude negation-brace", "tools", &["{a}.c"], &["a.c"]),
-            ("info/exclude negation-brace", "index", &["{a}.c"], &["a.c"]),
-            ("info/exclude negation-unclosed", "tools", &[], &["a[b.c"]),
-            ("info/exclude negation-unclosed", "index", &[], &["a[b.c"]),
-            (
-                "info/exclude dstar-triple",
-                "tools",
-                &[],
-                &["a/b", "a/x/y/b"]
-            ),
-            (
-                "info/exclude dstar-triple",
-                "index",
-                &[],
-                &["a/b", "a/x/y/b"]
-            ),
-            (
-                "info/exclude posix-alpha-upper",
-                "tools",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                "info/exclude posix-alpha-upper",
-                "index",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                "info/exclude posix-alnum-upper",
-                "tools",
-                &[],
-                &["x9y", "xAy"]
-            ),
-            (
-                "info/exclude posix-alnum-upper",
-                "index",
-                &[],
-                &["x9y", "xAy"]
-            ),
-            (
-                "info/exclude posix-xdigit-upper",
-                "tools",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            (
-                "info/exclude posix-xdigit-upper",
-                "index",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            (
-                "info/exclude posix-upper-all",
-                "tools",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                "info/exclude posix-upper-all",
-                "index",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                "info/exclude posix-lower-all",
-                "tools",
-                &[],
-                &["xay", "xzy"]
-            ),
-            (
-                "info/exclude posix-lower-all",
-                "index",
-                &[],
-                &["xay", "xzy"]
-            ),
-            ("info/exclude range-to-posix", "tools", &[], &["xa]y"]),
-            ("info/exclude range-to-posix", "index", &[], &["xa]y"]),
-            (
-                "info/exclude range-nonascii",
-                "tools",
-                &[],
-                &["àa", "école"]
-            ),
-            (
-                "info/exclude range-nonascii",
-                "index",
-                &[],
-                &["àa", "école"]
-            ),
-            ("info/exclude posix-dash-end", "tools", &[], &["a-b", "axb"]),
-            ("info/exclude posix-dash-end", "index", &[], &["a-b", "axb"]),
-            ("info/exclude class-esc-dash-mid", "tools", &["a\\b"], &[]),
-            ("info/exclude class-esc-dash-mid", "index", &["a\\b"], &[]),
-            (
-                "info/exclude negation-posix-space-2",
-                "tools",
-                &["a .env"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-space-2",
-                "index",
-                &["a .env"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-dash-end",
-                "tools",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            (
-                "info/exclude negation-posix-dash-end",
-                "index",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            (
-                "info/exclude negation-brace-alt",
-                "tools",
-                &["x{y}"],
-                &["xy"]
-            ),
-            (
-                "info/exclude negation-brace-alt",
-                "index",
-                &["x{y}"],
-                &["xy"]
-            ),
-            (
-                "info/exclude negation-brace-comma",
-                "tools",
-                &["x{y,z}"],
-                &["xy"]
-            ),
-            (
-                "info/exclude negation-brace-comma",
-                "index",
-                &["x{y,z}"],
-                &["xy"]
-            ),
-            ("info/exclude negation-esc-close", "tools", &["a]"], &[]),
-            ("info/exclude negation-esc-close", "index", &["a]"], &[]),
-            (
-                "info/exclude negation-after-tab",
-                "tools",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            (
-                "info/exclude negation-after-tab",
-                "index",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            ("info/exclude negation-nul", "tools", &["ab"], &[]),
-            ("info/exclude negation-nul", "index", &["ab"], &[]),
-            (
-                "info/exclude negation-brace-tab",
-                "tools",
-                &["a{b}\t"],
-                &["ab"]
-            ),
-            (
-                "info/exclude negation-brace-tab",
-                "index",
-                &["a{b}\t"],
-                &["ab"]
-            ),
-            ("info/exclude negation-posix-alpha", "tools", &["ab"], &[]),
-            ("info/exclude negation-posix-alpha", "index", &["ab"], &[]),
-            (".gitignore bom", "tools", &[], &["a.secret"]),
-            (".gitignore bom", "index", &[], &["a.secret"]),
-            (".gitignore bad-after", "tools", &[], &["a.secret"]),
-            (".gitignore bad-after", "index", &[], &["a.secret"]),
-            (".gitignore bad-before", "tools", &[], &["a.secret"]),
-            (".gitignore bad-before", "index", &[], &["a.secret"]),
-            (".gitignore bom-crlf", "tools", &[], &["a.secret"]),
-            (".gitignore bom-crlf", "index", &[], &["a.secret"]),
-            (".gitignore bad-crlf", "tools", &[], &["a.secret"]),
-            (".gitignore bad-crlf", "index", &[], &["a.secret"]),
-            (".gitignore nul", "tools", &[], &["a.secret"]),
-            (".gitignore nul", "index", &[], &["a.secret"]),
-            (".gitignore tab", "tools", &["a.secret"], &["a.secret\t"]),
-            (".gitignore tab", "index", &["a.secret"], &["a.secret\t"]),
-            (
-                ".gitignore bad-negation",
-                "tools",
-                &[],
-                &["caf\u{FFFD}.txt"]
-            ),
-            (
-                ".gitignore bad-negation",
-                "index",
-                &[],
-                &["caf\u{FFFD}.txt"]
-            ),
-            (".gitignore tab-only", "tools", &[], &["\t"]),
-            (".gitignore tab-only", "index", &[], &["\t"]),
-            (".gitignore esc-space-space", "tools", &[], &["sp "]),
-            (".gitignore esc-space-space", "index", &[], &["sp "]),
-            (
-                ".gitignore nbsp",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{a0}"]
-            ),
-            (
-                ".gitignore nbsp",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{a0}"]
-            ),
-            (".gitignore negated-tab", "tools", &[], &["a.secret"]),
-            (".gitignore negated-tab", "index", &[], &["a.secret"]),
-            (".gitignore esc-tab", "tools", &[], &["a.secret\t"]),
-            (".gitignore esc-tab", "index", &[], &["a.secret\t"]),
-            (
-                ".gitignore tab-space",
-                "tools",
-                &["a.secret"],
-                &["a.secret\t"]
-            ),
-            (
-                ".gitignore tab-space",
-                "index",
-                &["a.secret"],
-                &["a.secret\t"]
-            ),
-            (".gitignore esc-space-tab", "tools", &[], &["sp \t"]),
-            (".gitignore esc-space-tab", "index", &[], &["sp \t"]),
-            (".gitignore dbl-bs-space", "tools", &[], &["a.secret\\"]),
-            (".gitignore dbl-bs-space", "index", &[], &["a.secret\\"]),
-            (
-                ".gitignore ideo-space",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                ".gitignore ideo-space",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{3000}"]
-            ),
-            (
-                ".gitignore formfeed",
-                "tools",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            (
-                ".gitignore formfeed",
-                "index",
-                &["a.secret"],
-                &["a.secret\u{c}"]
-            ),
-            (".gitignore cr-cr", "tools", &["a.secret"], &["a.secret\r"]),
-            (".gitignore cr-cr", "index", &["a.secret"], &["a.secret\r"]),
-            (".gitignore dbl-bs-tab", "tools", &[], &["a.secret\\\t"]),
-            (".gitignore dbl-bs-tab", "index", &[], &["a.secret\\\t"]),
-            (
-                ".gitignore braces",
-                "tools",
-                &["ab.secret"],
-                &["a{b}.secret"]
-            ),
-            (
-                ".gitignore braces",
-                "index",
-                &["ab.secret"],
-                &["a{b}.secret"]
-            ),
-            (".gitignore braces-comma", "tools", &["xy"], &["x{y,z}"]),
-            (".gitignore braces-comma", "index", &["xy"], &["x{y,z}"]),
-            (".gitignore brace-tab", "tools", &[], &["q{\t"]),
-            (".gitignore brace-tab", "index", &[], &["q{\t"]),
-            (".gitignore esc-in-class", "tools", &[], &["a]b"]),
-            (".gitignore esc-in-class", "index", &[], &["a]b"]),
-            (".gitignore posix", "tools", &[], &["axb"]),
-            (".gitignore posix", "index", &[], &["axb"]),
-            (".gitignore posix-neg", "tools", &[], &["axb"]),
-            (".gitignore posix-neg", "index", &[], &["axb"]),
-            (".gitignore posix-space", "tools", &[], &["a b"]),
-            (".gitignore posix-space", "index", &[], &["a b"]),
-            (".gitignore posix-bad", "tools", &[], &["axb"]),
-            (".gitignore posix-bad", "index", &[], &["axb"]),
-            (
-                ".gitignore mixed",
-                "tools",
-                &[],
-                &["a.secret", "caf\u{FFFD}.txt"]
-            ),
-            (
-                ".gitignore mixed",
-                "index",
-                &[],
-                &["a.secret", "caf\u{FFFD}.txt"]
-            ),
-            (".gitignore class-esc-close", "tools", &[], &["]x"]),
-            (".gitignore class-esc-close", "index", &[], &["]x"]),
-            (".gitignore class-esc-dash", "tools", &["bx"], &["-x"]),
-            (".gitignore class-esc-dash", "index", &["bx"], &["-x"]),
-            (".gitignore class-esc-range", "tools", &[], &["ax", "bx"]),
-            (".gitignore class-esc-range", "index", &[], &["ax", "bx"]),
-            (".gitignore class-slash", "tools", &["a/b"], &[]),
-            (".gitignore class-slash", "index", &["a/b"], &[]),
-            (".gitignore class-unclosed", "tools", &["a[bc"], &[]),
-            (".gitignore class-unclosed", "index", &["a[bc"], &[]),
-            (".gitignore posix-alnum", "tools", &[], &["x1y", "xay"]),
-            (".gitignore posix-alnum", "index", &[], &["x1y", "xay"]),
-            (".gitignore posix-alpha", "tools", &[], &["xay"]),
-            (".gitignore posix-alpha", "index", &[], &["xay"]),
-            (".gitignore posix-blank", "tools", &[], &["x\ty", "x y"]),
-            (".gitignore posix-blank", "index", &[], &["x\ty", "x y"]),
-            (".gitignore posix-cntrl", "tools", &[], &["x\u{1}y"]),
-            (".gitignore posix-cntrl", "index", &[], &["x\u{1}y"]),
-            (".gitignore posix-digit", "tools", &[], &["x1y"]),
-            (".gitignore posix-digit", "index", &[], &["x1y"]),
-            (".gitignore posix-graph", "tools", &[], &["x-y", "xay"]),
-            (".gitignore posix-graph", "index", &[], &["x-y", "xay"]),
-            (".gitignore posix-lower", "tools", &[], &["xay"]),
-            (".gitignore posix-lower", "index", &[], &["xay"]),
-            (".gitignore posix-print", "tools", &[], &["x y", "xay"]),
-            (".gitignore posix-print", "index", &[], &["x y", "xay"]),
-            (".gitignore posix-punct", "tools", &[], &["x-y"]),
-            (".gitignore posix-punct", "index", &[], &["x-y"]),
-            (".gitignore posix-space-xy", "tools", &[], &["x\ty", "x y"]),
-            (".gitignore posix-space-xy", "index", &[], &["x\ty", "x y"]),
-            (".gitignore posix-upper", "tools", &[], &["xAy"]),
-            (".gitignore posix-upper", "index", &[], &["xAy"]),
-            (".gitignore posix-xdigit", "tools", &[], &["xfy"]),
-            (".gitignore posix-xdigit", "index", &[], &["xfy"]),
-            (".gitignore posix-two", "tools", &[], &["x-y", "x1y"]),
-            (".gitignore posix-two", "index", &[], &["x-y", "x1y"]),
-            (".gitignore posix-neg-alpha", "tools", &[], &["x1y"]),
-            (".gitignore posix-neg-alpha", "index", &[], &["x1y"]),
-            (".gitignore braces-empty", "tools", &["x"], &["x{}"]),
-            (".gitignore braces-empty", "index", &["x"], &["x{}"]),
-            (".gitignore negation-posix-space", "tools", &["a b.c"], &[]),
-            (".gitignore negation-posix-space", "index", &["a b.c"], &[]),
-            (
-                ".gitignore negation-posix-dash",
-                "tools",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            (
-                ".gitignore negation-posix-dash",
-                "index",
-                &["a-b.c", "a1b.c"],
-                &[]
-            ),
-            (".gitignore negation-brace", "tools", &["{a}.c"], &["a.c"]),
-            (".gitignore negation-brace", "index", &["{a}.c"], &["a.c"]),
-            (".gitignore negation-unclosed", "tools", &[], &["a[b.c"]),
-            (".gitignore negation-unclosed", "index", &[], &["a[b.c"]),
-            (".gitignore dstar-triple", "tools", &[], &["a/b", "a/x/y/b"]),
-            (".gitignore dstar-triple", "index", &[], &["a/b", "a/x/y/b"]),
-            (
-                ".gitignore posix-alpha-upper",
-                "tools",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                ".gitignore posix-alpha-upper",
-                "index",
-                &[],
-                &["xAy", "xZy"]
-            ),
-            (
-                ".gitignore posix-alnum-upper",
-                "tools",
-                &[],
-                &["x9y", "xAy"]
-            ),
-            (
-                ".gitignore posix-alnum-upper",
-                "index",
-                &[],
-                &["x9y", "xAy"]
-            ),
-            (
-                ".gitignore posix-xdigit-upper",
-                "tools",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            (
-                ".gitignore posix-xdigit-upper",
-                "index",
-                &[],
-                &["xAy", "xFy", "xby"]
-            ),
-            (".gitignore posix-upper-all", "tools", &[], &["xAy", "xZy"]),
-            (".gitignore posix-upper-all", "index", &[], &["xAy", "xZy"]),
-            (".gitignore posix-lower-all", "tools", &[], &["xay", "xzy"]),
-            (".gitignore posix-lower-all", "index", &[], &["xay", "xzy"]),
-            (".gitignore range-to-posix", "tools", &[], &["xa]y"]),
-            (".gitignore range-to-posix", "index", &[], &["xa]y"]),
-            (".gitignore range-nonascii", "tools", &[], &["àa", "école"]),
-            (".gitignore range-nonascii", "index", &[], &["àa", "école"]),
-            (".gitignore posix-dash-end", "tools", &[], &["a-b", "axb"]),
-            (".gitignore posix-dash-end", "index", &[], &["a-b", "axb"]),
-            (".gitignore class-esc-dash-mid", "tools", &["a\\b"], &[]),
-            (".gitignore class-esc-dash-mid", "index", &["a\\b"], &[]),
-            (
-                ".gitignore negation-posix-space-2",
-                "tools",
-                &["a .env"],
-                &[]
-            ),
-            (
-                ".gitignore negation-posix-space-2",
-                "index",
-                &["a .env"],
-                &[]
-            ),
-            (
-                ".gitignore negation-posix-dash-end",
-                "tools",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            (
-                ".gitignore negation-posix-dash-end",
-                "index",
-                &["a-.env", "ab.env"],
-                &[]
-            ),
-            (".gitignore negation-brace-alt", "tools", &["x{y}"], &["xy"]),
-            (".gitignore negation-brace-alt", "index", &["x{y}"], &["xy"]),
-            (
-                ".gitignore negation-brace-comma",
-                "tools",
-                &["x{y,z}"],
-                &["xy"]
-            ),
-            (
-                ".gitignore negation-brace-comma",
-                "index",
-                &["x{y,z}"],
-                &["xy"]
-            ),
-            (".gitignore negation-esc-close", "tools", &["a]"], &[]),
-            (".gitignore negation-esc-close", "index", &["a]"], &[]),
-            (
-                ".gitignore negation-after-tab",
-                "tools",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            (
-                ".gitignore negation-after-tab",
-                "index",
-                &["secret.env"],
-                &["secret.env\t"]
-            ),
-            (".gitignore negation-nul", "tools", &["ab"], &[]),
-            (".gitignore negation-nul", "index", &["ab"], &[]),
-            (
-                ".gitignore negation-brace-tab",
-                "tools",
-                &["a{b}\t"],
-                &["ab"]
-            ),
-            (
-                ".gitignore negation-brace-tab",
-                "index",
-                &["a{b}\t"],
-                &["ab"]
-            ),
-            (".gitignore negation-posix-alpha", "tools", &["ab"], &[]),
-            (".gitignore negation-posix-alpha", "index", &["ab"], &[]),
-        ])
-    );
+    let mut expected = Vec::new();
+    for source in ["global", "info/exclude", ".gitignore"] {
+        for (case, _, _) in ENCODINGS.iter().chain(&SYNTAX) {
+            let over = GIT_SOURCE_OVER_HIDES.iter().find(|(name, _)| name == case);
+            for walk in ["tools", "index"] {
+                if let Some((_, files)) = over {
+                    expected.push((format!("{source} {case}"), walk, *files));
+                }
+            }
+        }
+    }
+    let expected: Vec<(&str, &'static str, &[&str], &[&str])> = expected
+        .iter()
+        .map(|(case, walk, files)| (case.as_str(), *walk, *files, &[][..]))
+        .collect();
+    assert_eq!(encoding_differences(), literal_rows(&expected));
 }
 
 /// Ignore files at several levels and in several sources, each as (case,
@@ -2172,9 +1037,256 @@ fn the_walks_apply_ignore_files_by_level_and_source_as_git_does() {
     assert_eq!(layered_differences(), literal_rows(&[]));
 }
 
+/// The literal rows `(case, walk, only git lists, only the walk lists)`.
 pub(super) fn literal_rows(rows: &[(&str, &'static str, &[&str], &[&str])]) -> Vec<GitDifference> {
-    let strings = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
     rows.iter()
-        .map(|(case, walk, git, walked)| ((*case).to_owned(), *walk, strings(git), strings(walked)))
+        .map(|(case, walk, git, walked)| GitDifference {
+            case: (*case).to_owned(),
+            walk,
+            only_git_lists: strings(git),
+            only_walk_lists: strings(walked),
+        })
         .collect()
+}
+
+/// The literal rows `(case, walk, leaks, over)`.
+pub(super) fn reference_rows(
+    rows: &[(&str, &'static str, &[&str], &[&str])],
+) -> Vec<ReferenceDifference> {
+    rows.iter()
+        .map(|(case, walk, leaks, over)| ReferenceDifference {
+            case: (*case).to_owned(),
+            walk,
+            leaks: strings(leaks),
+            over: strings(over),
+        })
+        .collect()
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_owned()).collect()
+}
+
+/// A small seeded generator, so a failing draw can be replayed.
+struct Draw(u64);
+
+impl Draw {
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        usize::try_from(self.0 % u64::try_from(bound).expect("bound")).expect("index")
+    }
+
+    fn pick<'a>(&mut self, parts: &[&'a str]) -> &'a str {
+        parts[self.below(parts.len())]
+    }
+
+    /// One to `most` parts joined.
+    fn join(&mut self, parts: &[&str], most: usize) -> String {
+        let count = 1 + self.below(most);
+        (0..count).map(|_| self.pick(parts)).collect()
+    }
+}
+
+/// The pieces drawn patterns are made of: the bytes a matcher reads
+/// specially, POSIX names known and not, and plain letters in both cases.
+const PATTERN_PARTS: [&str; 39] = [
+    "a",
+    "b",
+    "A",
+    "x",
+    "[",
+    "]",
+    ":",
+    "!",
+    "^",
+    "-",
+    "*",
+    "?",
+    "/",
+    "\\",
+    "**",
+    "**/",
+    "\\/",
+    "**\\/",
+    "/**",
+    "[:alpha:]",
+    "[:space:]",
+    "[:lower:]",
+    "[:x:]",
+    "[[:",
+    ":]",
+    "[:a]",
+    "[a-c]",
+    "[A-C]",
+    "[!a]",
+    "[]a]",
+    "[a-]",
+    "[^b]",
+    "[\\]]",
+    "[/]",
+    "[[:upper:]]",
+    "[[:blank:]]",
+    "[[:print:]]",
+    "\\A",
+    " ",
+];
+
+/// The bytes drawn file names are made of.
+const NAME_BYTES: &[u8] = b"abABx[]:!^-*?\\ \t\x0b\x0c";
+
+/// A path near `pattern`: its bytes each kept, dropped, replaced or
+/// followed by another, with a `/` now and then, so the paths land on
+/// both sides of what the pattern matches. Its parts are the names
+/// between slashes; `None` when none is left or one would be hidden.
+fn near_path(draw: &mut Draw, pattern: &str) -> Option<Vec<String>> {
+    let mut text = Vec::new();
+    for &byte in pattern.as_bytes() {
+        let other = NAME_BYTES[draw.below(NAME_BYTES.len())];
+        match draw.below(20) {
+            0..=10 => text.push(byte),
+            11 | 12 => {}
+            13..=15 => text.push(other),
+            16 | 17 => text.extend([byte, other]),
+            _ => text.extend([byte, b'/']),
+        }
+    }
+    let text = String::from_utf8(text).ok()?;
+    let parts: Vec<String> = text
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .take(3)
+        .map(str::to_owned)
+        .collect();
+    (!parts.is_empty() && !parts.iter().any(|part| part.starts_with('.'))).then_some(parts)
+}
+
+/// Drawn cases, each a `.gitignore` line and paths below its directory,
+/// none two that a file system folding case would take for one, and no
+/// path both a file and a directory.
+fn drawn_cases(seed: u64, count: usize) -> Vec<(String, Vec<String>)> {
+    let mut draw = Draw(seed);
+    (0..count)
+        .map(|_| {
+            let pattern = draw.join(&PATTERN_PARTS, 6);
+            let mut files = BTreeSet::new();
+            let mut dirs = BTreeSet::new();
+            let mut paths = Vec::new();
+            for _ in 0..10 {
+                let Some(parts) = near_path(&mut draw, &pattern) else {
+                    continue;
+                };
+                let lower: Vec<String> = parts.iter().map(|part| part.to_lowercase()).collect();
+                let prefixes: Vec<String> =
+                    (1..lower.len()).map(|len| lower[..len].join("/")).collect();
+                let path = lower.join("/");
+                let clashes = files.contains(&path)
+                    || dirs.contains(&path)
+                    || prefixes.iter().any(|prefix| files.contains(prefix));
+                if !clashes {
+                    files.insert(path);
+                    dirs.extend(prefixes);
+                    paths.push(parts.join("/"));
+                }
+            }
+            (pattern, paths)
+        })
+        .collect()
+}
+
+/// For drawn patterns and paths, each case a `.gitignore` in its own
+/// directory, the cases where the index walk lists other files than git:
+/// the pattern, the files only git lists and the files only the walk
+/// lists.
+#[expect(clippy::expect_used, reason = "test helper panics with context")]
+fn drawn_differences(seed: u64) -> Vec<(String, Vec<String>, Vec<String>)> {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let top = tmp.path().canonicalize().expect("top");
+    let (repo, global) = git_repo(&top);
+    let cases = drawn_cases(seed, 800);
+    for (index, (pattern, paths)) in cases.iter().enumerate() {
+        let dir = repo.join(format!("c{index}"));
+        std::fs::create_dir_all(&dir).expect("case dir");
+        std::fs::write(dir.join(".gitignore"), format!("{pattern}\n")).expect(".gitignore");
+        for path in paths {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).expect("dirs");
+            std::fs::write(file, "x").expect("file");
+        }
+    }
+    let output = oracle_git()
+        .arg("-c")
+        .arg(format!("core.excludesFile={}", global.display()))
+        .args(["-c", "core.ignorecase=false"])
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .current_dir(&repo)
+        .output()
+        .expect("git ls-files");
+    assert!(output.status.success(), "{output:?}");
+    let git: BTreeSet<String> = String::from_utf8(output.stdout)
+        .expect("utf-8 names")
+        .split('\0')
+        .filter(|name| !name.is_empty() && !name.ends_with('/'))
+        .map(str::to_owned)
+        .collect();
+    let walk = walk_listed(&repo, &global, Ignores::Index);
+    let in_case = |set: &BTreeSet<String>, index: usize| -> Vec<String> {
+        let prefix = format!("c{index}/");
+        set.iter()
+            .filter_map(|name| name.strip_prefix(&prefix))
+            .filter(|name| !name.starts_with('.'))
+            .map(str::to_owned)
+            .collect()
+    };
+    cases
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (pattern, _))| {
+            let dir = repo.join(format!("c{index}"));
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(&dir);
+            let _ = builder.add(dir.join(".gitignore"));
+            let reader = builder.build().expect("crate reader");
+            // The walk prunes a hidden directory, and never decides the
+            // file's own directory, so a file is hidden when it or a
+            // directory between it and that directory is.
+            let by_crate = |name: &String| {
+                Path::new(name)
+                    .ancestors()
+                    .filter(|part| !part.as_os_str().is_empty())
+                    .any(|part| {
+                        let is_dir = part != Path::new(name);
+                        reader.matched(dir.join(part), is_dir).is_ignore()
+                    })
+            };
+            let by_ref: Vec<String> = in_case(&git, index)
+                .into_iter()
+                .filter(|name| !by_crate(name))
+                .collect();
+            let by_walk = in_case(&walk, index);
+            let only_ref: Vec<String> = by_ref
+                .iter()
+                .filter(|name| !by_walk.contains(name))
+                .cloned()
+                .collect();
+            let only_walk: Vec<String> = by_walk
+                .iter()
+                .filter(|name| !by_ref.contains(name))
+                .cloned()
+                .collect();
+            (!only_ref.is_empty() || !only_walk.is_empty())
+                .then_some((pattern, only_ref, only_walk))
+        })
+        .collect()
+}
+
+/// Patterns and paths drawn from the bytes a matcher reads specially are
+/// listed as git lists them, less what the `ignore` crate's own reader of
+/// the same file hides. The draw is seeded, so a difference names a case
+/// to replay.
+#[test]
+fn drawn_patterns_list_what_git_and_the_crate_list() {
+    let none = Vec::<(String, Vec<String>, Vec<String>)>::new();
+    assert_eq!(drawn_differences(0x5eed_0001), none);
 }

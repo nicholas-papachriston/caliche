@@ -20,8 +20,10 @@ const DSTAR_LEAD: &str = "gitignore(5) PATTERN FORMAT: a leading **/ matches in 
 const DSTAR_MID: &str = "gitignore(5) PATTERN FORMAT: /**/ matches zero or more directories.";
 const DSTAR_OTHER: &str =
     "gitignore(5) PATTERN FORMAT: other consecutive asterisks are regular asterisks.";
+const DSTAR_RUN: &str = "gitignore(5) PATTERN FORMAT says other consecutive asterisks are regular asterisks; for a run of three or more that is a whole part of the path, the git run decides, and it reads the run as **.";
 const DSTAR_TRAIL: &str = "gitignore(5) PATTERN FORMAT: a trailing /** matches everything inside.";
 const ESC: &str = "gitignore(5) PATTERN FORMAT: a backslash escapes the character after it.";
+const ESC_END: &str = "gitignore(5) does not cover a backslash at the end of a pattern, with nothing to escape; the git run decides, and the pattern then matches nothing.";
 const NEG: &str = "gitignore(5) PATTERN FORMAT: a leading ! negates the pattern and re-includes a file an earlier pattern excluded; a backslash before a leading ! makes it literal.";
 const NEG_PARENT: &str = "gitignore(5) PATTERN FORMAT: a file cannot be re-included when a parent directory of it is excluded.";
 const NUL: &str = "gitignore(5) does not cover NUL; the git oracle ends the pattern at it.";
@@ -33,6 +35,9 @@ const UNCLOSED: &str = "gitignore(5) and glob(7) do not say what a [ with no clo
 const WS_OTHER: &str = "gitignore(5) PATTERN FORMAT speaks only of trailing spaces; for other whitespace, and for an escape before it, the git run decides, and it keeps them in the pattern.";
 const POSIX_EDGE: &str = "glob(7) does not cover an unknown class name, an empty [::] or a class as the end of a range; the git run decides.";
 const DSTAR_ONLY: &str = "gitignore(5) PATTERN FORMAT does not cover a pattern of only **; the git run decides, and it matches every path.";
+const POSIX_NAME: &str = "glob(7) does not say where a class name ends; the git run decides: the name runs to the first ], and with no : right before that ] the [ is a plain member.";
+const POSIX_SPACE: &str = "glob(7) defers [:space:] to isspace(3); git's own reading, as the git run shows, is space, tab, newline and carriage return only.";
+const DSTAR_ESC: &str = "gitignore(5) PATTERN FORMAT does not cover ** before an escaped slash; the git run decides: it crosses directories and needs at least one.";
 const SPACE_MID: &str = "gitignore(5) PATTERN FORMAT does not cover a space inside a pattern; the git run decides, and it matches a space.";
 const SLASH: &str = "gitignore(5) PATTERN FORMAT: a slash at the start or in the middle makes the pattern relative to the directory of its ignore file; otherwise it matches at any level.";
 const SOURCES: &str = "gitignore(5) DESCRIPTION: sources by precedence, highest first: .gitignore files, where a deeper file overrides a higher one, then $GIT_DIR/info/exclude, then core.excludesFile; within one source the last matching pattern decides.";
@@ -42,8 +47,9 @@ const TRAIL: &str =
 const TRAIL_SLASH: &str = "gitignore(5) PATTERN FORMAT: a trailing slash matches only a directory.";
 
 /// Every case as (table, case, rule).
-const RULES: [(&str, &str, &str); 148] = [
+const RULES: [(&str, &str, &str); 159] = [
     ("encodings", "bom", BOM),
+    ("encodings", "bom-brace", BOM),
     ("encodings", "bad-after", BYTES),
     ("encodings", "bad-before", BYTES),
     ("encodings", "crlf", CRLF),
@@ -124,6 +130,15 @@ const RULES: [(&str, &str, &str); 148] = [
     ("syntax", "posix-two", POSIX),
     ("syntax", "posix-neg-alpha", POSIX),
     ("syntax", "posix-unknown", POSIX_EDGE),
+    ("syntax", "esc-at-end", ESC_END),
+    ("syntax", "comment-line", COMMENT),
+    ("syntax", "posix-first-close", POSIX_NAME),
+    ("syntax", "posix-name-unclosed", POSIX_NAME),
+    ("syntax", "posix-empty-name", POSIX_NAME),
+    ("syntax", "posix-space-git", POSIX_SPACE),
+    ("syntax", "qmark-no-slash", STAR),
+    ("syntax", "glued-dstar", DSTAR_OTHER),
+    ("syntax", "dstar-esc-slash", DSTAR_ESC),
     ("syntax", "esc-star", ESC),
     ("syntax", "esc-qmark", ESC),
     ("syntax", "esc-bracket", ESC),
@@ -146,7 +161,7 @@ const RULES: [(&str, &str, &str); 148] = [
     ("syntax", "dstar-zero", DSTAR_MID),
     ("syntax", "dstar-lead-path", DSTAR_LEAD),
     ("syntax", "dstar-only", DSTAR_ONLY),
-    ("syntax", "dstar-triple", DSTAR_OTHER),
+    ("syntax", "dstar-triple", DSTAR_RUN),
     ("syntax", "dstar-reinclude", DSTAR_TRAIL),
     ("syntax", "star-slash", STAR),
     ("syntax", "negation-dirs", NEG),
@@ -174,6 +189,7 @@ const RULES: [(&str, &str, &str); 148] = [
     ("syntax", "negation-trail-space", NEG),
     ("syntax", "negation-after-tab", NEG),
     ("syntax", "negation-crlf", NEG),
+    ("syntax", "negation-esc-space-crlf", TRAIL),
     ("syntax", "negation-nul", NEG),
     ("syntax", "negation-brace-tab", NEG),
     ("syntax", "negation-posix-alpha", NEG),
