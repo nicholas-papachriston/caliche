@@ -15,12 +15,15 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use caliche_sandbox::EntryKind;
-use ignore::Match;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::agent::tools::common::path::{
-    list_resolved_dir, open_resolved_file, read_resolved_text, resolved_metadata,
+    list_resolved_dir, open_resolved_file, read_resolved_bytes, resolved_metadata,
 };
+
+mod ignore_file;
+mod ignore_pattern;
+
+pub use ignore_file::IgnoreFile;
 
 /// Directory names a walk never enters: version control metadata.
 pub const VCS_DIRS: [&str; 4] = [".git", ".hg", ".svn", ".jj"];
@@ -166,7 +169,7 @@ struct Walk<'a> {
     /// first.
     ignores: Vec<DirIgnores>,
     /// The user's global git excludes.
-    global: Option<Gitignore>,
+    global: Option<IgnoreFile>,
     prune: &'a dyn Fn(&WalkedEntry) -> bool,
     visit: &'a mut dyn FnMut(&WalkedEntry) -> ControlFlow<()>,
     errors: Vec<String>,
@@ -232,8 +235,7 @@ impl Walk<'_> {
                     &self.ignores,
                     self.global.as_ref(),
                     self.options.ignores.require_git(),
-                    &path,
-                    is_dir,
+                    (&path, is_dir),
                 )
             {
                 continue;
@@ -267,16 +269,22 @@ fn outer_ignores(root: &Path, rules: Ignores, errors: &mut Vec<String>) -> Vec<D
     above
         .into_iter()
         .map(|dir| {
-            let kind_of = |name: &str| match resolved_metadata(&dir.join(name)) {
-                Ok(meta) if meta.is_dir() => Some(EntryKind::Dir),
-                Ok(_) => Some(EntryKind::File),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => Some(EntryKind::Other),
-            };
-            let vcs = Vcs::of(dir, kind_of(".git"), kind_of(".jj"));
+            let vcs = Vcs::of(dir, kind_of(&dir.join(".git")), kind_of(&dir.join(".jj")));
             dir_ignores(dir, vcs, &|_| true, rules, errors)
         })
         .collect()
+}
+
+/// The kind of the entry at `path`, described with no link followed:
+/// `None` when it is missing, [`EntryKind::Other`] for a link or when it
+/// cannot be described.
+fn kind_of(path: &Path) -> Option<EntryKind> {
+    match resolved_metadata(path) {
+        Ok(meta) if meta.is_dir() => Some(EntryKind::Dir),
+        Ok(_) => Some(EntryKind::File),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(EntryKind::Other),
+    }
 }
 
 /// What a directory's `.git` and `.jj` entries make it.
@@ -339,11 +347,11 @@ fn follow_link(path: &Path) -> Option<(PathBuf, Option<EntryKind>)> {
 
 /// The ignore rules one directory adds, by source.
 struct DirIgnores {
-    caliche: Option<Gitignore>,
-    ignore: Option<Gitignore>,
-    git: Option<Gitignore>,
+    caliche: Option<IgnoreFile>,
+    ignore: Option<IgnoreFile>,
+    git: Option<IgnoreFile>,
     /// The `info/exclude` of a repository rooted at this directory.
-    exclude: Option<Gitignore>,
+    exclude: Option<IgnoreFile>,
     /// This directory is a repository root, counted only for
     /// [`Ignores::Tools`].
     has_git: bool,
@@ -387,20 +395,15 @@ fn dir_ignores(
         reason = "git configuration outside the workspace, often a dotfiles link; it only adds ignore patterns"
     )
 )]
-fn global_excludes(root: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
+fn global_excludes(root: &Path, errors: &mut Vec<String>) -> Option<IgnoreFile> {
     let path = global_excludes_path()?;
     if !path.is_file() {
         return None;
     }
-    let mut builder = GitignoreBuilder::new(root);
-    if let Some(err) = builder.add(&path) {
-        errors.push(format!("{}: {err}", path.display()));
-    }
-    builder
-        .build()
+    std::fs::read(&path)
         .map_err(|err| errors.push(format!("{}: {err}", path.display())))
         .ok()
-        .filter(|matcher| !matcher.is_empty())
+        .map(|bytes| IgnoreFile::parse(root, &bytes))
 }
 
 /// Where git looks for the user's global excludes file.
@@ -468,11 +471,12 @@ fn read_head(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// The ignore file `file` as a matcher rooted at `root`; `None` when it is
-/// missing. Read with no link followed; a link or a read error is reported.
-fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Gitignore> {
-    let text = match read_resolved_text(file) {
-        Ok(text) => text,
+/// The ignore file `file`, its patterns relative to `root`; `None` when it
+/// is missing. Read with no link followed; a link or a read error is
+/// reported.
+fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<IgnoreFile> {
+    let bytes = match read_resolved_bytes(file) {
+        Ok(bytes) => bytes,
         Err(err)
             if matches!(
                 err.kind(),
@@ -486,14 +490,7 @@ fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Git
             return None;
         }
     };
-    let mut builder = GitignoreBuilder::new(root);
-    for line in text.lines() {
-        let _ = builder.add_line(None, line);
-    }
-    builder
-        .build()
-        .map_err(|err| errors.push(format!("{}: {err}", file.display())))
-        .ok()
+    Some(IgnoreFile::parse(root, &bytes))
 }
 
 /// Whether `path` is ignored, decided as the `ignore` crate decides: the
@@ -503,16 +500,11 @@ fn read_ignore(root: &Path, file: &Path, errors: &mut Vec<String>) -> Option<Git
 /// count only inside a repository and only up to its root.
 fn is_ignored(
     stack: &[DirIgnores],
-    global: Option<&Gitignore>,
+    global: Option<&IgnoreFile>,
     require_git: bool,
-    path: &Path,
-    is_dir: bool,
+    (path, is_dir): (&Path, bool),
 ) -> bool {
-    let decide = |matcher: Option<&Gitignore>| match matcher?.matched(path, is_dir) {
-        Match::Ignore(_) => Some(true),
-        Match::Whitelist(_) => Some(false),
-        Match::None => None,
-    };
+    let decide = |matcher: Option<&IgnoreFile>| matcher?.decide(path, is_dir);
     let any_git = !require_git || stack.iter().any(|dir| dir.has_git);
     let mut found: [Option<bool>; 4] = [None; 4];
     let mut saw_git = false;
@@ -677,6 +669,41 @@ mod tests {
         set_test_global_excludes(None);
 
         assert_eq!(names, vec!["ok.toml"]);
+    }
+
+    /// A brace pattern and a pattern with a trailing tab hide what the
+    /// `ignore` crate's reading hides in every git source, as the walks
+    /// hid it before, though git reads both literally and lists the files.
+    #[test]
+    fn git_sources_hide_what_the_crate_reading_hides() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let top = tmp.path().canonicalize().expect("top");
+        let rules = "*.{env,key}\na.secret\t\n";
+        let files = [
+            ("secret.env", "s"),
+            ("id.key", "k"),
+            ("a.secret", "a"),
+            ("ok.rs", "o"),
+        ];
+        let walked = |(index, source): (usize, &str)| {
+            let repo = top.join(format!("r{index}"));
+            write_all(&repo, &files);
+            std::fs::create_dir_all(repo.join(".git/info")).expect("git dir");
+            let global = repo.join(".git/global");
+            let file = match source {
+                "global" => global.clone(),
+                _ => repo.join(source),
+            };
+            std::fs::write(file, rules).expect("rules");
+            set_test_global_excludes(Some(global));
+            let names = walk_names(&repo, WalkOptions::default());
+            set_test_global_excludes(None);
+            names
+        };
+        assert_eq!(
+            [(0, "global"), (1, ".git/info/exclude"), (2, ".gitignore")].map(walked),
+            [vec!["ok.rs"], vec!["ok.rs"], vec!["ok.rs"]]
+        );
     }
 
     /// The root's own `.git/info/exclude` applies.
@@ -981,7 +1008,55 @@ mod tests {
         assert!(!is_walked_file(&root.join("missing")));
         assert_eq!(entry_kind(&root.join("link")), Some(EntryKind::Other));
     }
+
+    /// Write `files` under a new directory and return it, canonical.
+    #[expect(clippy::expect_used, reason = "test helper panics with context")]
+    fn tree(files: &[(&str, &[u8])]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().canonicalize().expect("root");
+        for (name, content) in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+            std::fs::write(path, content).expect("file");
+        }
+        (tmp, root)
+    }
+
+    const HEAD: (&str, &[u8]) = (".git/HEAD", b"ref: refs/heads/main\n");
+
+    /// A negation only one reading of a `.caliche_ignore` sees does not
+    /// un-hide a file a `.gitignore` hides: the crate reading stops at the
+    /// line that is not UTF-8.
+    #[test]
+    fn a_negation_one_reading_sees_does_not_unhide() {
+        let (_tmp, root) = tree(&[
+            HEAD,
+            (".gitignore", b"a.secret\n"),
+            (".caliche_ignore", b"\xff\n!a.secret\n"),
+            ("a.secret", b"x"),
+            ("ok.rs", b"x"),
+        ]);
+        assert_eq!(walk_files(&root, Ignores::Index), vec!["ok.rs"]);
+    }
+
+    /// A line of a million `**/` does not overflow the stack of a walk.
+    #[test]
+    fn a_long_double_star_line_does_not_crash_a_walk() {
+        let mut line = b"**/".repeat(1 << 20);
+        line.extend(b"zz\n");
+        let (_tmp, root) = tree(&[HEAD, (".gitignore", &line), ("a.txt", b"x"), ("d/zz", b"x")]);
+        let run = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || walk_files(&root, Ignores::Index))
+            .expect("thread")
+            .join()
+            .expect("no overflow");
+        assert_eq!(run, vec!["a.txt"]);
+    }
 }
 
 #[cfg(all(test, unix))]
 mod parity_tests;
+
+#[cfg(all(test, unix))]
+mod rule_tests;
